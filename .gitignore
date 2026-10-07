@@ -1,0 +1,17 @@
+node_modules/
+dist/
+coverage/
+reports/
+.stryker-tmp/
+*.tgz
+*.log
+*.tsbuildinfo
+.eslintcache
+.DS_Store
+.env
+.env.*
+!.env.example
+
+# Claude Code
+CLAUDE.md
+.claude/

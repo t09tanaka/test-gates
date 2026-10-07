@@ -1,0 +1,132 @@
+{
+  "name": "@t09tanaka/sekisho",
+  "version": "0.1.0",
+  "description": "Test gates for the code that must not be wrong: per-file 100% coverage as the floor, mutation testing with a per-mutant allow list as the real check.",
+  "author": "t09tanaka",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/t09tanaka/sekisho.git"
+  },
+  "homepage": "https://github.com/t09tanaka/sekisho#readme",
+  "bugs": {
+    "url": "https://github.com/t09tanaka/sekisho/issues"
+  },
+  "keywords": [
+    "test",
+    "coverage",
+    "mutation-testing",
+    "stryker",
+    "jest",
+    "vitest",
+    "lcov",
+    "quality-gate",
+    "cli"
+  ],
+  "type": "module",
+  "bin": {
+    "sekisho": "dist/cli.js"
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./jest": {
+      "import": {
+        "types": "./dist/jest.d.ts",
+        "default": "./dist/jest.js"
+      },
+      "require": {
+        "types": "./dist/jest.d.cts",
+        "default": "./dist/jest.cjs"
+      }
+    },
+    "./vitest": {
+      "import": {
+        "types": "./dist/vitest.d.ts",
+        "default": "./dist/vitest.js"
+      },
+      "require": {
+        "types": "./dist/vitest.d.cts",
+        "default": "./dist/vitest.cjs"
+      }
+    },
+    "./stryker": {
+      "import": {
+        "types": "./dist/stryker.d.ts",
+        "default": "./dist/stryker.js"
+      },
+      "require": {
+        "types": "./dist/stryker.d.cts",
+        "default": "./dist/stryker.cjs"
+      }
+    },
+    "./schema.json": "./schema/test-gates.schema.json",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "schema"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src test",
+    "lint:fix": "eslint src test --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "pretest": "npm run build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:gates": "node dist/cli.js check && vitest run --config vitest.gates.config.ts",
+    "test:gates:selfcheck": "node dist/cli.js selfcheck",
+    "test:gates:mutation": "node dist/cli.js mutation",
+    "prepublishOnly": "npm run lint && npm run typecheck && npm test"
+  },
+  "peerDependencies": {
+    "@stryker-mutator/core": ">=9",
+    "jest": ">=29",
+    "vitest": ">=3"
+  },
+  "peerDependenciesMeta": {
+    "@stryker-mutator/core": {
+      "optional": true
+    },
+    "jest": {
+      "optional": true
+    },
+    "vitest": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@types/node": "^22.20.5",
+    "@vitest/coverage-v8": "^3.2.7",
+    "eslint": "^9.39.5",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-prettier": "^5.5.6",
+    "prettier": "^3.9.9",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.71.1",
+    "vitest": "^3.2.7"
+  }
+}
