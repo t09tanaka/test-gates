@@ -54,6 +54,16 @@ describe('parseArgs', () => {
     });
   });
 
+  it('keeps reading after an option written as --name=value', () => {
+    expect(parseArgs(['lcov', '--file=a.info', '--dir=client', '--help'])).toEqual({
+      ...base,
+      command: 'lcov',
+      file: 'a.info',
+      dir: 'client',
+      help: true,
+    });
+  });
+
   it('reads --all and --first for selfcheck', () => {
     expect(parseArgs(['selfcheck', '--all']).mode).toBe('all');
     expect(parseArgs(['selfcheck', '--first']).mode).toBe('first');

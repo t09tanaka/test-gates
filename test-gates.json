@@ -4,16 +4,7 @@
     {
       "path": "src/core/mutation-result.ts",
       "decides": "Whether a Stryker run passes: which mutants count as detected, which survivors an allowance covers, and when an allowance is stale or ambiguous",
-      "impact": "A surviving mutant, a stale allowance or an unevaluated mutant passes silently and every project using test-gates loses its real guard",
-      "equivalentMutants": [
-        {
-          "mutator": "ArrayDeclaration",
-          "original": "[]",
-          "replacement": "[\"Stryker was here\"]",
-          "occurrence": 3,
-          "reason": "When equivalentMutants is not an array the fallback list is only iterated to resolve allowances, and a string entry is skipped by isUsableEquivalentMutant. The shape violation is reported separately from gate.equivalentMutants, so the verdict is the same"
-        }
-      ]
+      "impact": "A surviving mutant, a stale allowance or an unevaluated mutant passes silently and every project using test-gates loses its real guard"
     },
     {
       "path": "src/core/lcov.ts",
@@ -38,7 +29,31 @@
     {
       "path": "src/core/args.ts",
       "decides": "Which command-line arguments belong to test-gates and which are handed to Stryker",
-      "impact": "An argument meant for Stryker reaches the judge or is dropped, and a typo in an option is silently ignored"
+      "impact": "An argument meant for Stryker reaches the judge or is dropped, and a typo in an option is silently ignored",
+      "expectedTimeouts": [
+        {
+          "mutator": "BlockStatement",
+          "original": "{ index = consume(parsed, argv, index, allowed); }",
+          "replacement": "{}",
+          "reason": "With an empty body the loop index never advances, so parseArgs never returns for any non-empty command line"
+        },
+        {
+          "mutator": "ArithmeticOperator",
+          "original": "next + 1",
+          "replacement": "next - 1",
+          "reason": "After an option with a separate value the parser would return to the option itself and read it again forever"
+        }
+      ]
+    },
+    {
+      "path": "src/core/import-policy.ts",
+      "decides": "Allowlist mode: which package imports and which project imports a gate may have, and which gates import another gate",
+      "impact": "A gate imports an SDK or a service file unnoticed and stops being a pure module"
+    },
+    {
+      "path": "src/core/vitest-coverage.ts",
+      "decides": "Whether a Vitest setup can report 100% branches with the skipped side of an if untested",
+      "impact": "A project keeps a coverage floor that has a hole in it without being told"
     }
   ],
   "candidates": [
@@ -57,5 +72,14 @@
       "decides": "Defaults and validation of settings",
       "blocker": "The default tables are data: mutants of their reason strings survive, and the specs call resolveSettings while being collected, which makes most mutants static. Split the tables from the validation first"
     }
-  ]
+  ],
+  "settings": {
+    "imports": {
+      "mode": "allowlist",
+      "allow": []
+    },
+    "mutation": {
+      "maxTimeouts": 0
+    }
+  }
 }

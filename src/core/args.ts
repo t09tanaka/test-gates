@@ -32,6 +32,67 @@ const OPTIONS_BY_COMMAND: Record<Command, string[]> = {
 };
 
 /**
+ * Reads the argument at `index` into `parsed`.
+ * @returns The index of the next argument to read; `argv.length` when nothing is left.
+ */
+function consume(
+  parsed: ParsedArgs,
+  argv: string[],
+  index: number,
+  allowed: string[] | undefined
+): number {
+  const arg = argv[index] as string;
+  const next = index + 1;
+
+  if (arg === '--') {
+    if (parsed.command !== 'mutation' && parsed.command !== 'selfcheck') {
+      throw new UsageError('"--" is only accepted by the mutation and selfcheck commands');
+    }
+    parsed.rest.push(...argv.slice(next));
+    return argv.length;
+  }
+  if (arg === '--help' || arg === '-h') {
+    parsed.help = true;
+    return next;
+  }
+  if (arg === '--version' || arg === '-v') {
+    parsed.version = true;
+    return next;
+  }
+
+  const equals = arg.indexOf('=');
+  const name = equals !== -1 ? arg.slice(0, equals) : arg;
+  if (allowed?.includes(name)) {
+    if (VALUE_OPTIONS.includes(name)) {
+      const value = equals !== -1 ? arg.slice(equals + 1) : argv[next];
+      if (value === undefined || value === '') {
+        throw new UsageError(`${name} needs a value`);
+      }
+      const key = name.slice(2) as 'dir' | 'report' | 'file';
+      parsed[key] = value;
+      return equals !== -1 ? next : next + 1;
+    }
+    if (equals !== -1) {
+      throw new UsageError(`${name} does not take a value`);
+    }
+    const mode = name === '--all' ? 'all' : 'first';
+    if (parsed.mode !== null && parsed.mode !== mode) {
+      throw new UsageError('--all and --first cannot be combined');
+    }
+    parsed.mode = mode;
+    return next;
+  }
+
+  if (parsed.command === 'mutation') {
+    parsed.rest.push(arg);
+    return next;
+  }
+  throw new UsageError(
+    parsed.command ? `unknown argument for ${parsed.command}: ${arg}` : `unknown argument: ${arg}`
+  );
+}
+
+/**
  * Parses the command line (without `node` and the script path).
  *
  * `test-gates mutation` forwards what it does not know to Stryker, with or without `--`:
@@ -62,61 +123,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
   const allowed = parsed.command ? OPTIONS_BY_COMMAND[parsed.command] : undefined;
 
   while (index < argv.length) {
-    const arg = argv[index] as string;
-    index += 1;
-
-    if (arg === '--') {
-      if (parsed.command !== 'mutation' && parsed.command !== 'selfcheck') {
-        throw new UsageError('"--" is only accepted by the mutation and selfcheck commands');
-      }
-      parsed.rest.push(...argv.slice(index));
-      break;
-    }
-    if (arg === '--help' || arg === '-h') {
-      parsed.help = true;
-      continue;
-    }
-    if (arg === '--version' || arg === '-v') {
-      parsed.version = true;
-      continue;
-    }
-
-    const equals = arg.indexOf('=');
-    const name = equals !== -1 ? arg.slice(0, equals) : arg;
-    if (allowed?.includes(name)) {
-      if (VALUE_OPTIONS.includes(name)) {
-        let value: string | undefined;
-        if (equals !== -1) {
-          value = arg.slice(equals + 1);
-        } else {
-          value = argv[index];
-          index += 1;
-        }
-        if (value === undefined || value === '') {
-          throw new UsageError(`${name} needs a value`);
-        }
-        const key = name.slice(2) as 'dir' | 'report' | 'file';
-        parsed[key] = value;
-        continue;
-      }
-      if (equals !== -1) {
-        throw new UsageError(`${name} does not take a value`);
-      }
-      const mode = name === '--all' ? 'all' : 'first';
-      if (parsed.mode !== null && parsed.mode !== mode) {
-        throw new UsageError('--all and --first cannot be combined');
-      }
-      parsed.mode = mode;
-      continue;
-    }
-
-    if (parsed.command === 'mutation') {
-      parsed.rest.push(arg);
-      continue;
-    }
-    throw new UsageError(
-      parsed.command ? `unknown argument for ${parsed.command}: ${arg}` : `unknown argument: ${arg}`
-    );
+    index = consume(parsed, argv, index, allowed);
   }
 
   if (parsed.command === 'selfcheck' && parsed.rest.length === 0 && argv.includes('--')) {
