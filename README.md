@@ -12,6 +12,15 @@ This package guards the handful of modules where a wrong decision costs money or
 
 `test-gates` is a CLI plus three small config helpers. It has no runtime dependencies. Jest, Vitest and Stryker are the ones already installed in your project.
 
+### When this is worth it, and when it is not
+
+It pays off when the same rule has to hold in several places: a monorepo with several subprojects, or several repositories, where a copied script would drift. One `test-gates.json` per subproject, the same commands everywhere, the same verdict.
+
+It does little when
+
+- you have one project and one script already does the job. A script you understand is fine; this package is that script, made uniform.
+- the decisions are not in pure modules yet. In a codebase that is mostly decorators and dependency injection, the important logic ends up under `candidates`, and **nothing is enforced for a candidate**. The package then only gives you the list of what to extract first. The enforcement starts when a decision has been moved into a pure module.
+
 ## Install
 
 ```bash
@@ -219,6 +228,7 @@ The run also fails when
 - two allowances point at the same mutant, or an allowance has no `reason`,
 - a gate is missing from the report or has no mutants, or no mutant was evaluated at all,
 - the report was made from a different version of a gate than the one on disk.
+- more mutants timed out than `settings.mutation.maxTimeouts` allows (only when that setting is present, see [Timeouts](#timeouts)).
 
 `Timeout` counts as detected, but its count is always printed on its own (`detected N (timeout M)`). On a loaded machine mutants time out that would otherwise survive, so a rising timeout count means the run may be hiding survivors: rerun with lower `--concurrency`.
 
@@ -228,11 +238,60 @@ On failure every unallowed survivor is listed as `file:line:column / mutator / o
 test-gates mutation: OK (mutants 317 / detected 308 (timeout 0) / allowed equivalent 8 / not evaluable 1 / unallowed survivors 0)
 ```
 
+#### Timeouts
+
+A timeout is a detection only if the mutant really cannot finish. On a loaded machine a mutant that would have survived can time out instead, and the run looks better than it is. Two opt-in controls (since 0.2.0):
+
+```json
+{
+  "gates": [
+    {
+      "path": "src/core/args.ts",
+      "decides": "…",
+      "impact": "…",
+      "expectedTimeouts": [
+        {
+          "mutator": "BlockStatement",
+          "original": "{ index = consume(parsed, argv, index, allowed); }",
+          "replacement": "{}",
+          "reason": "With an empty body the loop index never advances, so the function never returns"
+        }
+      ]
+    }
+  ],
+  "settings": { "mutation": { "maxTimeouts": 0 } }
+}
+```
+
+- `settings.mutation.maxTimeouts`: how many timeouts outside `expectedTimeouts` are tolerated. Above it the run fails with exit code 1 and lists every such mutant as `file:line:column / mutator / original → replacement`, with a fragment to paste. Not set means no limit, which is the 0.1.0 behaviour.
+- `expectedTimeouts` (per gate): mutants that turn a loop into one that never ends. Same key as `equivalentMutants` (`mutator` + `original` + `replacement`, `occurrence` when ambiguous, `reason` required).
+
+How an `expectedTimeouts` entry is judged:
+
+| The mutant is…           | Result                                              |
+| ------------------------ | --------------------------------------------------- |
+| `Timeout`                | Accepted, not counted against `maxTimeouts`         |
+| `Killed`                 | Accepted                                            |
+| `Survived`, `NoCoverage` | Failure: it is not a timeout at all, write the test |
+| not in this run          | Failure: stale entry, remove it                     |
+
+`Killed` is accepted on purpose, unlike a stale `equivalentMutants` entry. A mutant that hangs is reported as `Timeout` when Stryker's timer fires first and as `Killed` when the test runner's own per-test timeout fires first; which one wins depends on the load. Failing on `Killed` would make the list flap between two runs of the same code. And nothing is hidden by accepting it: `Killed` is the best possible outcome.
+
+When the limit is exceeded, first run again with less load (`npm run test:gates:mutation -- --concurrency 1`). Add an entry only for a mutant that can never finish.
+
 ### `test-gates selfcheck [--all | --first] [-- <gate command>]`
 
 Negative control. For each gate, runs the gate with that gate's spec left out and requires the run to **fail on the coverage threshold of that very file**. A gate that stays green without its spec measures nothing; a run that fails for another reason (a config that does not load) proves nothing either.
 
 The spec to leave out is passed in the environment variable `TEST_GATES_EXCLUDE_SPEC`. The config helpers read it. The gate command is `jest --config jest.gates.config.*` or `vitest run --config vitest.gates.config.*`, whichever config exists; override it with `settings.gateCommand` or after `--`. `--all` (default) checks every gate in turn, `--first` only the first.
+
+**When a gate imports another gate.** If `api-key-auth.ts` imports `safe-compare.ts` and both are gates, the spec of `api-key-auth` executes every line of `safe-compare` as well. Leaving out `safe-compare.spec.ts` then does not lower its coverage, and `selfcheck` fails for `safe-compare` ("the gate passed although the spec … was left out"), naming the importing gate in a hint. The coverage floor of `safe-compare` is being held up by somebody else's spec. Fix it in the importer's spec: mock the imported gate and assert **how it is called**, so that each spec covers only its own gate:
+
+```ts
+jest.mock('./safe-compare');
+// …
+expect(safeCompare).toHaveBeenCalledWith(presentedKey, storedKey); // right arguments, right order
+```
 
 ### `test-gates lcov --file <lcov.info>`
 
@@ -241,6 +300,24 @@ For stacks without mutation testing (Flutter / Dart): requires `LH == LF` for ev
 ```bash
 flutter test --coverage && npx test-gates lcov --file coverage/lcov.info
 ```
+
+Settings for a Dart package that uses only `lcov`:
+
+```json
+{
+  "gates": [{ "path": "lib/models/coupon.dart", "decides": "…", "impact": "…" }],
+  "candidates": [],
+  "settings": {
+    "gateExtensions": [".dart"],
+    "spec": { "suffixes": [] },
+    "lcov": { "file": "coverage/lcov.info", "summaryExclude": ["\\.g\\.dart$", "lib/l10n/"] }
+  }
+}
+```
+
+Do not run `test-gates check` on such a manifest: Dart annotations such as `@JsonSerializable()` look like decorators to it.
+
+Lines are counted from the `DA:` entries, not taken from `LH:` / `LF:`. A tracefile whose `LH:` was edited but whose `DA:` lines still show an unexecuted line fails; `LH:` / `LF:` are only used for a record that has no `DA:` entry at all.
 
 ## Allowing an equivalent mutant
 
@@ -273,25 +350,28 @@ Expected values in the tests come from the specification, not from the implement
 
 All optional. Patterns are regular expressions written as JSON strings; a rule is either a string or `{ "pattern", "flags", "reason" }`. An unknown key is an error (exit code 2), so a typo cannot silently fall back to a default.
 
-| Setting                    | Default                                                      | Purpose                                                                                                                              |
-| -------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `gateExtensions`           | `.ts .mts .cts .js .mjs .cjs`                                | Extensions a gate may have                                                                                                           |
-| `spec.suffixes`            | `.spec<ext>` and `.test<ext>` of the gate                    | Replaces the gate's extension to form the spec path. Exactly one must exist. `[]` means no spec convention (spec checks are skipped) |
-| `spec.rewrite`             | none                                                         | `[{ "from", "to" }]` applied to the gate path first, for specs in another directory (`^app/` → `tests/`)                             |
-| `impureImports.defaults`   | `true`                                                       | Built-in list, see below                                                                                                             |
-| `impureImports.add`        | none                                                         | More module patterns a gate must not import at runtime                                                                               |
-| `impureImports.allow`      | none                                                         | Module patterns exempt from every rule (e.g. `^express$` where `express` is imported only for its types without `import type`)       |
-| `impureNamedImports`       | `PrismaClient` from `@prisma/client`                         | `{ "defaults", "add": [{ "module", "names", "reason" }] }`: names banned from a module that is otherwise fine                        |
-| `impurePaths`              | `.vue` `.jsx` `.tsx`, `.d.ts`                                | `{ "defaults", "add" }`: gate paths that are rejected (`\\.service\\.ts$`, `^src/hooks/`)                                            |
-| `forbiddenSource`          | `'use client'` / `'use server'`                              | `{ "defaults", "add" }`: lines that must not appear in a gate, tested one line at a time                                             |
-| `importAliases`            | none                                                         | `[{ "prefix": "@/", "target": "src/" }]`, to recognise `jest.mock('@/x')` of the module under test                                   |
-| `gateCommand`              | derived from `jest.gates.config.*` / `vitest.gates.config.*` | Command `selfcheck` runs, as an array (`["jest", "--config", "jest.gates.config.js", "--maxWorkers=2"]`)                             |
-| `selfcheck.mode`           | `all`                                                        | `all` or `first`                                                                                                                     |
-| `selfcheck.failurePattern` | a threshold message on a line naming the gate                | Regular expression the failing run's output must match; `{gate}` stands for the gate path                                            |
-| `stryker.configFile`       | `stryker.gates.config.mjs` (`.js`, `.cjs`, `.json`)          | Stryker config                                                                                                                       |
-| `stryker.reportFile`       | `reports/mutation/mutation.json`                             | Where the JSON report is written (by the helper) and read (by the judge)                                                             |
-| `lcov.file`                | none                                                         | Tracefile for `test-gates lcov` when `--file` is not given                                                                           |
-| `lcov.summaryExclude`      | none                                                         | Paths left out of the reference total (`\\.g\\.dart$`)                                                                               |
+| Setting                        | Default                                                      | Purpose                                                                                                                                              |
+| ------------------------------ | ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `gateExtensions`               | `.ts .mts .cts .js .mjs .cjs`                                | Extensions a gate may have                                                                                                                           |
+| `spec.suffixes`                | `.spec<ext>` and `.test<ext>` of the gate                    | Replaces the gate's extension to form the spec path. Exactly one must exist. `[]` means no spec convention (spec checks are skipped)                 |
+| `spec.rewrite`                 | none                                                         | `[{ "from", "to" }]` applied to the gate path first, for specs in another directory (`^app/` → `tests/`)                                             |
+| `impureImports.defaults`       | `true`                                                       | Built-in list, see below                                                                                                                             |
+| `impureImports.add`            | none                                                         | More module patterns a gate must not import at runtime                                                                                               |
+| `impureImports.allow`          | none                                                         | Module patterns exempt from every rule (e.g. `^express$` where `express` is imported only for its types without `import type`)                       |
+| `impureNamedImports`           | `PrismaClient` from `@prisma/client`                         | `{ "defaults", "add": [{ "module", "names", "reason" }] }`: names banned from a module that is otherwise fine                                        |
+| `impurePaths`                  | `.vue` `.jsx` `.tsx`, `.d.ts`                                | `{ "defaults", "add" }`: gate paths that are rejected (`\\.service\\.ts$`, `^src/hooks/`)                                                            |
+| `forbiddenSource`              | `'use client'` / `'use server'`                              | `{ "defaults", "add" }`: lines that must not appear in a gate, tested one line at a time                                                             |
+| `importAliases`                | none                                                         | `[{ "prefix": "@/", "target": "src/" }]`, to recognise `jest.mock('@/x')` of the module under test                                                   |
+| `gateCommand`                  | derived from `jest.gates.config.*` / `vitest.gates.config.*` | Command `selfcheck` runs, as an array (`["jest", "--config", "jest.gates.config.js", "--maxWorkers=2"]`)                                             |
+| `selfcheck.mode`               | `all`                                                        | `all` or `first`                                                                                                                                     |
+| `selfcheck.failurePattern`     | a threshold message on a line naming the gate                | Regular expression the failing run's output must match; `{gate}` stands for the gate path                                                            |
+| `stryker.configFile`           | `stryker.gates.config.mjs` (`.js`, `.cjs`, `.json`)          | Stryker config                                                                                                                                       |
+| `stryker.reportFile`           | `reports/mutation/mutation.json`                             | Where the JSON report is written (by the helper) and read (by the judge)                                                                             |
+| `lcov.file`                    | none                                                         | Tracefile for `test-gates lcov` when `--file` is not given                                                                                           |
+| `lcov.summaryExclude`          | none                                                         | Paths left out of the reference total (`\\.g\\.dart$`)                                                                                               |
+| `imports.mode` (0.2.0)         | `blocklist`                                                  | `allowlist` turns the import check around, see [Allowlist mode](#allowlist-mode)                                                                     |
+| `imports.allow` (0.2.0)        | none                                                         | Packages a gate may import in allowlist mode: `"decimal.js"`, `{ "pattern": "^@acme/pure-" }`, `{ "module": "@prisma/client", "names": ["Prisma"] }` |
+| `mutation.maxTimeouts` (0.2.0) | none (no limit)                                              | Timeouts tolerated outside `expectedTimeouts`, see [Timeouts](#timeouts)                                                                             |
 
 Built-in impure imports: `@nestjs/*`, `class-validator`, `class-transformer`, `typeorm`, `sequelize`, `mongoose`, `knex`, `pg`, `mysql`, `mysql2`, `ioredis`, `redis`, `@prisma/adapter-*`, `react`, `react-dom`, `next`, `server-only`, `client-only`, `vue`, `vue-router`, `vue-i18n`, `pinia`, `nuxt`, `#app`, `#imports`, `*.vue`, `express`, `express-jwt`, `fastify`, `koa`, `rxjs`, `passport`, `passport-*`, `axios`, `openapi-fetch`, `stripe`, `nodemailer`, `firebase-admin`, `@aws-sdk/*`, `@sentry/*`, `@slack/*`, `@stripe/*`, and the Node.js modules `fs`, `http`, `https`, `http2`, `net`, `tls`, `dgram`, `dns`, `child_process`, `worker_threads`.
 
@@ -325,6 +405,38 @@ Project-specific layers go into `add`:
 }
 ```
 
+### Allowlist mode
+
+The default import check is a blocklist: it knows the frameworks and SDKs listed above, and a new SDK passes until somebody adds it. `settings.imports.mode: "allowlist"` (since 0.2.0) turns it around. A gate may then import at runtime only
+
+- relative paths and paths through `importAliases` (the project's own files),
+- what `settings.imports.allow` lists,
+- anything with `import type` (types leave no trace at runtime).
+
+Everything else is a violation, including Node.js built-ins (`fs` and `node:fs` alike; list `node:path` if a gate needs it) and a `require()` / `import()` whose argument is not a string literal.
+
+```json
+{
+  "settings": {
+    "importAliases": [{ "prefix": "@/", "target": "src/" }],
+    "imports": {
+      "mode": "allowlist",
+      "allow": ["decimal.js", "date-fns", { "module": "@prisma/client", "names": ["Prisma"] }]
+    }
+  }
+}
+```
+
+- A string is a package name and covers its subpaths (`date-fns`, `date-fns/locale`).
+- `{ "pattern" }` is a regular expression tested against the whole specifier.
+- `{ "module", "names" }` allows only those names, and only as named imports. `import { Prisma } from '@prisma/client'` passes; `import { PrismaClient }`, a default import, `import * as` and `require()` do not.
+
+The blocklist stays in force underneath. A project file is not safe just because it is relative: `./user.service` is still rejected by an `impureImports` pattern, and in allowlist mode also when the file it points at matches `impurePaths` (a service, a component). `impureImports.allow` (exempt a module from the blocklist) and `imports.allow` (the list of permitted packages) are different settings.
+
+What it does not do: follow the imports. Only the gate's own import statements are read. If `./rates` is allowed and `rates.ts` itself imports a database client, that is not noticed unless `rates.ts` is a gate too. A transitive check would need real module resolution (extensionless imports, `index` files, `paths` of tsconfig, package `exports`), and a resolver that guesses wrong reports violations that are not there. It was left out for that reason; register the imported file as a gate when it matters.
+
+A manifest that uses `settings.imports` or `settings.mutation` needs 0.2.0 or later: 0.1.0 rejects unknown settings.
+
 ## Config helpers
 
 ```ts
@@ -350,6 +462,60 @@ Why these choices:
 
 `loadGates(dir)` returns the validated manifest: `gates` (each with its resolved `spec`), `candidates` and the resolved `settings`. It throws when the manifest has any problem.
 
+## Vitest: v8 or istanbul
+
+The Jest helper forces istanbul. The Vitest helper defaults to `v8`, and whether that is as strict depends on the Vitest version. Measured with one module per construct and a test that takes only one side; "found" means branches were reported below 100%:
+
+| Only one side tested                         | Vitest 3.2.7 v8 | 3.2.7 v8 + `experimentalAstAwareRemapping` | 3.2.7 istanbul | Vitest 4.1.11 v8 | 4.1.11 istanbul |
+| -------------------------------------------- | --------------- | ------------------------------------------ | -------------- | ---------------- | --------------- |
+| `if (a) { … }` without `else`, never skipped | **missed**      | found                                      | found          | found            | found           |
+| `if (!a) return …` (early return)            | found           | found                                      | found          | found            | found           |
+| `a ? x : y`                                  | found           | found                                      | found          | found            | found           |
+| `a ?? b`                                     | found           | found                                      | found          | found            | found           |
+| `a && f()` with `a` always false             | found           | found                                      | found          | found            | found           |
+| default parameter `(a = 3)`, always passed   | **missed**      | **missed**                                 | found          | **missed**       | found           |
+| `o?.y` with `o` always undefined             | found           | not a branch                               | not a branch   | not a branch     | not a branch    |
+
+So the asymmetry is real on Vitest 3: with the default v8 provider a gate can show 100% branches while the skipped side of an `if` was never tested. Vitest 4 closes that gap; an unused default parameter is still only seen by istanbul. The mutation test catches both cases anyway (a mutant in untested code survives), but the floor should not have a hole in it.
+
+Recommended: istanbul for the gate run.
+
+```bash
+npm install -D @vitest/coverage-istanbul   # same major version as vitest
+```
+
+```ts
+export default defineConfig(
+  createVitestGatesConfig({ rootDir: import.meta.url, coverageProvider: 'istanbul' })
+);
+```
+
+The default stays `v8` because changing it would break every project that has only `@vitest/coverage-v8` installed. Instead `test-gates check` prints a warning (the exit code does not change) when it finds a `vitest.gates.config.*`, an installed Vitest below 4, and neither `istanbul` nor `experimentalAstAwareRemapping: true` in that config.
+
+## Cost, and how to use Stryker's incremental mode
+
+Mutation testing is the expensive step. Numbers for this repository's own gates:
+
+| Run                                               | Machine                                              | Time       |
+| ------------------------------------------------- | ---------------------------------------------------- | ---------- |
+| 6 gates, about 1,000 lines, 809 mutants, full run | an outside evaluator's machine (not specified)       | 4 min 24 s |
+| the same 6 gates, 809 mutants, full run           | Apple M2 Max (12 cores), Node 22.22, `concurrency 2` | 41 s       |
+| 8 gates, 1,136 lines, 1,021 mutants, full run     | same machine, other jobs running                     | 1 min 19 s |
+| the same, incremental, nothing changed            | same machine                                         | 8–15 s     |
+
+The time grows with the number of mutants and depends heavily on cores and on `concurrency`. Twenty gates of this size on a slow machine are well past ten minutes for a full run. The setup that has held up in practice:
+
+- **pre-push: incremental.** `test-gates mutation` as is. Stryker's incremental file (`reports/stryker-incremental.json`, not committed) makes the second and later runs take seconds; the first run after a clone is a full one.
+- **CI: full.** `npm run test:gates:mutation -- --force`. CI has no incremental file to start from anyway, and the full run is the one that counts.
+- If even CI is too slow, split by subproject (each has its own `test-gates.json`) before you think about sampling.
+
+How the incremental file and this tool interact (covered by `test/incremental.test.ts`, which runs a real Stryker):
+
+- `test-gates mutation` deletes the JSON **report** before each run. It does not touch the incremental file; they are different files.
+- A run in which every result is reused still writes a complete JSON report, and the verdict is the same as that of the run it reuses.
+- **A stale "Survived" can be reused.** After adding a test that kills a _static_ mutant (code that runs when the module is loaded, such as a module-level constant), the incremental run kept reporting the mutant as survived; `--force` reported it killed. The error is on the safe side, a failure that is not real, never a pass that is not real. When a survivor makes no sense after you fixed the test, run once with `-- --force`.
+- **After removing a gate, its old results stay in the incremental file** and come back in the report. They are ignored: only the gates of `test-gates.json` are judged. Delete the incremental file (or run with `--force`) when you change the list of gates, so that it does not carry files that are no longer mutated.
+
 ## Limitations and things measured
 
 - **A file with decorators cannot reach 100% branches under Jest.** The type metadata emitted for decorators contains inline conditionals (`typeof X === "undefined" ? Object : X`) that no test can take both ways. That is why decorated files are rejected as gates instead of being given a lower threshold.
@@ -360,6 +526,10 @@ Why these choices:
 - **Imports are found by text, not by parsing.** The checks run without the project's dependencies installed, so an import inside a comment is reported too, and only the gate's own imports are looked at, not what those modules import in turn.
 - **An ordinary `import { Request } from 'express'` used only as a type is reported.** Write `import type`, or exempt the module with `impureImports.allow`.
 - **`test-gates lcov` checks lines only.** lcov from Flutter carries no branch data, and Dart has no established mutation testing tool; a Dart gate is guarded by coverage alone.
+- **knip reports the Stryker runner as unused** once no npm script calls `stryker run` directly. Tell knip where the config is: `"stryker": { "config": ["stryker.gates.config.mjs"] }` in `knip.json`.
+- **A directory or worktree whose name contains `test-`** (for example a checkout called `test-gates-migration`) makes `@darraghor/eslint-plugin-nestjs-typed` treat every file as a test file, because it matches the whole path against a test pattern. Not caused by this package, but a name like that is easy to choose while adopting it.
+- **A comment line that starts with `@t09tanaka/…`** in a config file can be read by ESLint's JSDoc rules as a tag. Put the package name in the middle of the sentence.
+- **Vitest 4's `text` reporter can print only the summary line** and no per-file table for the gate run. The thresholds and the negative control still work.
 - **The checks do not judge what belongs in `gates`.** Whether every important decision has been extracted and registered is for people to review; `candidates` is where the known gaps are written down.
 
 ## License
