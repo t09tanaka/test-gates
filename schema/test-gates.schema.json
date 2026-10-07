@@ -1,0 +1,272 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/t09tanaka/sekisho/blob/main/schema/test-gates.schema.json",
+  "title": "test-gates.json",
+  "description": "The single source of truth for the test gates of one subproject (@t09tanaka/sekisho).",
+  "type": "object",
+  "required": ["gates"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "gates": {
+      "description": "Pure modules that hold an important decision. Each must reach 100% on all four coverage metrics and leave no surviving mutant outside its allow list.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/gate" }
+    },
+    "candidates": {
+      "description": "Important logic that cannot be a gate yet. Nothing is enforced for these beyond their existence.",
+      "type": "array",
+      "items": { "$ref": "#/definitions/candidate" }
+    },
+    "settings": { "$ref": "#/definitions/settings" }
+  },
+  "definitions": {
+    "nonEmptyString": { "type": "string", "minLength": 1, "pattern": "\\S" },
+    "gate": {
+      "type": "object",
+      "required": ["path", "decides", "impact"],
+      "additionalProperties": true,
+      "properties": {
+        "path": {
+          "description": "Path of the module, relative to the subproject, with forward slashes.",
+          "$ref": "#/definitions/nonEmptyString"
+        },
+        "decides": {
+          "description": "What this module decides.",
+          "$ref": "#/definitions/nonEmptyString"
+        },
+        "impact": {
+          "description": "What goes wrong for users or the business when the decision is wrong.",
+          "$ref": "#/definitions/nonEmptyString"
+        },
+        "equivalentMutants": {
+          "description": "Surviving mutants that are allowed because they cannot be observed from outside. One entry allows exactly one mutant.",
+          "type": "array",
+          "items": { "$ref": "#/definitions/equivalentMutant" }
+        }
+      }
+    },
+    "equivalentMutant": {
+      "type": "object",
+      "required": ["mutator", "original", "replacement", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "mutator": {
+          "description": "Stryker mutator name, e.g. ConditionalExpression.",
+          "$ref": "#/definitions/nonEmptyString"
+        },
+        "original": {
+          "description": "The source text the mutant replaces. Whitespace differences are ignored.",
+          "$ref": "#/definitions/nonEmptyString"
+        },
+        "replacement": {
+          "description": "The text Stryker puts in its place. May be empty.",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why no input can make the mutant observable.",
+          "$ref": "#/definitions/nonEmptyString"
+        },
+        "occurrence": {
+          "description": "1-based index among the mutants of the file with the same mutator, original and replacement. Required when there is more than one.",
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "required": ["path", "decides", "blocker"],
+      "additionalProperties": true,
+      "properties": {
+        "path": {
+          "description": "File or directory, relative to the subproject.",
+          "$ref": "#/definitions/nonEmptyString"
+        },
+        "decides": { "$ref": "#/definitions/nonEmptyString" },
+        "blocker": {
+          "description": "What has to happen before this can become a gate.",
+          "$ref": "#/definitions/nonEmptyString"
+        }
+      }
+    },
+    "patternRule": {
+      "description": "A regular expression, either as a string or with flags and a reason.",
+      "oneOf": [
+        { "$ref": "#/definitions/nonEmptyString" },
+        {
+          "type": "object",
+          "required": ["pattern"],
+          "additionalProperties": false,
+          "properties": {
+            "pattern": { "$ref": "#/definitions/nonEmptyString" },
+            "flags": { "type": "string" },
+            "reason": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "ruleList": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "defaults": {
+          "description": "Set to false to drop the built-in rules.",
+          "type": "boolean",
+          "default": true
+        },
+        "add": { "type": "array", "items": { "$ref": "#/definitions/patternRule" } }
+      }
+    },
+    "settings": {
+      "description": "Per-project conventions. Everything is optional.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "gateExtensions": {
+          "description": "File extensions a gate may have.",
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "pattern": "^\\." },
+          "default": [".ts", ".mts", ".cts", ".js", ".mjs", ".cjs"]
+        },
+        "spec": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "suffixes": {
+              "description": "Replaces the gate's extension to form the spec path. Default: \".spec<ext>\" and \".test<ext>\". An empty array means the project has no spec convention.",
+              "type": "array",
+              "items": { "$ref": "#/definitions/nonEmptyString" }
+            },
+            "rewrite": {
+              "description": "Regular expression replacements applied to the gate path before the suffix, for specs that live in another directory.",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["from", "to"],
+                "additionalProperties": false,
+                "properties": {
+                  "from": { "$ref": "#/definitions/nonEmptyString" },
+                  "to": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "impureImports": {
+          "description": "Modules a gate must not import at runtime (regular expressions tested against the module specifier). `import type` is never checked.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "defaults": { "type": "boolean", "default": true },
+            "add": { "type": "array", "items": { "$ref": "#/definitions/patternRule" } },
+            "allow": {
+              "description": "Module specifiers exempt from every rule (regular expressions).",
+              "type": "array",
+              "items": { "$ref": "#/definitions/nonEmptyString" }
+            }
+          }
+        },
+        "impureNamedImports": {
+          "description": "Names a gate must not import from a module that is otherwise fine. Default: PrismaClient from @prisma/client.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "defaults": { "type": "boolean", "default": true },
+            "add": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["module", "names"],
+                "additionalProperties": false,
+                "properties": {
+                  "module": { "$ref": "#/definitions/nonEmptyString" },
+                  "names": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": { "$ref": "#/definitions/nonEmptyString" }
+                  },
+                  "reason": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "impurePaths": {
+          "description": "Gate paths that are rejected (regular expressions). Default: components and declaration files.",
+          "$ref": "#/definitions/ruleList"
+        },
+        "forbiddenSource": {
+          "description": "Lines that must not appear in a gate (regular expressions, tested one line at a time). Default: 'use client' / 'use server'.",
+          "$ref": "#/definitions/ruleList"
+        },
+        "importAliases": {
+          "description": "Import aliases, used to recognise a spec that mocks the module under test.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["prefix", "target"],
+            "additionalProperties": false,
+            "properties": {
+              "prefix": { "$ref": "#/definitions/nonEmptyString" },
+              "target": { "type": "string" }
+            }
+          }
+        },
+        "gateCommand": {
+          "description": "The command `sekisho selfcheck` runs. Default: `jest --config jest.gates.config.*` or `vitest run --config vitest.gates.config.*`, whichever config exists.",
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/nonEmptyString" }
+        },
+        "selfcheck": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "description": "Run the negative control for every gate, or only for the first.",
+              "enum": ["all", "first"],
+              "default": "all"
+            },
+            "failurePattern": {
+              "description": "Regular expression the output of the failing gate run must match. `{gate}` stands for the gate path. Default: a coverage threshold message on a line that names the gate.",
+              "$ref": "#/definitions/nonEmptyString"
+            }
+          }
+        },
+        "stryker": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "configFile": {
+              "description": "Default: stryker.gates.config.mjs (.js / .cjs / .json).",
+              "$ref": "#/definitions/nonEmptyString"
+            },
+            "reportFile": {
+              "description": "Where the Stryker JSON report is written and read.",
+              "$ref": "#/definitions/nonEmptyString",
+              "default": "reports/mutation/mutation.json"
+            }
+          }
+        },
+        "lcov": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "file": {
+              "description": "Tracefile for `sekisho lcov` when --file is not given.",
+              "$ref": "#/definitions/nonEmptyString"
+            },
+            "summaryExclude": {
+              "description": "Paths left out of the reference total (regular expressions).",
+              "type": "array",
+              "items": { "$ref": "#/definitions/nonEmptyString" }
+            }
+          }
+        }
+      }
+    }
+  }
+}
