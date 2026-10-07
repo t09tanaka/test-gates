@@ -102,7 +102,8 @@ export function scanGateSource(
     }
   }
 
-  return violations.sort((a, b) => (a.line ?? 0) - (b.line ?? 0));
+  // Every finding of a source scan has a line.
+  return violations.sort((a, b) => (a.line as number) - (b.line as number));
 }
 
 function resolveSpecifier(
@@ -180,7 +181,8 @@ export function scanSpecSource(
     }
   }
 
-  return violations.sort((a, b) => (a.line ?? 0) - (b.line ?? 0));
+  // Every finding of a source scan has a line.
+  return violations.sort((a, b) => (a.line as number) - (b.line as number));
 }
 
 /** Settings that would let a Stryker config skip mutants without an allowance. */
