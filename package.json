@@ -1,6 +1,6 @@
 {
   "name": "@t09tanaka/test-gates",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Test gates for the code that must not be wrong: per-file 100% coverage as the floor, mutation testing with a per-mutant allow list as the real check.",
   "author": "t09tanaka",
   "license": "MIT",
@@ -76,7 +76,8 @@
   },
   "files": [
     "dist",
-    "schema"
+    "schema",
+    "CHANGELOG.md"
   ],
   "engines": {
     "node": ">=20"
@@ -103,7 +104,8 @@
   "peerDependencies": {
     "@stryker-mutator/core": ">=9",
     "jest": ">=29",
-    "vitest": ">=3"
+    "vitest": ">=3",
+    "@vitest/coverage-istanbul": ">=3"
   },
   "peerDependenciesMeta": {
     "@stryker-mutator/core": {
@@ -113,6 +115,9 @@
       "optional": true
     },
     "vitest": {
+      "optional": true
+    },
+    "@vitest/coverage-istanbul": {
       "optional": true
     }
   },
