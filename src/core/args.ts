@@ -59,7 +59,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     parsed.command = first as Command;
     index = 1;
   }
-  const allowed = parsed.command ? OPTIONS_BY_COMMAND[parsed.command] : [];
+  const allowed = parsed.command ? OPTIONS_BY_COMMAND[parsed.command] : undefined;
 
   while (index < argv.length) {
     const arg = argv[index] as string;
@@ -82,8 +82,8 @@ export function parseArgs(argv: string[]): ParsedArgs {
     }
 
     const equals = arg.indexOf('=');
-    const name = arg.startsWith('--') && equals !== -1 ? arg.slice(0, equals) : arg;
-    if (allowed.includes(name)) {
+    const name = equals !== -1 ? arg.slice(0, equals) : arg;
+    if (allowed?.includes(name)) {
       if (VALUE_OPTIONS.includes(name)) {
         let value: string | undefined;
         if (equals !== -1) {

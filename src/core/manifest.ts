@@ -21,6 +21,34 @@ function isFilled(value: unknown): value is string {
   return typeof value === 'string' && value.trim() !== '';
 }
 
+/** What is wrong with one allowance. Empty when it can be used for matching. */
+function allowanceProblems(entry: unknown): string[] {
+  if (!isRecord(entry)) {
+    return [' must be an object'];
+  }
+  const problems: string[] = [];
+  if (!isFilled(entry.mutator)) {
+    problems.push(': "mutator" is missing');
+  }
+  if (!isFilled(entry.original)) {
+    problems.push(': "original" is missing');
+  }
+  // An empty replacement is real: StringLiteral mutates "abc" to "".
+  if (typeof entry.replacement !== 'string') {
+    problems.push(': "replacement" is missing');
+  }
+  if (!isFilled(entry.reason)) {
+    problems.push(': "reason" is missing (say why the mutant cannot be observed)');
+  }
+  if (
+    entry.occurrence !== undefined &&
+    !(Number.isInteger(entry.occurrence) && (entry.occurrence as number) >= 1)
+  ) {
+    problems.push(': "occurrence" must be an integer >= 1');
+  }
+  return problems;
+}
+
 /**
  * Checks the allow list of one gate. `reason` is mandatory: an allowance nobody can justify
  * is a mutant nobody checked.
@@ -29,46 +57,20 @@ export function validateEquivalentMutants(gatePath: string, value: unknown): Vio
   if (value === undefined) {
     return [];
   }
-  const file = MANIFEST_FILE;
   if (!Array.isArray(value)) {
-    return [{ file, message: `${gatePath}: equivalentMutants must be an array` }];
+    return [{ file: MANIFEST_FILE, message: `${gatePath}: equivalentMutants must be an array` }];
   }
-  const violations: Violation[] = [];
-  value.forEach((entry: unknown, index: number) => {
-    const at = `${gatePath}: equivalentMutants[${index}]`;
-    if (!isRecord(entry)) {
-      violations.push({ file, message: `${at} must be an object` });
-      return;
-    }
-    if (!isFilled(entry.mutator)) {
-      violations.push({ file, message: `${at}: "mutator" is missing` });
-    }
-    if (!isFilled(entry.original)) {
-      violations.push({ file, message: `${at}: "original" is missing` });
-    }
-    // An empty replacement is real: StringLiteral mutates "abc" to "".
-    if (typeof entry.replacement !== 'string') {
-      violations.push({ file, message: `${at}: "replacement" is missing` });
-    }
-    if (!isFilled(entry.reason)) {
-      violations.push({
-        file,
-        message: `${at}: "reason" is missing (say why the mutant cannot be observed)`,
-      });
-    }
-    if (
-      entry.occurrence !== undefined &&
-      !(Number.isInteger(entry.occurrence) && (entry.occurrence as number) >= 1)
-    ) {
-      violations.push({ file, message: `${at}: "occurrence" must be an integer >= 1` });
-    }
-  });
-  return violations;
+  return value.flatMap((entry: unknown, index: number) =>
+    allowanceProblems(entry).map((problem) => ({
+      file: MANIFEST_FILE,
+      message: `${gatePath}: equivalentMutants[${index}]${problem}`,
+    }))
+  );
 }
 
 /** True when every field of the allowance is usable for matching. */
 export function isUsableEquivalentMutant(entry: unknown): entry is EquivalentMutant {
-  return validateEquivalentMutants('', [entry]).length === 0;
+  return allowanceProblems(entry).length === 0;
 }
 
 function parseEntries<T extends { path: string }>(

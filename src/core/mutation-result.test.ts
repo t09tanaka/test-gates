@@ -89,6 +89,21 @@ describe('sliceByLocation', () => {
     ).toBe('ne\nt');
   });
 
+  it('accepts a range that starts at column 1 and one that ends at column 1 of a later line', () => {
+    expect(
+      sliceByLocation('abc', { start: { line: 1, column: 1 }, end: { line: 1, column: 3 } })
+    ).toBe('ab');
+    expect(
+      sliceByLocation('one\ntwo', { start: { line: 1, column: 2 }, end: { line: 2, column: 1 } })
+    ).toBe('ne\n');
+  });
+
+  it('returns null for a multi-line range that ends at column 0', () => {
+    expect(
+      sliceByLocation('one\ntwo', { start: { line: 1, column: 2 }, end: { line: 2, column: 0 } })
+    ).toBeNull();
+  });
+
   it('returns an empty string for an empty range', () => {
     expect(
       sliceByLocation('abc', { start: { line: 1, column: 2 }, end: { line: 1, column: 2 } })
@@ -201,7 +216,7 @@ describe('judgeMutationReport: status handling', () => {
         file: GATE_PATH,
         line: 1,
         message:
-          'a EqualityOperator mutant was ignored. Stryker disable comments and mutator exclusions are not allowed',
+          'a EqualityOperator mutant was ignored. Taking mutants out with Stryker comments or mutator exclusions is not allowed',
       },
     ]);
     expect(verdict.summary.total).toBe(2);
@@ -537,6 +552,20 @@ describe('judgeMutationReport: the report itself', () => {
     });
     expect(verdict.violations).toEqual([]);
     expect(verdict.summary.detected).toBe(1);
+  });
+
+  it('drops only a leading ./ when comparing paths', () => {
+    const verdict = judgeMutationReport({
+      gates: [gate()],
+      report: {
+        files: { 'src/./age.ts': { source: SOURCE, mutants: [firstComparison('Killed')] } },
+      },
+      readSource: () => SOURCE,
+    });
+    expect(verdict.violations[0]).toEqual({
+      file: GATE_PATH,
+      message: 'no mutants in the report (the gate was not mutation tested)',
+    });
   });
 
   it('reads the source from disk when the report has none', () => {

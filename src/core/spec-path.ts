@@ -4,13 +4,14 @@ type SpecSettings = Pick<ResolvedSettings, 'gateExtensions' | 'specSuffixes' | '
 
 /** The configured gate extension `gatePath` ends with (longest wins), or null. */
 export function gateExtensionOf(gatePath: string, gateExtensions: string[]): string | null {
-  let found: string | null = null;
-  for (const extension of gateExtensions) {
-    if (gatePath.endsWith(extension) && (found === null || extension.length > found.length)) {
-      found = extension;
-    }
-  }
-  return found;
+  const matching = gateExtensions
+    .filter((extension) => gatePath.endsWith(extension))
+    .sort((a, b) => b.length - a.length);
+  return matching[0] ?? null;
+}
+
+function suffixesFor(extension: string, settings: SpecSettings): string[] {
+  return settings.specSuffixes ?? [`.spec${extension}`, `.test${extension}`];
 }
 
 /**
@@ -29,16 +30,14 @@ export function specCandidatesFor(gatePath: string, settings: SpecSettings): str
   for (const { regex, to } of settings.specRewrite) {
     base = base.replace(regex, to);
   }
-  const suffixes = settings.specSuffixes ?? [`.spec${extension}`, `.test${extension}`];
-  return suffixes.map((suffix) => base + suffix);
+  return suffixesFor(extension, settings).map((suffix) => base + suffix);
 }
 
-/** True when `gatePath` is itself named like a spec. */
+/** True when `gatePath` is a gate extension and is itself named like a spec. */
 export function looksLikeSpec(gatePath: string, settings: SpecSettings): boolean {
   const extension = gateExtensionOf(gatePath, settings.gateExtensions);
-  if (extension === null) {
-    return false;
-  }
-  const suffixes = settings.specSuffixes ?? [`.spec${extension}`, `.test${extension}`];
-  return suffixes.some((suffix) => gatePath.endsWith(suffix));
+  return (
+    extension !== null &&
+    suffixesFor(extension, settings).some((suffix) => gatePath.endsWith(suffix))
+  );
 }

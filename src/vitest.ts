@@ -1,4 +1,4 @@
-import { gateSpecs, loadGates } from './load.js';
+import { gateSpecs, loadGates, NO_SPEC_PATTERN } from './load.js';
 import { FULL_COVERAGE, resolveRootDir } from './shared.js';
 
 export interface VitestGatesOptions {
@@ -22,6 +22,7 @@ export function createVitestGatesConfig(options: VitestGatesOptions = {}): Recor
   const rootDir = resolveRootDir(rootDirOption);
   const manifest = loadGates(rootDir);
   const { coverage = {}, ...testOverrides } = test;
+  const specs = gateSpecs(manifest);
 
   return {
     ...overrides,
@@ -29,7 +30,7 @@ export function createVitestGatesConfig(options: VitestGatesOptions = {}): Recor
     test: {
       environment: 'node',
       ...testOverrides,
-      include: gateSpecs(manifest),
+      include: specs.length > 0 ? specs : [NO_SPEC_PATTERN],
       // `sekisho selfcheck` leaves out the only spec of a single-gate project; the run must
       // then fail on the coverage threshold, not on "no test files found".
       passWithNoTests: true,

@@ -15,13 +15,14 @@ describe('parseLcov', () => {
     const coverage = parseLcov(
       `${record('lib/models/coupon.dart', [
         [3, 1],
-        [4, 0],
+        [12, 0],
         [9, 5],
         [7, 0],
+        [10, 0],
       ])}\n`
     );
     expect([...coverage.entries()]).toEqual([
-      ['lib/models/coupon.dart', { found: 4, hit: 2, uncovered: [4, 7] }],
+      ['lib/models/coupon.dart', { found: 5, hit: 2, uncovered: [7, 10, 12] }],
     ]);
   });
 
@@ -60,6 +61,17 @@ describe('parseLcov', () => {
       'SF:lib/a.dart\nLF:10\nLH:7\nend_of_record\nSF:lib/a.dart\nLF:2\nLH:2\nend_of_record\n'
     );
     expect(coverage.get('lib/a.dart')).toEqual({ found: 12, hit: 9, uncovered: [] });
+  });
+
+  it('keeps the totals of a DA-less record that is cut short by the next SF or by the end of the file', () => {
+    const coverage = parseLcov('SF:lib/a.dart\nLF:2\nLH:1\nSF:lib/b.dart\nLF:3\nLH:3');
+    expect(coverage.get('lib/a.dart')).toEqual({ found: 2, hit: 1, uncovered: [] });
+    expect(coverage.get('lib/b.dart')).toEqual({ found: 3, hit: 3, uncovered: [] });
+  });
+
+  it('reads LF / LH only from lines that start with LF: / LH:', () => {
+    const coverage = parseLcov('SF:lib/a.dart\nLF:4\nLH:3\nBRF:0\nBRH:0\nXX:9\nend_of_record\n');
+    expect(coverage.get('lib/a.dart')).toEqual({ found: 4, hit: 3, uncovered: [] });
   });
 
   it('does not count LF / LH twice when the record has DA entries', () => {
@@ -104,6 +116,7 @@ describe('parseLcov', () => {
       '/work/application/lib/b.dart',
       '/elsewhere/lib/c.dart',
     ]);
+    expect([...parseLcov(text, '/work/app//').keys()][0]).toBe('lib/a.dart');
     expect([...parseLcov(text, 'C:\\work\\app').keys()]).toEqual([
       '/work/app/lib/a.dart',
       '/work/application/lib/b.dart',
@@ -112,37 +125,51 @@ describe('parseLcov', () => {
     expect([...parseLcov(text).keys()][0]).toBe('/work/app/lib/a.dart');
   });
 
+  it('makes Windows paths under a Windows rootDir relative', () => {
+    const text = record('C:\\work\\app\\lib\\a.dart', [[1, 1]]);
+    expect([...parseLcov(text, 'C:\\work\\app').keys()]).toEqual(['lib/a.dart']);
+    expect([...parseLcov(text, 'C:\\work\\app\\').keys()]).toEqual(['lib/a.dart']);
+  });
+
+  it('drops only a leading ./', () => {
+    const text = [record('lib/./a.dart', [[1, 1]]), record('./lib/b.dart', [[1, 1]])].join('\n');
+    expect([...parseLcov(text).keys()]).toEqual(['lib/./a.dart', 'lib/b.dart']);
+  });
+
   it('returns nothing for an empty file', () => {
     expect(parseLcov('').size).toBe(0);
   });
 });
 
 describe('judgeLcov', () => {
-  const coverage = parseLcov(
-    [
-      record('lib/full.dart', [
-        [1, 1],
-        [2, 4],
-      ]),
-      record('lib/partial.dart', [
-        [1, 1],
-        [2, 0],
-        [5, 0],
-      ]),
-      'SF:lib/empty.dart\nLF:0\nLH:0\nend_of_record',
-      'SF:lib/totals-only.dart\nLF:4\nLH:3\nend_of_record',
-    ].join('\n')
-  );
+  // A function, not a constant: calling the gate while the file is being collected would make
+  // its mutants static.
+  const read = () =>
+    parseLcov(
+      [
+        record('lib/full.dart', [
+          [1, 1],
+          [2, 4],
+        ]),
+        record('lib/partial.dart', [
+          [1, 1],
+          [2, 0],
+          [5, 0],
+        ]),
+        'SF:lib/empty.dart\nLF:0\nLH:0\nend_of_record',
+        'SF:lib/totals-only.dart\nLF:4\nLH:3\nend_of_record',
+      ].join('\n')
+    );
 
   it('passes a gate whose every line is hit', () => {
-    expect(judgeLcov(['lib/full.dart'], coverage)).toEqual({
+    expect(judgeLcov(['lib/full.dart'], read())).toEqual({
       violations: [],
       results: [{ path: 'lib/full.dart', found: 2, hit: 2, ok: true }],
     });
   });
 
   it('fails a gate with an uncovered line and lists the lines', () => {
-    expect(judgeLcov(['lib/partial.dart'], coverage)).toEqual({
+    expect(judgeLcov(['lib/partial.dart'], read())).toEqual({
       violations: [
         { file: 'lib/partial.dart', line: 2, message: '1/3 lines covered (uncovered: 2, 5)' },
       ],
@@ -151,21 +178,21 @@ describe('judgeLcov', () => {
   });
 
   it('fails a gate that has no record', () => {
-    expect(judgeLcov(['lib/missing.dart'], coverage)).toEqual({
+    expect(judgeLcov(['lib/missing.dart'], read())).toEqual({
       violations: [{ file: 'lib/missing.dart', message: 'no record in the lcov file' }],
       results: [{ path: 'lib/missing.dart', found: 0, hit: 0, ok: false }],
     });
   });
 
   it('fails a gate whose record has no instrumented line', () => {
-    expect(judgeLcov(['lib/empty.dart'], coverage)).toEqual({
+    expect(judgeLcov(['lib/empty.dart'], read())).toEqual({
       violations: [{ file: 'lib/empty.dart', message: 'no instrumented lines in the lcov record' }],
       results: [{ path: 'lib/empty.dart', found: 0, hit: 0, ok: false }],
     });
   });
 
   it('fails on totals alone when the record has no line data', () => {
-    expect(judgeLcov(['lib/totals-only.dart'], coverage).violations).toEqual([
+    expect(judgeLcov(['lib/totals-only.dart'], read()).violations).toStrictEqual([
       { file: 'lib/totals-only.dart', message: '3/4 lines covered' },
     ]);
   });
@@ -180,11 +207,11 @@ describe('judgeLcov', () => {
   });
 
   it('accepts a gate path written with ./', () => {
-    expect(judgeLcov(['./lib/full.dart'], coverage).violations).toEqual([]);
+    expect(judgeLcov(['./lib/full.dart'], read()).violations).toEqual([]);
   });
 
   it('judges every gate and keeps their order', () => {
-    const verdict = judgeLcov(['lib/partial.dart', 'lib/full.dart', 'lib/missing.dart'], coverage);
+    const verdict = judgeLcov(['lib/partial.dart', 'lib/full.dart', 'lib/missing.dart'], read());
     expect(verdict.results.map((result) => [result.path, result.ok])).toEqual([
       ['lib/partial.dart', false],
       ['lib/full.dart', true],
@@ -207,22 +234,23 @@ describe('judgeLcov', () => {
 });
 
 describe('summarizeLcov', () => {
-  const coverage = parseLcov(
-    [
-      record('lib/a.dart', [
-        [1, 1],
-        [2, 0],
-      ]),
-      record('lib/a.g.dart', [[1, 0]]),
-      record('lib/l10n/x.dart', [[1, 1]]),
-    ].join('\n')
-  );
+  const read = () =>
+    parseLcov(
+      [
+        record('lib/a.dart', [
+          [1, 1],
+          [2, 0],
+        ]),
+        record('lib/a.g.dart', [[1, 0]]),
+        record('lib/l10n/x.dart', [[1, 1]]),
+      ].join('\n')
+    );
 
   it('sums every record', () => {
-    expect(summarizeLcov(coverage, [])).toEqual({ found: 4, hit: 2 });
+    expect(summarizeLcov(read(), [])).toEqual({ found: 4, hit: 2 });
   });
 
   it('leaves out the records that match an exclude pattern', () => {
-    expect(summarizeLcov(coverage, [/\.g\.dart$/, /lib\/l10n\//])).toEqual({ found: 2, hit: 1 });
+    expect(summarizeLcov(read(), [/\.g\.dart$/, /lib\/l10n\//])).toEqual({ found: 2, hit: 1 });
   });
 });

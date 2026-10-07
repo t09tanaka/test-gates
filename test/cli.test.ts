@@ -146,7 +146,7 @@ describe('sekisho check', () => {
       'test-gates.json: src/noimpact.ts: "impact" is missing in gates',
       'test-gates.json: src/age.ts: listed twice in gates',
       'test-gates.json: src/guard.ts: listed in both gates and candidates',
-      'src/age.ts:1: Stryker disable / restore comment. Allow an equivalent mutant in test-gates.json (equivalentMutants) instead',
+      'src/age.ts:1: Stryker comment (disable / restore). Allow an equivalent mutant in test-gates.json (equivalentMutants) instead',
       'src/age.spec.ts:2: mocks the module under test ("./age")',
       'src/age.spec.ts:3: coverage ignore directive',
       'src/age.spec.ts:4: .skip / .only / .todo (a skipped or focused test)',

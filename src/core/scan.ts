@@ -58,7 +58,7 @@ export function scanGateSource(
         file: gatePath,
         line: lineNumber,
         message:
-          'Stryker disable / restore comment. Allow an equivalent mutant in test-gates.json (equivalentMutants) instead',
+          'Stryker comment (disable / restore). Allow an equivalent mutant in test-gates.json (equivalentMutants) instead',
       });
     }
     for (const rule of settings.forbiddenSource) {

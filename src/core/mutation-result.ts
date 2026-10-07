@@ -311,7 +311,7 @@ export function judgeMutationReport(input: {
           line: mutant.location.start.line,
           message:
             mutant.status === 'Ignored'
-              ? `a ${mutant.mutatorName} mutant was ignored. Stryker disable comments and mutator exclusions are not allowed`
+              ? `a ${mutant.mutatorName} mutant was ignored. Taking mutants out with Stryker comments or mutator exclusions is not allowed`
               : `a ${mutant.mutatorName} mutant was not evaluated (status: ${mutant.status})`,
         });
       }

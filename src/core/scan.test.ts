@@ -78,7 +78,7 @@ describe('scanGateSource: ways to opt out of measurement', () => {
         file: GATE,
         line: 1,
         message:
-          'Stryker disable / restore comment. Allow an equivalent mutant in test-gates.json (equivalentMutants) instead',
+          'Stryker comment (disable / restore). Allow an equivalent mutant in test-gates.json (equivalentMutants) instead',
       },
     ]);
   });

@@ -103,3 +103,9 @@ export function gateSpecs(
     .map((gate) => gate.spec)
     .filter((spec): spec is string => spec !== null && spec !== excluded);
 }
+
+/**
+ * A pattern that matches no file. Jest treats an empty `testMatch` as "use the default", which
+ * would run every test of the project, so a run with no spec left needs a pattern of its own.
+ */
+export const NO_SPEC_PATTERN = '__sekisho_no_spec_left__';

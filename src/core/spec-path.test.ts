@@ -93,7 +93,10 @@ describe('looksLikeSpec', () => {
     expect(looksLikeSpec('src/money.spec.ts', settings)).toBe(false);
   });
 
-  it('is false for a path that is not a gate extension', () => {
+  it('is false for a path that is not a gate extension, even when it ends with a suffix', () => {
     expect(looksLikeSpec('src/money.spec.tsx', defaults)).toBe(false);
+    expect(looksLikeSpec('src/money.spec.tsx', { ...defaults, specSuffixes: ['.spec.tsx'] })).toBe(
+      false
+    );
   });
 });

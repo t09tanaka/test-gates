@@ -15,8 +15,16 @@ interface Accumulator {
   hit: number;
 }
 
+/** The record being read. LF / LH only count when the record turns out to have no DA entry. */
+interface OpenRecord {
+  file: Accumulator;
+  hasDa: boolean;
+  found: number;
+  hit: number;
+}
+
 function normalizePath(file: string, rootDir?: string): string {
-  let normalized = file.trim().replace(/\\/g, '/');
+  let normalized = file.replace(/\\/g, '/');
   if (rootDir !== undefined) {
     const root = rootDir.replace(/\\/g, '/').replace(/\/+$/, '');
     if (normalized.startsWith(`${root}/`)) {
@@ -37,44 +45,40 @@ function normalizePath(file: string, rootDir?: string): string {
  */
 export function parseLcov(text: string, rootDir?: string): Map<string, LcovFile> {
   const files = new Map<string, Accumulator>();
-  let current: Accumulator | null = null;
-  let recordHasDa = false;
-  let recordFound = 0;
-  let recordHit = 0;
+  let record: OpenRecord | null = null;
 
   const closeRecord = () => {
-    if (current && !recordHasDa) {
-      current.found += recordFound;
-      current.hit += recordHit;
+    if (record && !record.hasDa) {
+      record.file.found += record.found;
+      record.file.hit += record.hit;
     }
-    current = null;
+    record = null;
   };
 
   for (const rawLine of text.split('\n')) {
     const line = rawLine.trim();
     if (line.startsWith('SF:')) {
       closeRecord();
-      const file = normalizePath(line.slice(3), rootDir);
-      current = files.get(file) ?? { lines: new Map(), found: 0, hit: 0 };
-      files.set(file, current);
-      recordHasDa = false;
-      recordFound = 0;
-      recordHit = 0;
+      const path = normalizePath(line.slice(3), rootDir);
+      const file = files.get(path) ?? { lines: new Map<number, number>(), found: 0, hit: 0 };
+      files.set(path, file);
+      record = { file, hasDa: false, found: 0, hit: 0 };
     } else if (line === 'end_of_record') {
       closeRecord();
-    } else if (current) {
+    } else if (record) {
+      const open: OpenRecord = record;
       if (line.startsWith('DA:')) {
         const [lineNumber, hits] = line.slice(3).split(',');
         const number = Number(lineNumber);
         const count = Number(hits);
         if (Number.isInteger(number) && Number.isFinite(count)) {
-          recordHasDa = true;
-          current.lines.set(number, Math.max(current.lines.get(number) ?? 0, count));
+          open.hasDa = true;
+          open.file.lines.set(number, Math.max(open.file.lines.get(number) ?? 0, count));
         }
       } else if (line.startsWith('LF:')) {
-        recordFound = Number(line.slice(3)) || 0;
+        open.found = Number(line.slice(3)) || 0;
       } else if (line.startsWith('LH:')) {
-        recordHit = Number(line.slice(3)) || 0;
+        open.hit = Number(line.slice(3)) || 0;
       }
     }
   }
