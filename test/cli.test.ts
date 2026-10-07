@@ -447,6 +447,147 @@ describe('test-gates mutation-result', () => {
   });
 });
 
+describe('test-gates mutation-result: timeouts', () => {
+  const loop = {
+    mutator: 'EqualityOperator',
+    original: 'age >= 18',
+    replacement: 'age > 18',
+    reason: 'the loop never ends',
+  };
+  const withTimeouts = (gateExtra: object, settings?: object) =>
+    validProject(
+      { 'reports/mutation/mutation.json': report('Timeout', 'Timeout') },
+      { gates: [{ ...gateEntry, ...gateExtra }], ...(settings ? { settings } : {}) }
+    );
+
+  it('passes with any number of timeouts when no limit is set, as in 0.1.0', () => {
+    expect(testGates(['mutation-result', '--dir', withTimeouts({})])).toEqual({
+      status: 0,
+      stdout:
+        'test-gates mutation: OK (mutants 2 / detected 2 (timeout 2) / allowed equivalent 0 / not evaluable 0 / unallowed survivors 0)\n',
+      stderr: '',
+    });
+  });
+
+  it('fails above settings.mutation.maxTimeouts and lists every timeout', () => {
+    const dir = withTimeouts({}, { mutation: { maxTimeouts: 1 } });
+    const result = testGates(['mutation-result', '--dir', dir]);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe('');
+    const lines = result.stderr.split('\n');
+    expect(lines[0]).toBe(
+      'test-gates mutation: 2 mutant(s) timed out (settings.mutation.maxTimeouts: 1)'
+    );
+    expect(lines.slice(1, 3)).toEqual([
+      '  - src/age.ts:1:41 / EqualityOperator / age >= 18 → age > 18 / occurrence 1 of 2 (Timeout)',
+      '  - src/age.ts:2:42 / EqualityOperator / age >= 18 → age > 18 / occurrence 2 of 2 (Timeout)',
+    ]);
+    expect(result.stderr).toContain('Run again with less load (-- --concurrency 1)');
+    expect(result.stderr).toContain(
+      '    src/age.ts: {"mutator":"EqualityOperator","original":"age >= 18","replacement":"age > 18","occurrence":2,"reason":""}'
+    );
+    expect(violationsOf(result.stderr).at(-1)).toBe(
+      'test-gates.json: 2 mutant(s) timed out outside expectedTimeouts; settings.mutation.maxTimeouts allows 1'
+    );
+    expect(lines.at(-2)).toBe(
+      'test-gates mutation: FAILED (mutants 2 / detected 2 (timeout 2) / allowed equivalent 0 / not evaluable 0 / unallowed survivors 0)'
+    );
+  });
+
+  it('passes at the limit', () => {
+    const dir = withTimeouts({}, { mutation: { maxTimeouts: 2 } });
+    expect(testGates(['mutation-result', '--dir', dir]).status).toBe(0);
+  });
+
+  it('does not count expectedTimeouts against the limit', () => {
+    const dir = withTimeouts(
+      {
+        expectedTimeouts: [
+          { ...loop, occurrence: 1 },
+          { ...loop, occurrence: 2 },
+        ],
+      },
+      { mutation: { maxTimeouts: 0 } }
+    );
+    expect(testGates(['mutation-result', '--dir', dir])).toEqual({
+      status: 0,
+      stdout:
+        'test-gates mutation: OK (mutants 2 / detected 2 (timeout 2) / allowed equivalent 0 / not evaluable 0 / unallowed survivors 0)\n',
+      stderr: '',
+    });
+  });
+
+  it('reports a malformed expectedTimeouts entry from check as well', () => {
+    const dir = withTimeouts({
+      expectedTimeouts: [{ mutator: 'X', original: 'a', replacement: 'b' }],
+    });
+    expect(violationsOf(testGates(['check', '--dir', dir]).stderr)).toEqual([
+      'test-gates.json: src/age.ts: expectedTimeouts[0]: "reason" is missing (say why the mutant cannot be observed)',
+    ]);
+  });
+});
+
+describe('test-gates check: opt-in checks and warnings', () => {
+  it('applies the allowlist only when settings.imports.mode asks for it', () => {
+    const files = {
+      'src/age.ts':
+        "import dayjs from 'dayjs';\nimport Decimal from 'decimal.js';\nexport const a = 1;\n",
+    };
+    expect(testGates(['check', '--dir', validProject(files)]).status).toBe(0);
+    const dir = validProject(files, {
+      settings: { imports: { mode: 'allowlist', allow: ['decimal.js'] } },
+    });
+    const result = testGates(['check', '--dir', dir]);
+    expect(result.status).toBe(1);
+    expect(violationsOf(result.stderr)).toEqual([
+      'src/age.ts:1: runtime import of "dayjs" is not in settings.imports.allow (allowlist mode allows relative imports, import aliases and listed packages only)',
+    ]);
+  });
+
+  it('warns, without failing, about the v8 provider on Vitest 3', () => {
+    const dir = validProject({
+      'vitest.gates.config.ts': 'export default createVitestGatesConfig({});\n',
+      'node_modules/vitest/package.json': { name: 'vitest', version: '3.2.7' },
+    });
+    const result = testGates(['check', '--dir', dir]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe('test-gates check: OK (1 gate(s), 0 candidate(s))\n');
+    expect(result.stderr).toMatch(
+      /^test-gates check: warning: vitest\.gates\.config\.ts: Vitest 3\.2\.7 with the v8 coverage provider does not count/
+    );
+    expect(result.stderr.trim().split('\n')).toHaveLength(1);
+  });
+
+  it.each([
+    ['Vitest 4', '4.1.11', 'export default createVitestGatesConfig({});\n'],
+    [
+      'the istanbul provider',
+      '3.2.7',
+      "export default createVitestGatesConfig({ coverageProvider: 'istanbul' });\n",
+    ],
+  ])('does not warn with %s', (_name, version, config) => {
+    const dir = validProject({
+      'vitest.gates.config.ts': config,
+      'node_modules/vitest/package.json': { name: 'vitest', version },
+    });
+    expect(testGates(['check', '--dir', dir])).toEqual({
+      status: 0,
+      stdout: 'test-gates check: OK (1 gate(s), 0 candidate(s))\n',
+      stderr: '',
+    });
+  });
+
+  it('does not warn for a Jest project or when Vitest is not installed', () => {
+    expect(testGates(['check', '--dir', validProject({ 'jest.gates.config.js': '' })]).stderr).toBe(
+      ''
+    );
+    // The fixture lives outside this repository, so no Vitest is found above it either.
+    expect(
+      testGates(['check', '--dir', validProject({ 'vitest.gates.config.mts': '' })]).stderr
+    ).toBe('');
+  });
+});
+
 describe('test-gates mutation', () => {
   // A stand-in for node_modules/.bin/stryker: records its arguments, then behaves as told.
   const fakeStryker = (body: string) =>
@@ -506,6 +647,17 @@ describe('test-gates mutation', () => {
       'test-gates mutation: Stryker failed (exit 3). The result was not judged\n'
     );
     expect(result.stdout).not.toContain('OK');
+  });
+
+  it('removes only the JSON report before the run, not the Stryker incremental file', () => {
+    const dir = withStryker(writeReport('Killed', 'Killed'), {
+      'reports/mutation/mutation.json': report('Survived', 'Survived'),
+      'reports/stryker-incremental.json': '{"keep":true}',
+    });
+    expect(testGates(['mutation', '--dir', dir]).status).toBe(0);
+    expect(fs.readFileSync(path.join(dir, 'reports/stryker-incremental.json'), 'utf8')).toBe(
+      '{"keep":true}'
+    );
   });
 
   it('does not judge a report left over from an earlier run', () => {
@@ -608,6 +760,20 @@ describe('test-gates selfcheck', () => {
     );
     expect(result.stderr).toContain('test-gates selfcheck: FAILED (2 of 2 negative control(s))');
     expect(runs(dir)).toHaveLength(2);
+  });
+
+  it('points at the gates that import a gate whose spec could be left out', () => {
+    const dir = twoGates(DEAF);
+    write(dir, {
+      'src/rate.ts': "import { isAdult } from './age';\nexport const rate = isAdult(1);\n",
+    });
+    const result = testGates(['selfcheck', '--dir', dir]);
+    expect(result.status).toBe(1);
+    const hints = result.stderr.split('\n').filter((line) => line.includes('hint:'));
+    expect(hints).toEqual([
+      '      hint: src/rate.ts import(s) this gate, so their specs cover it without its own spec. Mock the import in those specs and assert the call (toHaveBeenCalledWith), so that each spec only covers its own gate',
+    ]);
+    expect(result.stderr.indexOf('hint:')).toBeLessThan(result.stderr.indexOf('✗ src/rate.ts'));
   });
 
   it('fails when the gate fails for a reason other than the threshold, and shows the output', () => {

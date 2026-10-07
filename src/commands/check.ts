@@ -3,6 +3,7 @@ import path from 'node:path';
 import { MANIFEST_FILE } from '../core/manifest.js';
 import { scanGateSource, scanSpecSource, scanStrykerConfig } from '../core/scan.js';
 import { gateExtensionOf, looksLikeSpec } from '../core/spec-path.js';
+import { vitestCoverageWarning } from '../core/vitest-coverage.js';
 import type { Violation } from '../core/types.js';
 import { existsExact, readText } from '../fs.js';
 import { readManifest, type LoadedManifest } from '../load.js';
@@ -117,9 +118,48 @@ export function checkGates(manifest: LoadedManifest): Violation[] {
   return violations;
 }
 
+const VITEST_GATE_CONFIGS = ['ts', 'mts', 'cts', 'js', 'mjs', 'cjs'].map(
+  (extension) => `vitest.gates.config.${extension}`
+);
+
+/** Version of the Vitest the project would run, or null. */
+function installedVitestVersion(startDir: string): string | null {
+  let current = startDir;
+  for (;;) {
+    try {
+      const pkg = JSON.parse(
+        fs.readFileSync(path.join(current, 'node_modules', 'vitest', 'package.json'), 'utf8')
+      ) as { version?: unknown };
+      return typeof pkg.version === 'string' ? pkg.version : null;
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) {
+        return null;
+      }
+      current = parent;
+    }
+  }
+}
+
+/** Things worth knowing that do not fail the check. */
+export function checkWarnings(manifest: LoadedManifest): string[] {
+  const config = VITEST_GATE_CONFIGS.find((name) => fs.existsSync(path.join(manifest.dir, name)));
+  if (!config) {
+    return [];
+  }
+  const warning = vitestCoverageWarning({
+    vitestVersion: installedVitestVersion(manifest.dir),
+    configSource: readText(manifest.dir, config),
+  });
+  return warning === null ? [] : [`${config}: ${warning}`];
+}
+
 export function runCheck(dir: string, io: Io): number {
   const manifest = readManifest(dir);
   const violations = checkGates(manifest);
+  for (const warning of checkWarnings(manifest)) {
+    io.err(`test-gates check: warning: ${warning}`);
+  }
   if (violations.length > 0) {
     printViolations(io, 'check', violations);
     return 1;

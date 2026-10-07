@@ -2,8 +2,9 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { ManifestError } from '../core/manifest.js';
+import { findImporters } from '../core/import-policy.js';
 import { EXCLUDE_ENV, judgeSelfcheck } from '../core/selfcheck.js';
-import { findLocalBin } from '../fs.js';
+import { existsExact, findLocalBin, readText } from '../fs.js';
 import { readManifest, type LoadedManifest } from '../load.js';
 import type { Io } from './output.js';
 
@@ -90,6 +91,23 @@ export function runSelfcheck(
     } else {
       failed += 1;
       io.err(`  ✗ ${gate.path}: ${reason}`);
+      if (result.status === 0) {
+        // The usual cause in a project whose config does honor the variable: another gate
+        // imports this one, so that gate's spec covers it.
+        const importers = findImporters(
+          gate.path,
+          manifest.gates
+            .filter((other) => existsExact(manifest.dir, other.path))
+            .map((other) => ({ path: other.path, source: readText(manifest.dir, other.path) })),
+          manifest.settings.importAliases
+        );
+        if (importers.length > 0) {
+          io.err(
+            `      hint: ${importers.join(', ')} import(s) this gate, so their specs cover it without its own spec. ` +
+              'Mock the import in those specs and assert the call (toHaveBeenCalledWith), so that each spec only covers its own gate'
+          );
+        }
+      }
       const tail = output.trimEnd().split('\n').slice(-25).join('\n');
       if (tail !== '') {
         io.err(tail.replace(/^/gm, '      '));

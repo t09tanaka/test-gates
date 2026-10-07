@@ -285,6 +285,33 @@ describe('createVitestGatesConfig', () => {
   });
 });
 
+describe('createVitestGatesConfig: coverageProvider', () => {
+  const providerOf = (options: object) =>
+    (
+      createVitestGatesConfig({ rootDir: validProject(), ...options }) as {
+        test: { coverage: { provider: string } };
+      }
+    ).test.coverage.provider;
+
+  it('is v8 unless told otherwise', () => {
+    expect(providerOf({})).toBe('v8');
+  });
+
+  it('can be set to istanbul, and wins over test.coverage.provider', () => {
+    expect(providerOf({ coverageProvider: 'istanbul' })).toBe('istanbul');
+    expect(
+      providerOf({ coverageProvider: 'istanbul', test: { coverage: { provider: 'v8' } } })
+    ).toBe('istanbul');
+    expect(providerOf({ test: { coverage: { provider: 'istanbul' } } })).toBe('istanbul');
+  });
+
+  it('is not passed on as a Vite option', () => {
+    expect(
+      createVitestGatesConfig({ rootDir: validProject(), coverageProvider: 'istanbul' })
+    ).not.toHaveProperty('coverageProvider');
+  });
+});
+
 describe('createVitestGatesConfig with no spec left', () => {
   it('uses a pattern that matches nothing instead of an empty include', () => {
     const dir = validProject();
@@ -457,14 +484,17 @@ describe('the built package', () => {
       'gateCommand',
       'gateExtensions',
       'importAliases',
+      'imports',
       'impureImports',
       'impureNamedImports',
       'impurePaths',
       'lcov',
+      'mutation',
       'selfcheck',
       'spec',
       'stryker',
     ]);
+    expect(Object.keys(schema.definitions.gate.properties)).toContain('expectedTimeouts');
     const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
     expect(pkg.exports['./schema.json']).toBe('./schema/test-gates.schema.json');
     expect(pkg.files).toContain('schema');
