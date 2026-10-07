@@ -1,0 +1,61 @@
+{
+  "$schema": "./schema/test-gates.schema.json",
+  "gates": [
+    {
+      "path": "src/core/mutation-result.ts",
+      "decides": "Whether a Stryker run passes: which mutants count as detected, which survivors an allowance covers, and when an allowance is stale or ambiguous",
+      "impact": "A surviving mutant, a stale allowance or an unevaluated mutant passes silently and every project using sekisho loses its real guard",
+      "equivalentMutants": [
+        {
+          "mutator": "ArrayDeclaration",
+          "original": "[]",
+          "replacement": "[\"Stryker was here\"]",
+          "occurrence": 3,
+          "reason": "When equivalentMutants is not an array the fallback list is only iterated to resolve allowances, and a string entry is skipped by isUsableEquivalentMutant. The shape violation is reported separately from gate.equivalentMutants, so the verdict is the same"
+        }
+      ]
+    },
+    {
+      "path": "src/core/lcov.ts",
+      "decides": "Per-file line coverage from an lcov tracefile and whether each gate is at 100%",
+      "impact": "A gate with uncovered lines, or with no record at all, passes"
+    },
+    {
+      "path": "src/core/selfcheck.ts",
+      "decides": "Whether a negative control held: the gate failed, and failed on the threshold of the file whose spec was left out",
+      "impact": "A gate that measures nothing is reported as working"
+    },
+    {
+      "path": "src/core/manifest.ts",
+      "decides": "Whether test-gates.json and each allowance in it are well formed (reason required, no duplicates, no path in both lists)",
+      "impact": "An allowance without a reason or a duplicated gate is accepted, and configs are derived from a broken list"
+    },
+    {
+      "path": "src/core/spec-path.ts",
+      "decides": "Where the spec of a gate lives, and whether a path is itself a spec",
+      "impact": "The gate run and the negative control look at the wrong spec, or a missing spec is not noticed"
+    },
+    {
+      "path": "src/core/args.ts",
+      "decides": "Which command-line arguments belong to sekisho and which are handed to Stryker",
+      "impact": "An argument meant for Stryker reaches the judge or is dropped, and a typo in an option is silently ignored"
+    }
+  ],
+  "candidates": [
+    {
+      "path": "src/core/scan.ts",
+      "decides": "The static rules for a gate and its spec (decorators, impure imports, ignore directives, skipped tests, self-mocks)",
+      "blocker": "Its spec holds the forbidden patterns (it.skip, ignore directives) as test data, which the spec rules reject; move that data out of the spec file. Whitespace-quantifier mutants of the regular expressions also survive"
+    },
+    {
+      "path": "src/core/imports.ts",
+      "decides": "Which modules a source file imports at runtime",
+      "blocker": "About twenty mutants of the regular expressions survive (whitespace quantifiers, sort order of the result). Needs tests per quantifier or a tokenizer instead of regular expressions"
+    },
+    {
+      "path": "src/core/settings.ts",
+      "decides": "Defaults and validation of settings",
+      "blocker": "The default tables are data: mutants of their reason strings survive, and the specs call resolveSettings while being collected, which makes most mutants static. Split the tables from the validation first"
+    }
+  ]
+}
