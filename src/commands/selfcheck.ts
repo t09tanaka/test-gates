@@ -51,7 +51,7 @@ export function runSelfcheck(
 ): number {
   const manifest = readManifest(dir);
   if (manifest.violations.length > 0 || manifest.gates.length === 0) {
-    io.err('sekisho selfcheck: test-gates.json has problems. Run "sekisho check" first');
+    io.err('test-gates selfcheck: test-gates.json has problems. Run "test-gates check" first');
     return 1;
   }
   const command = commandOverride.length > 0 ? commandOverride : resolveGateCommand(manifest);
@@ -65,7 +65,7 @@ export function runSelfcheck(
   let failed = 0;
   for (const gate of targets) {
     if (gate.spec === null || gate.existingSpecs.length !== 1) {
-      io.err(`  ✗ ${gate.path}: no single spec to leave out. Run "sekisho check"`);
+      io.err(`  ✗ ${gate.path}: no single spec to leave out. Run "test-gates check"`);
       failed += 1;
       continue;
     }
@@ -98,9 +98,9 @@ export function runSelfcheck(
   }
 
   if (failed > 0) {
-    io.err(`sekisho selfcheck: FAILED (${failed} of ${targets.length} negative control(s))`);
+    io.err(`test-gates selfcheck: FAILED (${failed} of ${targets.length} negative control(s))`);
     return 1;
   }
-  io.out(`sekisho selfcheck: OK (${targets.length} negative control(s) failed as they should)`);
+  io.out(`test-gates selfcheck: OK (${targets.length} negative control(s) failed as they should)`);
   return 0;
 }

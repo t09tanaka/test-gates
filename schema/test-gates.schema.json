@@ -1,8 +1,8 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://github.com/t09tanaka/sekisho/blob/main/schema/test-gates.schema.json",
+  "$id": "https://github.com/t09tanaka/test-gates/blob/main/schema/test-gates.schema.json",
   "title": "test-gates.json",
-  "description": "The single source of truth for the test gates of one subproject (@t09tanaka/sekisho).",
+  "description": "The single source of truth for the test gates of one subproject (@t09tanaka/test-gates).",
   "type": "object",
   "required": ["gates"],
   "additionalProperties": false,
@@ -216,7 +216,7 @@
           }
         },
         "gateCommand": {
-          "description": "The command `sekisho selfcheck` runs. Default: `jest --config jest.gates.config.*` or `vitest run --config vitest.gates.config.*`, whichever config exists.",
+          "description": "The command `test-gates selfcheck` runs. Default: `jest --config jest.gates.config.*` or `vitest run --config vitest.gates.config.*`, whichever config exists.",
           "type": "array",
           "minItems": 1,
           "items": { "$ref": "#/definitions/nonEmptyString" }
@@ -256,7 +256,7 @@
           "additionalProperties": false,
           "properties": {
             "file": {
-              "description": "Tracefile for `sekisho lcov` when --file is not given.",
+              "description": "Tracefile for `test-gates lcov` when --file is not given.",
               "$ref": "#/definitions/nonEmptyString"
             },
             "summaryExclude": {

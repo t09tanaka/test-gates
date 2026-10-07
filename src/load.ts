@@ -16,7 +16,7 @@ export interface ResolvedGate extends Gate {
    * when the project has no spec convention (`settings.spec.suffixes: []`).
    */
   spec: string | null;
-  /** Every candidate that exists. More than one is ambiguous and `sekisho check` rejects it. */
+  /** Every candidate that exists. More than one is ambiguous and `test-gates check` rejects it. */
   existingSpecs: string[];
 }
 
@@ -26,7 +26,7 @@ export interface LoadedManifest {
   gates: ResolvedGate[];
   candidates: Candidate[];
   settings: ResolvedSettings;
-  /** Problems inside the manifest entries (`sekisho check` reports them). */
+  /** Problems inside the manifest entries (`test-gates check` reports them). */
   violations: Violation[];
 }
 
@@ -83,7 +83,7 @@ export function loadGates(dir: string = process.cwd()): LoadedManifest {
   const manifest = readManifest(dir);
   if (manifest.violations.length > 0) {
     throw new ManifestError(
-      `${MANIFEST_FILE} has problems (run "sekisho check"):\n` +
+      `${MANIFEST_FILE} has problems (run "test-gates check"):\n` +
         manifest.violations.map((violation) => `  - ${violation.message}`).join('\n')
     );
   }
@@ -91,8 +91,8 @@ export function loadGates(dir: string = process.cwd()): LoadedManifest {
 }
 
 /**
- * Specs the gate run executes: the spec of every gate, minus the one `sekisho selfcheck`
- * asks to leave out through SEKISHO_EXCLUDE_SPEC.
+ * Specs the gate run executes: the spec of every gate, minus the one `test-gates selfcheck`
+ * asks to leave out through TEST_GATES_EXCLUDE_SPEC.
  */
 export function gateSpecs(
   manifest: LoadedManifest,
@@ -108,4 +108,4 @@ export function gateSpecs(
  * A pattern that matches no file. Jest treats an empty `testMatch` as "use the default", which
  * would run every test of the project, so a run with no spec left needs a pattern of its own.
  */
-export const NO_SPEC_PATTERN = '__sekisho_no_spec_left__';
+export const NO_SPEC_PATTERN = '__test_gates_no_spec_left__';

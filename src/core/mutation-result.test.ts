@@ -151,16 +151,28 @@ describe('judgeMutationReport: status handling', () => {
     expect(verdict.summary).toEqual({
       total: 2,
       detected: 2,
+      timeout: 0,
       allowed: 0,
       notEvaluable: 0,
       unallowed: 0,
     });
   });
 
-  it('counts Timeout as detected', () => {
-    const verdict = judge([firstComparison('Timeout')]);
+  it('counts Timeout as detected, and separately as a timeout', () => {
+    const verdict = judge([
+      firstComparison('Timeout'),
+      yesLiteral('Killed'),
+      secondComparison('Timeout'),
+    ]);
     expect(verdict.violations).toEqual([]);
-    expect(verdict.summary.detected).toBe(1);
+    expect(verdict.summary).toEqual({
+      total: 3,
+      detected: 3,
+      timeout: 2,
+      allowed: 0,
+      notEvaluable: 0,
+      unallowed: 0,
+    });
   });
 
   it.each(['Survived', 'NoCoverage'])('reports a %s mutant without an allowance', (status) => {
@@ -168,6 +180,7 @@ describe('judgeMutationReport: status handling', () => {
     expect(verdict.summary).toEqual({
       total: 2,
       detected: 1,
+      timeout: 0,
       allowed: 0,
       notEvaluable: 0,
       unallowed: 1,
@@ -202,6 +215,7 @@ describe('judgeMutationReport: status handling', () => {
       expect(verdict.summary).toEqual({
         total: 2,
         detected: 1,
+        timeout: 0,
         allowed: 0,
         notEvaluable: 1,
         unallowed: 0,
@@ -242,6 +256,7 @@ describe('judgeMutationReport: allow list', () => {
     expect(verdict.summary).toEqual({
       total: 2,
       detected: 1,
+      timeout: 0,
       allowed: 1,
       notEvaluable: 0,
       unallowed: 0,
@@ -662,6 +677,7 @@ describe('judgeMutationReport: the report itself', () => {
     expect(verdict.summary).toEqual({
       total: 3,
       detected: 2,
+      timeout: 1,
       allowed: 0,
       notEvaluable: 0,
       unallowed: 1,
@@ -694,9 +710,16 @@ describe('formatting', () => {
 
   it('prints the real numbers on one line', () => {
     expect(
-      formatSummary({ total: 120, detected: 110, allowed: 6, notEvaluable: 3, unallowed: 1 })
+      formatSummary({
+        total: 120,
+        detected: 110,
+        timeout: 4,
+        allowed: 6,
+        notEvaluable: 3,
+        unallowed: 1,
+      })
     ).toBe(
-      'mutants 120 / detected 110 / allowed equivalent 6 / not evaluable 3 / unallowed survivors 1'
+      'mutants 120 / detected 110 (timeout 4) / allowed equivalent 6 / not evaluable 3 / unallowed survivors 1'
     );
   });
 });

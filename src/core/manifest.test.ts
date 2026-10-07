@@ -46,7 +46,7 @@ describe('parseManifest: entries', () => {
     const settings = { spec: { suffixes: ['.spec.ts'] } };
     expect(
       parse({
-        $schema: './node_modules/@t09tanaka/sekisho/schema/test-gates.schema.json',
+        $schema: './node_modules/@t09tanaka/test-gates/schema/test-gates.schema.json',
         gates: [{ ...gate, equivalentMutants: [allowance] }],
         candidates: [candidate],
         settings,

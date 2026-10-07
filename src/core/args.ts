@@ -34,8 +34,8 @@ const OPTIONS_BY_COMMAND: Record<Command, string[]> = {
 /**
  * Parses the command line (without `node` and the script path).
  *
- * `sekisho mutation` forwards what it does not know to Stryker, with or without `--`:
- * `npm run test:gates:mutation -- --force` reaches the script as `sekisho mutation --force`,
+ * `test-gates mutation` forwards what it does not know to Stryker, with or without `--`:
+ * `npm run test:gates:mutation -- --force` reaches the script as `test-gates mutation --force`,
  * because npm consumes the separator.
  */
 export function parseArgs(argv: string[]): ParsedArgs {

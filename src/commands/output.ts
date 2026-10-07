@@ -13,7 +13,7 @@ export function formatViolation(violation: Violation): string {
 }
 
 export function printViolations(io: Io, title: string, violations: Violation[]): void {
-  io.err(`sekisho ${title}: ${violations.length} violation(s)`);
+  io.err(`test-gates ${title}: ${violations.length} violation(s)`);
   for (const violation of violations) {
     io.err(`  - ${formatViolation(violation)}`);
   }

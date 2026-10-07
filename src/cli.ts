@@ -9,9 +9,9 @@ import { runMutationResult } from './commands/mutation-result.js';
 import type { Io } from './commands/output.js';
 import { runSelfcheck } from './commands/selfcheck.js';
 
-const HELP = `sekisho — test gates for the code that must not be wrong
+const HELP = `test-gates — test gates for the code that must not be wrong
 
-Usage: sekisho <command> [options]
+Usage: test-gates <command> [options]
 
 Commands:
   check                       Static checks of test-gates.json, the gates and their specs
@@ -68,11 +68,11 @@ try {
   process.exitCode = main(process.argv.slice(2));
 } catch (error) {
   if (error instanceof UsageError) {
-    io.err(`sekisho: ${error.message}\n`);
+    io.err(`test-gates: ${error.message}\n`);
     io.err(HELP);
     process.exitCode = 2;
   } else if (error instanceof ManifestError) {
-    io.err(`sekisho: ${error.message}`);
+    io.err(`test-gates: ${error.message}`);
     process.exitCode = 2;
   } else {
     throw error;

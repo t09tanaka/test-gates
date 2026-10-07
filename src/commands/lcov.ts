@@ -22,7 +22,7 @@ export function runLcov(dir: string, fileOption: string | null, io: Io): number 
     text = fs.readFileSync(lcovPath, 'utf8');
   } catch (error) {
     io.err(
-      `sekisho lcov: cannot read ${file} (${(error as Error).message}). Run the tests with coverage first`
+      `test-gates lcov: cannot read ${file} (${(error as Error).message}). Run the tests with coverage first`
     );
     return 1;
   }
@@ -61,6 +61,6 @@ export function runLcov(dir: string, fileOption: string | null, io: Io): number 
     printViolations(io, 'lcov', violations);
     return 1;
   }
-  io.out(`sekisho lcov: OK (${verdict.results.length} gate(s) at 100% line coverage)`);
+  io.out(`test-gates lcov: OK (${verdict.results.length} gate(s) at 100% line coverage)`);
   return 0;
 }

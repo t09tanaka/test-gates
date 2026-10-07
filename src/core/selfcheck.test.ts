@@ -12,7 +12,7 @@ const VITEST_THRESHOLD =
 
 describe('judgeSelfcheck', () => {
   it('names the environment variable the gate config has to read', () => {
-    expect(EXCLUDE_ENV).toBe('SEKISHO_EXCLUDE_SPEC');
+    expect(EXCLUDE_ENV).toBe('TEST_GATES_EXCLUDE_SPEC');
   });
 
   it.each([
@@ -31,7 +31,7 @@ describe('judgeSelfcheck', () => {
 
   it('does not hold when the gate passes', () => {
     expect(judgeSelfcheck({ status: 0, output: JEST_THRESHOLD, gatePath: GATE })).toBe(
-      'the gate passed although the spec of src/common/money.ts was left out. The gate does not measure this file (does the gate config honor SEKISHO_EXCLUDE_SPEC?)'
+      'the gate passed although the spec of src/common/money.ts was left out. The gate does not measure this file (does the gate config honor TEST_GATES_EXCLUDE_SPEC?)'
     );
   });
 

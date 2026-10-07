@@ -48,6 +48,11 @@ export interface MutationSummary {
   total: number;
   /** Killed + Timeout. */
   detected: number;
+  /**
+   * The Timeout part of `detected`. Shown on its own: under heavy load mutants time out that
+   * would otherwise survive, so a high number means the run may be hiding survivors.
+   */
+  timeout: number;
   /** Survived / NoCoverage mutants matched by an allowance. */
   allowed: number;
   /** RuntimeError + CompileError: the mutated code is not a program, so nothing was evaluated. */
@@ -149,6 +154,7 @@ export function judgeMutationReport(input: {
   const summary: MutationSummary = {
     total: 0,
     detected: 0,
+    timeout: 0,
     allowed: 0,
     notEvaluable: 0,
     unallowed: 0,
@@ -279,6 +285,9 @@ export function judgeMutationReport(input: {
       summary.total += 1;
       if (DETECTED.has(mutant.status)) {
         summary.detected += 1;
+        if (mutant.status === 'Timeout') {
+          summary.timeout += 1;
+        }
       } else if (NOT_EVALUABLE.has(mutant.status)) {
         summary.notEvaluable += 1;
       } else if (SURVIVED.has(mutant.status)) {
@@ -340,7 +349,7 @@ export function formatSurvivor(survivor: UnallowedSurvivor): string {
 /** The real numbers, on one line. Deliberately not a percentage. */
 export function formatSummary(summary: MutationSummary): string {
   return (
-    `mutants ${summary.total} / detected ${summary.detected} / ` +
+    `mutants ${summary.total} / detected ${summary.detected} (timeout ${summary.timeout}) / ` +
     `allowed equivalent ${summary.allowed} / not evaluable ${summary.notEvaluable} / ` +
     `unallowed survivors ${summary.unallowed}`
   );

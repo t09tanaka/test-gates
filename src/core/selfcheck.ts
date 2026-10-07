@@ -1,5 +1,5 @@
-/** Environment variable through which `sekisho selfcheck` tells the gate config which spec to leave out. */
-export const EXCLUDE_ENV = 'SEKISHO_EXCLUDE_SPEC';
+/** Environment variable through which `test-gates selfcheck` tells the gate config which spec to leave out. */
+export const EXCLUDE_ENV = 'TEST_GATES_EXCLUDE_SPEC';
 
 // Jest: `Jest: "<path>" coverage threshold for statements (100%) not met: 0%`
 //       `Jest: Coverage data for <path> was not found.`

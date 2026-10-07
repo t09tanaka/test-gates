@@ -4,7 +4,7 @@
     {
       "path": "src/core/mutation-result.ts",
       "decides": "Whether a Stryker run passes: which mutants count as detected, which survivors an allowance covers, and when an allowance is stale or ambiguous",
-      "impact": "A surviving mutant, a stale allowance or an unevaluated mutant passes silently and every project using sekisho loses its real guard",
+      "impact": "A surviving mutant, a stale allowance or an unevaluated mutant passes silently and every project using test-gates loses its real guard",
       "equivalentMutants": [
         {
           "mutator": "ArrayDeclaration",
@@ -37,7 +37,7 @@
     },
     {
       "path": "src/core/args.ts",
-      "decides": "Which command-line arguments belong to sekisho and which are handed to Stryker",
+      "decides": "Which command-line arguments belong to test-gates and which are handed to Stryker",
       "impact": "An argument meant for Stryker reaches the judge or is dropped, and a typo in an option is silently ignored"
     }
   ],

@@ -7,7 +7,7 @@ import {
   project,
   report,
   repoRoot,
-  sekisho,
+  testGates,
   validProject,
   write,
 } from './helpers';
@@ -20,14 +20,14 @@ const violationsOf = (stderr: string) =>
     .filter((line) => line.startsWith('  - '))
     .map((line) => line.slice(4));
 
-describe('sekisho (general)', () => {
+describe('test-gates (general)', () => {
   it('prints the version of package.json', () => {
     const { version } = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
-    expect(sekisho(['--version'])).toEqual({ status: 0, stdout: `${version}\n`, stderr: '' });
+    expect(testGates(['--version'])).toEqual({ status: 0, stdout: `${version}\n`, stderr: '' });
   });
 
   it('prints help that lists every command', () => {
-    const result = sekisho(['--help']);
+    const result = testGates(['--help']);
     expect(result.status).toBe(0);
     for (const command of ['check', 'mutation', 'mutation-result', 'selfcheck', 'lcov']) {
       expect(result.stdout).toMatch(new RegExp(`^  ${command}\\b`, 'm'));
@@ -35,59 +35,61 @@ describe('sekisho (general)', () => {
   });
 
   it.each([
-    [[], 'sekisho: no command given'],
-    [['frobnicate'], 'sekisho: unknown command: frobnicate'],
-    [['check', '--bogus'], 'sekisho: unknown argument for check: --bogus'],
+    [[], 'test-gates: no command given'],
+    [['frobnicate'], 'test-gates: unknown command: frobnicate'],
+    [['check', '--bogus'], 'test-gates: unknown argument for check: --bogus'],
   ])('exits 2 with usage for %j', (args, message) => {
-    const result = sekisho(args);
+    const result = testGates(args);
     expect(result.status).toBe(2);
     expect(result.stderr.split('\n')[0]).toBe(message);
-    expect(result.stderr).toContain('Usage: sekisho <command>');
+    expect(result.stderr).toContain('Usage: test-gates <command>');
   });
 
   it('exits 2 when test-gates.json is missing', () => {
     const dir = project({ 'README.md': 'x' });
-    const result = sekisho(['check', '--dir', dir]);
+    const result = testGates(['check', '--dir', dir]);
     expect(result).toEqual({
       status: 2,
       stdout: '',
-      stderr: `sekisho: test-gates.json not found in ${dir}\n`,
+      stderr: `test-gates: test-gates.json not found in ${dir}\n`,
     });
   });
 
   it('exits 2 when test-gates.json is not valid JSON', () => {
     const dir = project({ 'test-gates.json': '{ "gates": [' });
-    const result = sekisho(['check'], { cwd: dir });
+    const result = testGates(['check'], { cwd: dir });
     expect(result.status).toBe(2);
-    expect(result.stderr).toMatch(/^sekisho: test-gates\.json is not valid JSON: /);
+    expect(result.stderr).toMatch(/^test-gates: test-gates\.json is not valid JSON: /);
   });
 
   it.each(['check', 'mutation-result', 'selfcheck', 'lcov', 'mutation'])(
     'exits 2 from %s when a setting is misspelled',
     (command) => {
       const dir = validProject({}, { settings: { specSuffix: '.spec.ts' } });
-      const result = sekisho([command, '--dir', dir]);
+      const result = testGates([command, '--dir', dir]);
       expect(result.status).toBe(2);
-      expect(result.stderr).toBe('sekisho: test-gates.json: settings: unknown key "specSuffix"\n');
+      expect(result.stderr).toBe(
+        'test-gates: test-gates.json: settings: unknown key "specSuffix"\n'
+      );
     }
   );
 });
 
-describe('sekisho check', () => {
+describe('test-gates check', () => {
   it('passes a valid project', () => {
     const dir = validProject(
       { 'src/admin.guard.ts': '@Injectable()\nexport class AdminGuard {}\n' },
       { candidates: [{ path: 'src/admin.guard.ts', decides: 'admin role', blocker: 'decorators' }] }
     );
-    expect(sekisho(['check', '--dir', dir])).toEqual({
+    expect(testGates(['check', '--dir', dir])).toEqual({
       status: 0,
-      stdout: 'sekisho check: OK (1 gate(s), 1 candidate(s))\n',
+      stdout: 'test-gates check: OK (1 gate(s), 1 candidate(s))\n',
       stderr: '',
     });
   });
 
   it('uses the current directory by default', () => {
-    expect(sekisho(['check'], { cwd: validProject() }).status).toBe(0);
+    expect(testGates(['check'], { cwd: validProject() }).status).toBe(0);
   });
 
   it('reports every violation at once, as file:line: reason, and exits 1', () => {
@@ -138,10 +140,10 @@ describe('sekisho check', () => {
       'src/View.spec.tsx': "it('x', () => {});\n",
       'src/style.css': '',
     });
-    const result = sekisho(['check', '--dir', dir]);
+    const result = testGates(['check', '--dir', dir]);
     expect(result.status).toBe(1);
     expect(result.stdout).toBe('');
-    expect(result.stderr.split('\n')[0]).toBe('sekisho check: 21 violation(s)');
+    expect(result.stderr.split('\n')[0]).toBe('test-gates check: 21 violation(s)');
     expect(violationsOf(result.stderr)).toEqual([
       'test-gates.json: src/noimpact.ts: "impact" is missing in gates',
       'test-gates.json: src/age.ts: listed twice in gates',
@@ -185,7 +187,7 @@ describe('sekisho check', () => {
       'src/tax.ts': 'export const a = 1;\n',
       'src/tax.spec.ts': "it('x', () => {});\n",
     });
-    const result = sekisho(['check', '--dir', dir]);
+    const result = testGates(['check', '--dir', dir]);
     expect(result.status).toBe(1);
     expect(violationsOf(result.stderr)).toEqual([
       'src/Plan.ts: file not found (the check is case-sensitive)',
@@ -196,7 +198,7 @@ describe('sekisho check', () => {
 
   it('rejects a gate with both a .spec and a .test file', () => {
     const dir = validProject({ 'src/age.test.ts': "it('x', () => {});\n" });
-    const result = sekisho(['check', '--dir', dir]);
+    const result = testGates(['check', '--dir', dir]);
     expect(result.status).toBe(1);
     expect(violationsOf(result.stderr)).toEqual([
       'src/age.ts: more than one spec (src/age.spec.ts, src/age.test.ts). Keep one, or narrow settings.spec.suffixes',
@@ -208,7 +210,7 @@ describe('sekisho check', () => {
         settings: { spec: { suffixes: ['.spec.ts'] } },
       },
     });
-    expect(sekisho(['check', '--dir', dir]).status).toBe(0);
+    expect(testGates(['check', '--dir', dir]).status).toBe(0);
   });
 
   it('finds a spec in another directory through settings.spec.rewrite', () => {
@@ -224,7 +226,7 @@ describe('sekisho check', () => {
       'app/utils/plan.ts': 'export const a = 1;\n',
       'tests/utils/plan.spec.ts': "vi.mock('~/utils/plan');\nit('x', () => {});\n",
     });
-    const result = sekisho(['check', '--dir', dir]);
+    const result = testGates(['check', '--dir', dir]);
     expect(violationsOf(result.stderr)).toEqual([
       'tests/utils/plan.spec.ts:1: mocks the module under test ("~/utils/plan")',
     ]);
@@ -245,7 +247,7 @@ describe('sekisho check', () => {
         ],
       }
     );
-    const result = sekisho(['check', '--dir', dir]);
+    const result = testGates(['check', '--dir', dir]);
     expect(result.status).toBe(1);
     expect(violationsOf(result.stderr)).toEqual([
       'test-gates.json: src/age.ts: equivalentMutants[0]: "reason" is missing (say why the mutant cannot be observed)',
@@ -255,7 +257,7 @@ describe('sekisho check', () => {
 
   it('reports an empty gate list', () => {
     const dir = project({ 'test-gates.json': { gates: [], candidates: [] } });
-    const result = sekisho(['check', '--dir', dir]);
+    const result = testGates(['check', '--dir', dir]);
     expect(result.status).toBe(1);
     expect(violationsOf(result.stderr)).toEqual([
       'test-gates.json: gates is empty. A project with nothing to gate should not have this file',
@@ -272,7 +274,7 @@ describe('sekisho check', () => {
         ],
       }
     );
-    expect(violationsOf(sekisho(['check', '--dir', dir]).stderr)).toEqual([
+    expect(violationsOf(testGates(['check', '--dir', dir]).stderr)).toEqual([
       'test-gates.json: src/Services: candidate not found. Remove it, or fix the path',
     ]);
   });
@@ -282,7 +284,7 @@ describe('sekisho check', () => {
       'stryker.gates.config.mjs':
         "export default {\n  testRunner: 'jest',\n  mutator: { excludedMutations: ['StringLiteral'] },\n};\n",
     });
-    const result = sekisho(['check', '--dir', dir]);
+    const result = testGates(['check', '--dir', dir]);
     expect(result.status).toBe(1);
     expect(violationsOf(result.stderr)).toEqual([
       'stryker.gates.config.mjs:3: excludedMutations takes mutants out of the evaluation. Allow equivalent mutants one by one in test-gates.json instead',
@@ -291,7 +293,7 @@ describe('sekisho check', () => {
 
   it('reports a configured Stryker config that does not exist', () => {
     const dir = validProject({}, { settings: { stryker: { configFile: 'stryker.conf.mjs' } } });
-    expect(violationsOf(sekisho(['check', '--dir', dir]).stderr)).toEqual([
+    expect(violationsOf(testGates(['check', '--dir', dir]).stderr)).toEqual([
       'stryker.conf.mjs: Stryker config not found',
     ]);
   });
@@ -317,7 +319,7 @@ describe('sekisho check', () => {
       ].join('\n'),
       'src/user.service.spec.ts': "it('x', () => {});\n",
     });
-    expect(violationsOf(sekisho(['check', '--dir', dir]).stderr)).toEqual([
+    expect(violationsOf(testGates(['check', '--dir', dir]).stderr)).toEqual([
       'src/user.service.ts: cannot be a gate (NestJS class file). Move it to candidates',
       'src/user.service.ts:2: runtime import of "./repository/user" (DB layer)',
       'src/user.service.ts:3: reads the environment',
@@ -325,7 +327,7 @@ describe('sekisho check', () => {
   });
 });
 
-describe('sekisho mutation-result', () => {
+describe('test-gates mutation-result', () => {
   const allowance = {
     mutator: 'EqualityOperator',
     original: 'age >= 18',
@@ -335,10 +337,10 @@ describe('sekisho mutation-result', () => {
 
   it('passes when every mutant is detected, and prints the real numbers', () => {
     const dir = validProject({ 'reports/mutation/mutation.json': report('Killed', 'Timeout') });
-    expect(sekisho(['mutation-result', '--dir', dir])).toEqual({
+    expect(testGates(['mutation-result', '--dir', dir])).toEqual({
       status: 0,
       stdout:
-        'sekisho mutation: OK (mutants 2 / detected 2 / allowed equivalent 0 / not evaluable 0 / unallowed survivors 0)\n',
+        'test-gates mutation: OK (mutants 2 / detected 2 (timeout 1) / allowed equivalent 0 / not evaluable 0 / unallowed survivors 0)\n',
       stderr: '',
     });
   });
@@ -347,11 +349,11 @@ describe('sekisho mutation-result', () => {
     const dir = validProject({
       'reports/mutation/mutation.json': report('Survived', 'NoCoverage'),
     });
-    const result = sekisho(['mutation-result', '--dir', dir]);
+    const result = testGates(['mutation-result', '--dir', dir]);
     expect(result.status).toBe(1);
     expect(result.stdout).toBe('');
     const lines = result.stderr.split('\n');
-    expect(lines[0]).toBe('sekisho mutation: 2 surviving mutant(s) not in the allow list');
+    expect(lines[0]).toBe('test-gates mutation: 2 surviving mutant(s) not in the allow list');
     expect(violationsOf(result.stderr)).toEqual([
       'src/age.ts:1:41 / EqualityOperator / age >= 18 → age > 18 / occurrence 1 of 2 (Survived)',
       'src/age.ts:2:42 / EqualityOperator / age >= 18 → age > 18 / occurrence 2 of 2 (NoCoverage)',
@@ -374,7 +376,7 @@ describe('sekisho mutation-result', () => {
       },
     ]);
     expect(lines.at(-2)).toBe(
-      'sekisho mutation: FAILED (mutants 2 / detected 0 / allowed equivalent 0 / not evaluable 0 / unallowed survivors 2)'
+      'test-gates mutation: FAILED (mutants 2 / detected 0 (timeout 0) / allowed equivalent 0 / not evaluable 0 / unallowed survivors 2)'
     );
   });
 
@@ -383,10 +385,10 @@ describe('sekisho mutation-result', () => {
       { 'reports/mutation/mutation.json': report('Survived', 'Killed') },
       { gates: [{ ...gateEntry, equivalentMutants: [{ ...allowance, occurrence: 1 }] }] }
     );
-    const result = sekisho(['mutation-result', '--dir', dir]);
+    const result = testGates(['mutation-result', '--dir', dir]);
     expect(result.status).toBe(0);
     expect(result.stdout).toBe(
-      'sekisho mutation: OK (mutants 2 / detected 1 / allowed equivalent 1 / not evaluable 0 / unallowed survivors 0)\n'
+      'test-gates mutation: OK (mutants 2 / detected 1 (timeout 0) / allowed equivalent 1 / not evaluable 0 / unallowed survivors 0)\n'
     );
   });
 
@@ -395,7 +397,7 @@ describe('sekisho mutation-result', () => {
       { 'reports/mutation/mutation.json': report('Survived', 'Killed') },
       { gates: [{ ...gateEntry, equivalentMutants: [allowance] }] }
     );
-    const result = sekisho(['mutation-result', '--dir', dir]);
+    const result = testGates(['mutation-result', '--dir', dir]);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain(
       'matches 2 mutants in the file. Add "occurrence" (1-based) to pick one'
@@ -407,7 +409,7 @@ describe('sekisho mutation-result', () => {
       { 'reports/mutation/mutation.json': report('Killed', 'Killed') },
       { gates: [{ ...gateEntry, equivalentMutants: [{ ...allowance, occurrence: 2 }] }] }
     );
-    const result = sekisho(['mutation-result', '--dir', dir]);
+    const result = testGates(['mutation-result', '--dir', dir]);
     expect(result.status).toBe(1);
     expect(violationsOf(result.stderr)).toEqual([
       'test-gates.json: src/age.ts: equivalentMutants[0] (EqualityOperator / age >= 18 → age > 18 / occurrence 2): stale allowance (the mutant is now Killed). Remove it',
@@ -415,17 +417,17 @@ describe('sekisho mutation-result', () => {
   });
 
   it('fails when the report is missing', () => {
-    const result = sekisho(['mutation-result', '--dir', validProject()]);
+    const result = testGates(['mutation-result', '--dir', validProject()]);
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(
-      /^sekisho mutation: cannot read the Stryker JSON report reports\/mutation\/mutation\.json \(/
+      /^test-gates mutation: cannot read the Stryker JSON report reports\/mutation\/mutation\.json \(/
     );
   });
 
   it('fails when the report was made from an older version of the gate', () => {
     const dir = validProject({ 'reports/mutation/mutation.json': report('Killed', 'Killed') });
     fs.appendFileSync(path.join(dir, 'src/age.ts'), 'export const added = 1;\n');
-    const result = sekisho(['mutation-result', '--dir', dir]);
+    const result = testGates(['mutation-result', '--dir', dir]);
     expect(result.status).toBe(1);
     expect(violationsOf(result.stderr)[0]).toBe(
       'src/age.ts: the report was made from a different version of this file. Run Stryker again'
@@ -440,12 +442,12 @@ describe('sekisho mutation-result', () => {
       },
       { settings: { stryker: { reportFile: 'out/gates.json' } } }
     );
-    expect(sekisho(['mutation-result', '--dir', dir]).status).toBe(0);
-    expect(sekisho(['mutation-result', '--dir', dir, '--report', 'other.json']).status).toBe(1);
+    expect(testGates(['mutation-result', '--dir', dir]).status).toBe(0);
+    expect(testGates(['mutation-result', '--dir', dir, '--report', 'other.json']).status).toBe(1);
   });
 });
 
-describe('sekisho mutation', () => {
+describe('test-gates mutation', () => {
   // A stand-in for node_modules/.bin/stryker: records its arguments, then behaves as told.
   const fakeStryker = (body: string) =>
     `#!/usr/bin/env node\nconst fs = require('node:fs');\nfs.writeFileSync('stryker-args.json', JSON.stringify(process.argv.slice(2)));\n${body}\n`;
@@ -466,16 +468,18 @@ describe('sekisho mutation', () => {
 
   it('runs the local Stryker with the gates config, then judges the report', () => {
     const dir = withStryker(writeReport('Killed', 'Killed'));
-    const result = sekisho(['mutation', '--dir', dir]);
+    const result = testGates(['mutation', '--dir', dir]);
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain('sekisho mutation: OK (mutants 2 / detected 2 /');
+    expect(result.stdout).toContain(
+      'test-gates mutation: OK (mutants 2 / detected 2 (timeout 0) /'
+    );
     expect(strykerArgs(dir)).toEqual(['run', 'stryker.gates.config.mjs']);
   });
 
   it('hands extra arguments to Stryker only, as npm passes them', () => {
     // `npm run test:gates:mutation -- --force --concurrency 1` arrives without the "--".
     const dir = withStryker(writeReport('Killed', 'Killed'));
-    expect(sekisho(['mutation', '--force', '--concurrency', '1'], { cwd: dir }).status).toBe(0);
+    expect(testGates(['mutation', '--force', '--concurrency', '1'], { cwd: dir }).status).toBe(0);
     expect(strykerArgs(dir)).toEqual([
       'run',
       'stryker.gates.config.mjs',
@@ -483,30 +487,30 @@ describe('sekisho mutation', () => {
       '--concurrency',
       '1',
     ]);
-    expect(sekisho(['mutation', '--', '--force'], { cwd: dir }).status).toBe(0);
+    expect(testGates(['mutation', '--', '--force'], { cwd: dir }).status).toBe(0);
     expect(strykerArgs(dir)).toEqual(['run', 'stryker.gates.config.mjs', '--force']);
   });
 
   it('fails when the judged report has a survivor', () => {
     const dir = withStryker(writeReport('Survived', 'Killed'));
-    const result = sekisho(['mutation', '--dir', dir]);
+    const result = testGates(['mutation', '--dir', dir]);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('1 surviving mutant(s) not in the allow list');
   });
 
   it('exits 1 without judging when Stryker fails', () => {
     const dir = withStryker(`${writeReport('Killed', 'Killed')}\nprocess.exit(3);`);
-    const result = sekisho(['mutation', '--dir', dir]);
+    const result = testGates(['mutation', '--dir', dir]);
     expect(result.status).toBe(1);
     expect(result.stderr).toBe(
-      'sekisho mutation: Stryker failed (exit 3). The result was not judged\n'
+      'test-gates mutation: Stryker failed (exit 3). The result was not judged\n'
     );
     expect(result.stdout).not.toContain('OK');
   });
 
   it('does not judge a report left over from an earlier run', () => {
     const dir = withStryker('', { 'reports/mutation/mutation.json': report('Killed', 'Killed') });
-    const result = sekisho(['mutation', '--dir', dir]);
+    const result = testGates(['mutation', '--dir', dir]);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('cannot read the Stryker JSON report');
   });
@@ -520,29 +524,29 @@ describe('sekisho mutation', () => {
         settings: { stryker: { configFile: 'conf/stryker.mjs' } },
       },
     });
-    expect(sekisho(['mutation', '--dir', dir]).status).toBe(0);
+    expect(testGates(['mutation', '--dir', dir]).status).toBe(0);
     expect(strykerArgs(dir)).toEqual(['run', 'conf/stryker.mjs']);
   });
 
   it('exits 2 when there is no Stryker config', () => {
-    const result = sekisho(['mutation', '--dir', validProject()]);
+    const result = testGates(['mutation', '--dir', validProject()]);
     expect(result.status).toBe(2);
     expect(result.stderr).toContain('no Stryker config found');
   });
 
   it('exits 2 when Stryker is not installed', () => {
     const dir = validProject({ 'stryker.gates.config.mjs': 'export default {};\n' });
-    const result = sekisho(['mutation', '--dir', dir]);
+    const result = testGates(['mutation', '--dir', dir]);
     expect(result.status).toBe(2);
     expect(result.stderr).toContain('stryker is not installed in this project');
   });
 });
 
-describe('sekisho selfcheck', () => {
+describe('test-gates selfcheck', () => {
   // Stand-ins for the gate command. They append the excluded spec to a log.
   const HONEST = [
     "const fs = require('node:fs');",
-    'const excluded = process.env.SEKISHO_EXCLUDE_SPEC;',
+    'const excluded = process.env.TEST_GATES_EXCLUDE_SPEC;',
     "fs.appendFileSync('runs.log', `${excluded}\\n`);",
     "const { gates } = JSON.parse(fs.readFileSync('test-gates.json', 'utf8'));",
     'for (const gate of gates) {',
@@ -572,12 +576,12 @@ describe('sekisho selfcheck', () => {
 
   it('leaves out the spec of every gate in turn and passes when each run fails on its threshold', () => {
     const dir = twoGates(HONEST);
-    expect(sekisho(['selfcheck', '--dir', dir])).toEqual({
+    expect(testGates(['selfcheck', '--dir', dir])).toEqual({
       status: 0,
       stdout:
         '  ✓ without src/age.spec.ts the gate fails (exit 1)\n' +
         '  ✓ without src/rate.spec.ts the gate fails (exit 1)\n' +
-        'sekisho selfcheck: OK (2 negative control(s) failed as they should)\n',
+        'test-gates selfcheck: OK (2 negative control(s) failed as they should)\n',
       stderr: '',
     });
     expect(runs(dir)).toEqual(['src/age.spec.ts', 'src/rate.spec.ts']);
@@ -585,29 +589,29 @@ describe('sekisho selfcheck', () => {
 
   it('checks only the first gate with --first or settings.selfcheck.mode', () => {
     const dir = twoGates(HONEST);
-    expect(sekisho(['selfcheck', '--first', '--dir', dir]).status).toBe(0);
+    expect(testGates(['selfcheck', '--first', '--dir', dir]).status).toBe(0);
     expect(runs(dir)).toEqual(['src/age.spec.ts']);
 
     const configured = twoGates(HONEST, { selfcheck: { mode: 'first' } });
-    expect(sekisho(['selfcheck', '--dir', configured]).status).toBe(0);
+    expect(testGates(['selfcheck', '--dir', configured]).status).toBe(0);
     expect(runs(configured)).toEqual(['src/age.spec.ts']);
-    expect(sekisho(['selfcheck', '--all', '--dir', configured]).status).toBe(0);
+    expect(testGates(['selfcheck', '--all', '--dir', configured]).status).toBe(0);
     expect(runs(configured)).toHaveLength(3);
   });
 
   it('fails when the gate stays green without a spec', () => {
     const dir = twoGates(DEAF);
-    const result = sekisho(['selfcheck', '--dir', dir]);
+    const result = testGates(['selfcheck', '--dir', dir]);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain(
       '  ✗ src/age.ts: the gate passed although the spec of src/age.ts was left out.'
     );
-    expect(result.stderr).toContain('sekisho selfcheck: FAILED (2 of 2 negative control(s))');
+    expect(result.stderr).toContain('test-gates selfcheck: FAILED (2 of 2 negative control(s))');
     expect(runs(dir)).toHaveLength(2);
   });
 
   it('fails when the gate fails for a reason other than the threshold, and shows the output', () => {
-    const result = sekisho(['selfcheck', '--dir', twoGates(BROKEN)]);
+    const result = testGates(['selfcheck', '--dir', twoGates(BROKEN)]);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain(
       'the gate failed (exit 1) but not on the coverage threshold of src/age.ts'
@@ -616,23 +620,23 @@ describe('sekisho selfcheck', () => {
   });
 
   it('fails when the gate command cannot be started', () => {
-    const dir = twoGates(HONEST, { gateCommand: ['sekisho-no-such-command'] });
-    const result = sekisho(['selfcheck', '--first', '--dir', dir]);
+    const dir = twoGates(HONEST, { gateCommand: ['test-gates-no-such-command'] });
+    const result = testGates(['selfcheck', '--first', '--dir', dir]);
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain('cannot start "sekisho-no-such-command"');
+    expect(result.stderr).toContain('cannot start "test-gates-no-such-command"');
   });
 
   it('runs the command given after "--" instead of the configured one', () => {
     const dir = twoGates(DEAF);
     write(dir, { 'honest.cjs': HONEST });
-    expect(sekisho(['selfcheck', '--dir', dir, '--', 'node', 'honest.cjs']).status).toBe(0);
+    expect(testGates(['selfcheck', '--dir', dir, '--', 'node', 'honest.cjs']).status).toBe(0);
   });
 
   it('prefers node_modules/.bin of the project for the gate command', () => {
     const dir = twoGates(DEAF, { gateCommand: ['jest', '--config', 'jest.gates.config.js'] });
     write(dir, { 'node_modules/.bin/jest': `#!/usr/bin/env node\n${HONEST}\n` });
     fs.chmodSync(path.join(dir, 'node_modules/.bin/jest'), 0o755);
-    expect(sekisho(['selfcheck', '--dir', dir]).status).toBe(0);
+    expect(testGates(['selfcheck', '--dir', dir]).status).toBe(0);
   });
 
   it.each([
@@ -647,19 +651,19 @@ describe('sekisho selfcheck', () => {
         "console.error('ERROR: Coverage for lines (0%) does not meet global threshold (100%) for src/age.ts');\nprocess.exit(1);\n",
     });
     fs.chmodSync(path.join(dir, `node_modules/.bin/${runner}`), 0o755);
-    expect(sekisho(['selfcheck', '--dir', dir]).status).toBe(0);
+    expect(testGates(['selfcheck', '--dir', dir]).status).toBe(0);
     expect(JSON.parse(fs.readFileSync(path.join(dir, 'args.json'), 'utf8'))).toEqual(expectedArgs);
   });
 
   it('exits 2 when no gate command can be derived', () => {
-    const result = sekisho(['selfcheck', '--dir', validProject()]);
+    const result = testGates(['selfcheck', '--dir', validProject()]);
     expect(result.status).toBe(2);
     expect(result.stderr).toContain('no gate config found');
   });
 
   it('exits 2 when both a Jest and a Vitest gate config exist', () => {
     const dir = validProject({ 'jest.gates.config.js': '', 'vitest.gates.config.ts': '' });
-    const result = sekisho(['selfcheck', '--dir', dir]);
+    const result = testGates(['selfcheck', '--dir', dir]);
     expect(result.status).toBe(2);
     expect(result.stderr).toContain('both jest.gates.config.js and vitest.gates.config.ts exist');
   });
@@ -667,24 +671,24 @@ describe('sekisho selfcheck', () => {
   it('fails when a gate has no spec to leave out', () => {
     const dir = twoGates(HONEST);
     fs.rmSync(path.join(dir, 'src/rate.spec.ts'));
-    const result = sekisho(['selfcheck', '--dir', dir]);
+    const result = testGates(['selfcheck', '--dir', dir]);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain(
-      '  ✗ src/rate.ts: no single spec to leave out. Run "sekisho check"'
+      '  ✗ src/rate.ts: no single spec to leave out. Run "test-gates check"'
     );
   });
 
   it('fails when the manifest has problems', () => {
     const dir = validProject({ 'gate.cjs': HONEST }, { gates: [{ path: 'src/age.ts' }] });
-    const result = sekisho(['selfcheck', '--dir', dir, '--', 'node', 'gate.cjs']);
+    const result = testGates(['selfcheck', '--dir', dir, '--', 'node', 'gate.cjs']);
     expect(result.status).toBe(1);
     expect(result.stderr).toBe(
-      'sekisho selfcheck: test-gates.json has problems. Run "sekisho check" first\n'
+      'test-gates selfcheck: test-gates.json has problems. Run "test-gates check" first\n'
     );
   });
 });
 
-describe('sekisho lcov', () => {
+describe('test-gates lcov', () => {
   const dartProject = (lcov: string, settings: object = {}) =>
     project({
       'test-gates.json': {
@@ -721,13 +725,13 @@ describe('sekisho lcov', () => {
 
   it('passes when every gate has all its lines hit', () => {
     const dir = dartProject(FULL);
-    expect(sekisho(['lcov', '--file', 'coverage/lcov.info', '--dir', dir])).toEqual({
+    expect(testGates(['lcov', '--file', 'coverage/lcov.info', '--dir', dir])).toEqual({
       status: 0,
       stdout:
         'reference: overall line coverage 75.00% (3/4, not gated)\n' +
         '  ✓ lib/models/coupon.dart: 2/2 lines\n' +
         '  ✓ lib/utils/number_utils.dart: 1/1 lines\n' +
-        'sekisho lcov: OK (2 gate(s) at 100% line coverage)\n',
+        'test-gates lcov: OK (2 gate(s) at 100% line coverage)\n',
       stderr: '',
     });
   });
@@ -751,7 +755,7 @@ describe('sekisho lcov', () => {
       },
       'lib/models/cart.dart': '',
     });
-    const result = sekisho(['lcov', '--file', 'coverage/lcov.info', '--dir', dir]);
+    const result = testGates(['lcov', '--file', 'coverage/lcov.info', '--dir', dir]);
     expect(result.status).toBe(1);
     expect(violationsOf(result.stderr)).toEqual([
       'lib/utils/number_utils.dart: file not found (the check is case-sensitive). Update test-gates.json if it moved',
@@ -763,7 +767,7 @@ describe('sekisho lcov', () => {
   it('understands absolute SF paths inside the project', () => {
     const base = dartProject('');
     write(base, { 'coverage/lcov.info': FULL.replace(/SF:lib\//g, `SF:${base}/lib/`) });
-    expect(sekisho(['lcov', '--file', 'coverage/lcov.info'], { cwd: base }).status).toBe(0);
+    expect(testGates(['lcov', '--file', 'coverage/lcov.info'], { cwd: base }).status).toBe(0);
   });
 
   it('takes the file and the summary excludes from settings', () => {
@@ -773,7 +777,7 @@ describe('sekisho lcov', () => {
         lcov: { file: 'coverage/lcov.info', summaryExclude: ['\\.g\\.dart$'] },
       },
     });
-    const result = sekisho(['lcov', '--dir', dir]);
+    const result = testGates(['lcov', '--dir', dir]);
     expect(result.status).toBe(0);
     expect(result.stdout.split('\n')[0]).toBe(
       'reference: overall line coverage 100.00% (3/3, not gated)'
@@ -781,16 +785,16 @@ describe('sekisho lcov', () => {
   });
 
   it('exits 1 when the lcov file cannot be read', () => {
-    const result = sekisho(['lcov', '--file', 'nope.info', '--dir', dartProject(FULL)]);
+    const result = testGates(['lcov', '--file', 'nope.info', '--dir', dartProject(FULL)]);
     expect(result.status).toBe(1);
-    expect(result.stderr).toMatch(/^sekisho lcov: cannot read nope\.info \(/);
+    expect(result.stderr).toMatch(/^test-gates lcov: cannot read nope\.info \(/);
   });
 
   it('exits 2 when no lcov file is named', () => {
-    const result = sekisho(['lcov', '--dir', dartProject(FULL)]);
+    const result = testGates(['lcov', '--dir', dartProject(FULL)]);
     expect(result.status).toBe(2);
     expect(result.stderr).toBe(
-      'sekisho: no lcov file given. Pass --file <lcov.info> or set settings.lcov.file\n'
+      'test-gates: no lcov file given. Pass --file <lcov.info> or set settings.lcov.file\n'
     );
   });
 });

@@ -31,7 +31,7 @@ export function createVitestGatesConfig(options: VitestGatesOptions = {}): Recor
       environment: 'node',
       ...testOverrides,
       include: specs.length > 0 ? specs : [NO_SPEC_PATTERN],
-      // `sekisho selfcheck` leaves out the only spec of a single-gate project; the run must
+      // `test-gates selfcheck` leaves out the only spec of a single-gate project; the run must
       // then fail on the coverage threshold, not on "no test files found".
       passWithNoTests: true,
       coverage: {

@@ -23,13 +23,13 @@ export function runMutationResult(dir: string, reportOverride: string | null, io
     report = JSON.parse(fs.readFileSync(reportPath, 'utf8')) as MutationReport;
   } catch (error) {
     io.err(
-      `sekisho mutation: cannot read the Stryker JSON report ${shown} (${(error as Error).message}). ` +
+      `test-gates mutation: cannot read the Stryker JSON report ${shown} (${(error as Error).message}). ` +
         'Did Stryker finish, with the "json" reporter writing to this path?'
     );
     return 1;
   }
   if (typeof report !== 'object' || report === null) {
-    io.err(`sekisho mutation: ${shown} is not a Stryker JSON report`);
+    io.err(`test-gates mutation: ${shown} is not a Stryker JSON report`);
     return 1;
   }
 
@@ -47,13 +47,13 @@ export function runMutationResult(dir: string, reportOverride: string | null, io
   const summary = formatSummary(verdict.summary);
 
   if (verdict.violations.length === 0 && verdict.survivors.length === 0) {
-    io.out(`sekisho mutation: OK (${summary})`);
+    io.out(`test-gates mutation: OK (${summary})`);
     return 0;
   }
 
   if (verdict.survivors.length > 0) {
     io.err(
-      `sekisho mutation: ${verdict.survivors.length} surviving mutant(s) not in the allow list`
+      `test-gates mutation: ${verdict.survivors.length} surviving mutant(s) not in the allow list`
     );
     for (const survivor of verdict.survivors) {
       io.err(`  - ${formatSurvivor(survivor)}`);
@@ -81,6 +81,6 @@ export function runMutationResult(dir: string, reportOverride: string | null, io
   if (verdict.violations.length > 0) {
     printViolations(io, 'mutation', verdict.violations);
   }
-  io.err(`sekisho mutation: FAILED (${summary})`);
+  io.err(`test-gates mutation: FAILED (${summary})`);
   return 1;
 }

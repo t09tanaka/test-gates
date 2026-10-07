@@ -1,19 +1,19 @@
-# sekisho
+# test-gates
 
 Test gates for the code that must not be wrong.
 
-A _sekisho_ (関所) was a checkpoint on the old Japanese highways: nothing passed without being inspected. This package is the checkpoint for the handful of modules where a wrong decision costs money or trust: amounts and rounding, state transitions of payments and orders, authentication and role checks, expiry and remaining-quota rules.
+This package guards the handful of modules where a wrong decision costs money or trust: amounts and rounding, state transitions of payments and orders, authentication and role checks, expiry and remaining-quota rules.
 
 - **100% coverage is only the floor.** It proves that a test exists and touches every branch. It does not prove that the test checks the decision.
 - **Mutation testing is the real check.** If the code can be changed without a test failing, the decision is not guarded. Every surviving mutant must be killed by a test, or allowed one by one with a written reason.
 - **Important decisions live in pure modules, and pure modules are registered.** No decorators, no DI, no database, no framework runtime. The list of registered modules is one file: `test-gates.json`.
 
-`sekisho` is a CLI plus three small config helpers. It has no runtime dependencies. Jest, Vitest and Stryker are the ones already installed in your project.
+`test-gates` is a CLI plus three small config helpers. It has no runtime dependencies. Jest, Vitest and Stryker are the ones already installed in your project.
 
 ## Install
 
 ```bash
-npm install -D @t09tanaka/sekisho
+npm install -D @t09tanaka/test-gates
 ```
 
 Requires Node.js 20 or later. For mutation testing add Stryker and the runner for your test framework:
@@ -30,7 +30,7 @@ Everything below is per subproject (the directory that has a `package.json`: `ba
 
 ```json
 {
-  "$schema": "./node_modules/@t09tanaka/sekisho/schema/test-gates.schema.json",
+  "$schema": "./node_modules/@t09tanaka/test-gates/schema/test-gates.schema.json",
   "gates": [
     {
       "path": "src/common/utils/money.ts",
@@ -59,7 +59,7 @@ This file is the only place where the list lives. The configs below are derived 
 Jest (`jest.gates.config.js`):
 
 ```js
-const { createJestGatesConfig } = require('@t09tanaka/sekisho/jest');
+const { createJestGatesConfig } = require('@t09tanaka/test-gates/jest');
 
 module.exports = createJestGatesConfig({
   rootDir: __dirname,
@@ -72,7 +72,7 @@ Vitest (`vitest.gates.config.ts`):
 
 ```ts
 import { defineConfig } from 'vitest/config';
-import { createVitestGatesConfig } from '@t09tanaka/sekisho/vitest';
+import { createVitestGatesConfig } from '@t09tanaka/test-gates/vitest';
 
 export default defineConfig(
   createVitestGatesConfig({
@@ -87,7 +87,7 @@ Do not use a database, a custom test environment or a global setup here. A spec 
 ### 3. Stryker config (`stryker.gates.config.mjs`)
 
 ```js
-import { createStrykerGatesConfig } from '@t09tanaka/sekisho/stryker';
+import { createStrykerGatesConfig } from '@t09tanaka/test-gates/stryker';
 
 export default createStrykerGatesConfig({
   rootDir: import.meta.url,
@@ -105,14 +105,14 @@ Add `reports/` and `.stryker-tmp/` to `.gitignore`.
 ```json
 {
   "scripts": {
-    "test:gates": "sekisho check && jest --config jest.gates.config.js",
-    "test:gates:mutation": "sekisho mutation",
-    "test:gates:selfcheck": "sekisho selfcheck"
+    "test:gates": "test-gates check && jest --config jest.gates.config.js",
+    "test:gates:mutation": "test-gates mutation",
+    "test:gates:selfcheck": "test-gates selfcheck"
   }
 }
 ```
 
-With Vitest, `test:gates` is `sekisho check && vitest run --config vitest.gates.config.ts`.
+With Vitest, `test:gates` is `test-gates check && vitest run --config vitest.gates.config.ts`.
 
 Arguments after `--` go to Stryker and nowhere else:
 
@@ -181,7 +181,7 @@ All commands take `--dir <subproject>` (default: the current directory).
 | 1         | Violations found, or a run that could not be judged (e.g. missing report)  |
 | 2         | Wrong usage, or `test-gates.json` is missing, broken or has an unknown key |
 
-### `sekisho check`
+### `test-gates check`
 
 Static checks, before the gate run. Reports every violation as `file:line: reason`.
 
@@ -195,11 +195,11 @@ Static checks, before the gate run. Reports every violation as `file:line: reaso
 - `equivalentMutants` entries are well formed and each has a `reason`.
 - The Stryker config does not use `excludedMutations`, `ignoreStatic` or `ignorers`.
 
-### `sekisho mutation [-- <stryker arguments>]`
+### `test-gates mutation [-- <stryker arguments>]`
 
 Runs `stryker run <config>` from the project's own `node_modules`, then judges the JSON report (see `mutation-result`). Unknown arguments, and everything after `--`, are handed to Stryker. If Stryker itself fails, the exit code is 1 and nothing is judged. A report from an earlier run is deleted first, so a run that writes none cannot pass on old results.
 
-### `sekisho mutation-result [--report <path>]`
+### `test-gates mutation-result [--report <path>]`
 
 Judges an existing Stryker JSON report without running Stryker.
 
@@ -218,24 +218,26 @@ The run also fails when
 - a gate is missing from the report or has no mutants, or no mutant was evaluated at all,
 - the report was made from a different version of a gate than the one on disk.
 
+`Timeout` counts as detected, but its count is always printed on its own (`detected N (timeout M)`). On a loaded machine mutants time out that would otherwise survive, so a rising timeout count means the run may be hiding survivors: rerun with lower `--concurrency`.
+
 On failure every unallowed survivor is listed as `file:line:column / mutator / original → replacement / occurrence`, followed by a JSON fragment that can be pasted into `equivalentMutants`. The last line gives the real numbers, never a percentage:
 
 ```
-sekisho mutation: OK (mutants 317 / detected 308 / allowed equivalent 8 / not evaluable 1 / unallowed survivors 0)
+test-gates mutation: OK (mutants 317 / detected 308 (timeout 0) / allowed equivalent 8 / not evaluable 1 / unallowed survivors 0)
 ```
 
-### `sekisho selfcheck [--all | --first] [-- <gate command>]`
+### `test-gates selfcheck [--all | --first] [-- <gate command>]`
 
 Negative control. For each gate, runs the gate with that gate's spec left out and requires the run to **fail on the coverage threshold of that very file**. A gate that stays green without its spec measures nothing; a run that fails for another reason (a config that does not load) proves nothing either.
 
-The spec to leave out is passed in the environment variable `SEKISHO_EXCLUDE_SPEC`. The config helpers read it. The gate command is `jest --config jest.gates.config.*` or `vitest run --config vitest.gates.config.*`, whichever config exists; override it with `settings.gateCommand` or after `--`. `--all` (default) checks every gate in turn, `--first` only the first.
+The spec to leave out is passed in the environment variable `TEST_GATES_EXCLUDE_SPEC`. The config helpers read it. The gate command is `jest --config jest.gates.config.*` or `vitest run --config vitest.gates.config.*`, whichever config exists; override it with `settings.gateCommand` or after `--`. `--all` (default) checks every gate in turn, `--first` only the first.
 
-### `sekisho lcov --file <lcov.info>`
+### `test-gates lcov --file <lcov.info>`
 
 For stacks without mutation testing (Flutter / Dart): requires `LH == LF` for every gate in an lcov tracefile. A gate without a record, or with no instrumented line, fails. Paths are compared as written in the tracefile (`lib/models/coupon.dart`); absolute paths under the subproject are made relative.
 
 ```bash
-flutter test --coverage && npx sekisho lcov --file coverage/lcov.info
+flutter test --coverage && npx test-gates lcov --file coverage/lcov.info
 ```
 
 ## Allowing an equivalent mutant
@@ -286,7 +288,7 @@ All optional. Patterns are regular expressions written as JSON strings; a rule i
 | `selfcheck.failurePattern` | a threshold message on a line naming the gate                | Regular expression the failing run's output must match; `{gate}` stands for the gate path                                            |
 | `stryker.configFile`       | `stryker.gates.config.mjs` (`.js`, `.cjs`, `.json`)          | Stryker config                                                                                                                       |
 | `stryker.reportFile`       | `reports/mutation/mutation.json`                             | Where the JSON report is written (by the helper) and read (by the judge)                                                             |
-| `lcov.file`                | none                                                         | Tracefile for `sekisho lcov` when `--file` is not given                                                                              |
+| `lcov.file`                | none                                                         | Tracefile for `test-gates lcov` when `--file` is not given                                                                           |
 | `lcov.summaryExclude`      | none                                                         | Paths left out of the reference total (`\\.g\\.dart$`)                                                                               |
 
 Built-in impure imports: `@nestjs/*`, `class-validator`, `class-transformer`, `typeorm`, `sequelize`, `mongoose`, `knex`, `pg`, `mysql`, `mysql2`, `ioredis`, `redis`, `@prisma/adapter-*`, `react`, `react-dom`, `next`, `server-only`, `client-only`, `vue`, `vue-router`, `vue-i18n`, `pinia`, `nuxt`, `#app`, `#imports`, `*.vue`, `express`, `express-jwt`, `fastify`, `koa`, `rxjs`, `passport`, `passport-*`, `axios`, `openapi-fetch`, `stripe`, `nodemailer`, `firebase-admin`, `@aws-sdk/*`, `@sentry/*`, `@slack/*`, `@stripe/*`, and the Node.js modules `fs`, `http`, `https`, `http2`, `net`, `tls`, `dgram`, `dns`, `child_process`, `worker_threads`.
@@ -324,10 +326,10 @@ Project-specific layers go into `add`:
 ## Config helpers
 
 ```ts
-import { createJestGatesConfig } from '@t09tanaka/sekisho/jest';
-import { createVitestGatesConfig } from '@t09tanaka/sekisho/vitest';
-import { createStrykerGatesConfig } from '@t09tanaka/sekisho/stryker';
-import { loadGates } from '@t09tanaka/sekisho';
+import { createJestGatesConfig } from '@t09tanaka/test-gates/jest';
+import { createVitestGatesConfig } from '@t09tanaka/test-gates/vitest';
+import { createStrykerGatesConfig } from '@t09tanaka/test-gates/stryker';
+import { loadGates } from '@t09tanaka/test-gates';
 ```
 
 Each helper is available as ES module and CommonJS. `rootDir` is the directory of `test-gates.json`: `__dirname`, or `import.meta.url` of the config file. Every other option is passed through, except the keys that make the run a gate. Those are always set by the helper and cannot be overridden:
@@ -342,7 +344,7 @@ Why these choices:
 
 - Jest measures with istanbul (`babel`), because the v8 provider does not count the untaken side of an `if` without `else`.
 - Jest fails on a `coverageThreshold` path key that matches no file, so a typo in `test-gates.json` cannot pass. Vitest does the opposite: a glob or path key in `thresholds` that matches nothing passes. The Vitest helper therefore narrows `coverage.include` to the gates and uses `perFile`.
-- Stryker never fails on its own score (`break: null`). The verdict comes from `sekisho mutation`, which knows the allow list.
+- Stryker never fails on its own score (`break: null`). The verdict comes from `test-gates mutation`, which knows the allow list.
 
 `loadGates(dir)` returns the validated manifest: `gates` (each with its resolved `spec`), `candidates` and the resolved `settings`. It throws when the manifest has any problem.
 
@@ -355,7 +357,7 @@ Why these choices:
 - **Jest treats an empty `testMatch` as its default pattern** and would run every test of the project. The helpers never produce an empty list; if you write the gate config by hand, do not either.
 - **Imports are found by text, not by parsing.** The checks run without the project's dependencies installed, so an import inside a comment is reported too, and only the gate's own imports are looked at, not what those modules import in turn.
 - **An ordinary `import { Request } from 'express'` used only as a type is reported.** Write `import type`, or exempt the module with `impureImports.allow`.
-- **`sekisho lcov` checks lines only.** lcov from Flutter carries no branch data, and Dart has no established mutation testing tool; a Dart gate is guarded by coverage alone.
+- **`test-gates lcov` checks lines only.** lcov from Flutter carries no branch data, and Dart has no established mutation testing tool; a Dart gate is guarded by coverage alone.
 - **The checks do not judge what belongs in `gates`.** Whether every important decision has been extracted and registered is for people to review; `candidates` is where the known gaps are written down.
 
 ## License

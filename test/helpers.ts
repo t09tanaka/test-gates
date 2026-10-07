@@ -11,7 +11,7 @@ const created: string[] = [];
 
 /** Creates a throwaway project. Keys are paths relative to it; objects are written as JSON. */
 export function project(files: Record<string, string | object>): string {
-  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'sekisho-test-')));
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'test-gates-test-')));
   created.push(dir);
   write(dir, files);
   return dir;
@@ -41,7 +41,7 @@ export interface CliResult {
 }
 
 /** Runs the built CLI. */
-export function sekisho(
+export function testGates(
   args: string[],
   options: { cwd?: string; env?: NodeJS.ProcessEnv } = {}
 ): CliResult {

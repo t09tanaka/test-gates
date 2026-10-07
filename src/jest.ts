@@ -34,7 +34,7 @@ export function createJestGatesConfig(options: JestGatesOptions = {}): Record<st
     rootDir,
     // Never an empty array: Jest would fall back to its default pattern and run every test.
     testMatch: (specs.length > 0 ? specs : [NO_SPEC_PATTERN]).map((spec) => `<rootDir>/${spec}`),
-    // With no spec left (`sekisho selfcheck` on a single-gate project) the run must fail on the
+    // With no spec left (`test-gates selfcheck` on a single-gate project) the run must fail on the
     // missing coverage of the gate, not on "No tests found".
     passWithNoTests: true,
     collectCoverage: true,

@@ -125,7 +125,7 @@ export function runCheck(dir: string, io: Io): number {
     return 1;
   }
   io.out(
-    `sekisho check: OK (${manifest.gates.length} gate(s), ${manifest.candidates.length} candidate(s))`
+    `test-gates check: OK (${manifest.gates.length} gate(s), ${manifest.candidates.length} candidate(s))`
   );
   return 0;
 }

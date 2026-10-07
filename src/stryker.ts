@@ -12,7 +12,7 @@ const WEAKENING_OPTIONS = ['ignoreStatic', 'ignorers'];
 
 /**
  * Stryker config for the gates: mutate exactly the gates, never fail on the score
- * (`thresholds.break: null`), and write the JSON report that `sekisho mutation` judges.
+ * (`thresholds.break: null`), and write the JSON report that `test-gates mutation` judges.
  *
  * `mutate`, `thresholds.break` and `jsonReporter.fileName` are always set here, and `json` is
  * always among the reporters. Options that take mutants out of the evaluation are rejected.
@@ -24,14 +24,14 @@ export function createStrykerGatesConfig(
   for (const option of WEAKENING_OPTIONS) {
     if (overrides[option] !== undefined) {
       throw new Error(
-        `sekisho: "${option}" takes mutants out of the evaluation. Allow equivalent mutants one by one in test-gates.json (equivalentMutants) instead`
+        `test-gates: "${option}" takes mutants out of the evaluation. Allow equivalent mutants one by one in test-gates.json (equivalentMutants) instead`
       );
     }
   }
   const mutator = overrides.mutator as { excludedMutations?: unknown[] } | undefined;
   if (Array.isArray(mutator?.excludedMutations) && mutator.excludedMutations.length > 0) {
     throw new Error(
-      'sekisho: "mutator.excludedMutations" takes mutants out of the evaluation. Allow equivalent mutants one by one in test-gates.json (equivalentMutants) instead'
+      'test-gates: "mutator.excludedMutations" takes mutants out of the evaluation. Allow equivalent mutants one by one in test-gates.json (equivalentMutants) instead'
     );
   }
   const manifest = loadGates(resolveRootDir(rootDirOption));

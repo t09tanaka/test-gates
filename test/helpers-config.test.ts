@@ -53,7 +53,7 @@ describe('loadGates', () => {
   it('throws when the manifest has problems, listing them', () => {
     const dir = validProject({}, { gates: [{ path: 'src/age.ts' }] });
     expect(() => loadGates(dir)).toThrow(
-      'test-gates.json has problems (run "sekisho check"):\n' +
+      'test-gates.json has problems (run "test-gates check"):\n' +
         '  - src/age.ts: "decides" is missing in gates\n' +
         '  - src/age.ts: "impact" is missing in gates'
     );
@@ -84,22 +84,22 @@ describe('gateSpecs', () => {
     expect(gateSpecs(loadGates(twoGates()), {})).toEqual(['src/age.spec.ts', 'src/rate.test.ts']);
   });
 
-  it('leaves out exactly the spec named by SEKISHO_EXCLUDE_SPEC', () => {
+  it('leaves out exactly the spec named by TEST_GATES_EXCLUDE_SPEC', () => {
     const manifest = loadGates(twoGates());
-    expect(gateSpecs(manifest, { SEKISHO_EXCLUDE_SPEC: 'src/age.spec.ts' })).toEqual([
+    expect(gateSpecs(manifest, { TEST_GATES_EXCLUDE_SPEC: 'src/age.spec.ts' })).toEqual([
       'src/rate.test.ts',
     ]);
-    expect(gateSpecs(manifest, { SEKISHO_EXCLUDE_SPEC: 'src/age.ts' })).toHaveLength(2);
-    expect(gateSpecs(manifest, { SEKISHO_EXCLUDE_SPEC: '' })).toHaveLength(2);
+    expect(gateSpecs(manifest, { TEST_GATES_EXCLUDE_SPEC: 'src/age.ts' })).toHaveLength(2);
+    expect(gateSpecs(manifest, { TEST_GATES_EXCLUDE_SPEC: '' })).toHaveLength(2);
   });
 
   it('reads process.env by default', () => {
     const manifest = loadGates(twoGates());
-    process.env.SEKISHO_EXCLUDE_SPEC = 'src/rate.test.ts';
+    process.env.TEST_GATES_EXCLUDE_SPEC = 'src/rate.test.ts';
     try {
       expect(gateSpecs(manifest)).toEqual(['src/age.spec.ts']);
     } finally {
-      delete process.env.SEKISHO_EXCLUDE_SPEC;
+      delete process.env.TEST_GATES_EXCLUDE_SPEC;
     }
   });
 });
@@ -162,27 +162,27 @@ describe('createJestGatesConfig', () => {
 
   it('leaves the excluded spec out of testMatch but keeps the gate measured', () => {
     const dir = twoGates();
-    process.env.SEKISHO_EXCLUDE_SPEC = 'src/age.spec.ts';
+    process.env.TEST_GATES_EXCLUDE_SPEC = 'src/age.spec.ts';
     try {
       const config = createJestGatesConfig({ rootDir: dir });
       expect(config.testMatch).toEqual(['<rootDir>/src/rate.test.ts']);
       expect(config.collectCoverageFrom).toEqual(['<rootDir>/src/age.ts', '<rootDir>/src/rate.ts']);
       expect(Object.keys(config.coverageThreshold as object)).toHaveLength(2);
     } finally {
-      delete process.env.SEKISHO_EXCLUDE_SPEC;
+      delete process.env.TEST_GATES_EXCLUDE_SPEC;
     }
   });
 
   it('never leaves testMatch empty: Jest would run every test of the project', () => {
     const dir = validProject();
-    process.env.SEKISHO_EXCLUDE_SPEC = 'src/age.spec.ts';
+    process.env.TEST_GATES_EXCLUDE_SPEC = 'src/age.spec.ts';
     try {
       const config = createJestGatesConfig({ rootDir: dir, passWithNoTests: false });
-      expect(config.testMatch).toEqual(['<rootDir>/__sekisho_no_spec_left__']);
+      expect(config.testMatch).toEqual(['<rootDir>/__test_gates_no_spec_left__']);
       expect(config.passWithNoTests).toBe(true);
       expect(config.collectCoverageFrom).toEqual(['<rootDir>/src/age.ts']);
     } finally {
-      delete process.env.SEKISHO_EXCLUDE_SPEC;
+      delete process.env.TEST_GATES_EXCLUDE_SPEC;
     }
   });
 
@@ -272,7 +272,7 @@ describe('createVitestGatesConfig', () => {
 
   it('leaves the excluded spec out but keeps the gate measured', () => {
     const dir = twoGates();
-    process.env.SEKISHO_EXCLUDE_SPEC = 'src/rate.test.ts';
+    process.env.TEST_GATES_EXCLUDE_SPEC = 'src/rate.test.ts';
     try {
       const config = createVitestGatesConfig({ rootDir: dir }) as {
         test: { include: string[]; coverage: { include: string[] } };
@@ -280,7 +280,7 @@ describe('createVitestGatesConfig', () => {
       expect(config.test.include).toEqual(['src/age.spec.ts']);
       expect(config.test.coverage.include).toEqual(['src/age.ts', 'src/rate.ts']);
     } finally {
-      delete process.env.SEKISHO_EXCLUDE_SPEC;
+      delete process.env.TEST_GATES_EXCLUDE_SPEC;
     }
   });
 });
@@ -288,15 +288,15 @@ describe('createVitestGatesConfig', () => {
 describe('createVitestGatesConfig with no spec left', () => {
   it('uses a pattern that matches nothing instead of an empty include', () => {
     const dir = validProject();
-    process.env.SEKISHO_EXCLUDE_SPEC = 'src/age.spec.ts';
+    process.env.TEST_GATES_EXCLUDE_SPEC = 'src/age.spec.ts';
     try {
       const config = createVitestGatesConfig({ rootDir: dir }) as {
         test: { include: string[]; coverage: { include: string[] } };
       };
-      expect(config.test.include).toEqual(['__sekisho_no_spec_left__']);
+      expect(config.test.include).toEqual(['__test_gates_no_spec_left__']);
       expect(config.test.coverage.include).toEqual(['src/age.ts']);
     } finally {
-      delete process.env.SEKISHO_EXCLUDE_SPEC;
+      delete process.env.TEST_GATES_EXCLUDE_SPEC;
     }
   });
 });
@@ -363,7 +363,7 @@ describe('createStrykerGatesConfig', () => {
     ['mutator.excludedMutations', { mutator: { excludedMutations: ['StringLiteral'] } }],
   ])('rejects %s', (name, option) => {
     expect(() => createStrykerGatesConfig({ rootDir: validProject(), ...option })).toThrow(
-      `sekisho: "${name}" takes mutants out of the evaluation`
+      `test-gates: "${name}" takes mutants out of the evaluation`
     );
   });
 
@@ -406,7 +406,7 @@ describe('existsExact / findLocalBin', () => {
     const api = path.join(dir, 'packages/api');
     expect(findLocalBin(api, 'jest')).toBe(path.join(api, 'node_modules/.bin/jest'));
     expect(findLocalBin(api, 'stryker')).toBe(path.join(dir, 'node_modules/.bin/stryker'));
-    expect(findLocalBin(api, 'sekisho-no-such-bin')).toBeNull();
+    expect(findLocalBin(api, 'test-gates-no-such-bin')).toBeNull();
   });
 });
 

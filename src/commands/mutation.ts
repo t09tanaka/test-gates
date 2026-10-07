@@ -35,12 +35,12 @@ export function runMutation(dir: string, strykerArgs: string[], io: Io): number 
     shell: process.platform === 'win32',
   });
   if (result.error) {
-    io.err(`sekisho mutation: cannot start Stryker (${result.error.message})`);
+    io.err(`test-gates mutation: cannot start Stryker (${result.error.message})`);
     return 1;
   }
   if (result.status !== 0) {
     io.err(
-      `sekisho mutation: Stryker failed (${result.signal ? `signal ${result.signal}` : `exit ${result.status}`}). The result was not judged`
+      `test-gates mutation: Stryker failed (${result.signal ? `signal ${result.signal}` : `exit ${result.status}`}). The result was not judged`
     );
     return 1;
   }
