@@ -85,3 +85,15 @@ export function parseImports(source: string): ImportRef[] {
 
   return found.sort((a, b) => a.line - b.line);
 }
+
+// `require(name)` / `import(name)`: the argument does not start with a quote. `import.meta`
+// and a method such as `loader.require(x)` are not matched.
+const COMPUTED_CALL_IMPORT = /(?<![.\w$])(?:require|import)\s*\(\s*(?!['"`\s)])/g;
+
+/**
+ * Lines with a `require()` / `import()` whose specifier is not a string literal. Such an
+ * import cannot be judged from the text; allowlist mode rejects it.
+ */
+export function findUncheckableImports(source: string): number[] {
+  return [...source.matchAll(COMPUTED_CALL_IMPORT)].map((match) => lineAt(source, match.index));
+}

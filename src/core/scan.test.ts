@@ -394,3 +394,143 @@ describe('scanStrykerConfig', () => {
     ).toEqual([]);
   });
 });
+
+describe('scanGateSource: allowlist mode', () => {
+  const allowlist = (extra: object = {}) =>
+    resolveSettings({
+      importAliases: [{ prefix: '@/', target: 'src/' }],
+      impurePaths: { add: [{ pattern: '\\.service\\.ts$', reason: 'NestJS class file' }] },
+      imports: {
+        mode: 'allowlist',
+        allow: ['decimal.js', { module: '@prisma/client', names: ['Prisma'] }],
+      },
+      ...extra,
+    });
+
+  it('allows relative imports, aliases, listed packages, listed names and type imports', () => {
+    expect(
+      gate(
+        [
+          "import Decimal from 'decimal.js';",
+          "import { Prisma } from '@prisma/client';",
+          "import { round } from './round';",
+          "import { tax } from '@/common/tax';",
+          "import type { Request } from 'express';",
+          "import type Stripe from 'stripe';",
+          "export type { Dayjs } from 'dayjs';",
+        ].join('\n'),
+        allowlist()
+      )
+    ).toEqual([]);
+  });
+
+  it('rejects a package that is not listed, however harmless', () => {
+    expect(gate("import dayjs from 'dayjs';\nimport path from 'node:path';", allowlist())).toEqual([
+      {
+        file: GATE,
+        line: 1,
+        message:
+          'runtime import of "dayjs" is not in settings.imports.allow (allowlist mode allows relative imports, import aliases and listed packages only)',
+      },
+      {
+        file: GATE,
+        line: 2,
+        message:
+          'runtime import of "node:path" is not in settings.imports.allow (allowlist mode allows relative imports, import aliases and listed packages only)',
+      },
+    ]);
+  });
+
+  it('rejects require() and import() of an unlisted package too', () => {
+    const violations = gate(
+      "const a = require('lodash');\nconst b = await import('zod');",
+      allowlist()
+    );
+    expect(violations.map((violation) => violation.line)).toEqual([1, 2]);
+  });
+
+  it('rejects a name that is not listed for its module', () => {
+    expect(gate("import { Prisma, Role } from '@prisma/client';", allowlist())).toEqual([
+      {
+        file: GATE,
+        line: 1,
+        message:
+          'runtime import of Role from "@prisma/client" is not in settings.imports.allow (allowed: Prisma)',
+      },
+    ]);
+  });
+
+  it('keeps the blocklist rules, and reports an import they reject only once', () => {
+    expect(
+      gate(
+        "import { PrismaClient } from '@prisma/client';\nimport React from 'react';",
+        allowlist()
+      )
+    ).toEqual([
+      {
+        file: GATE,
+        line: 1,
+        message: 'runtime use of PrismaClient from "@prisma/client" (connects to the database)',
+      },
+      { file: GATE, line: 2, message: 'runtime import of "react" (React runtime)' },
+    ]);
+  });
+
+  it('keeps the blocklist rules for project imports', () => {
+    const settings = allowlist({
+      impureImports: { add: [{ pattern: '(^|/)repository(/|$)', reason: 'DB layer' }] },
+    });
+    expect(gate("import { find } from './repository/user';", settings)).toEqual([
+      { file: GATE, line: 1, message: 'runtime import of "./repository/user" (DB layer)' },
+    ]);
+  });
+
+  it('rejects a project import whose target could not be a gate', () => {
+    expect(
+      gate(
+        "import { UserService } from './user.service';\nimport { x } from '@/orders/order.service';\nimport { y } from './user-service';",
+        allowlist()
+      )
+    ).toEqual([
+      { file: GATE, line: 1, message: 'runtime import of "./user.service" (NestJS class file)' },
+      {
+        file: GATE,
+        line: 2,
+        message: 'runtime import of "@/orders/order.service" (NestJS class file)',
+      },
+    ]);
+  });
+
+  it('rejects an import whose specifier is computed', () => {
+    expect(
+      gate(
+        'const name = pick();\nconst a = require(name);\nconst b = await import(name);',
+        allowlist()
+      )
+    ).toEqual([
+      {
+        file: GATE,
+        line: 2,
+        message:
+          'require() / import() with a computed specifier cannot be checked (allowlist mode)',
+      },
+      {
+        file: GATE,
+        line: 3,
+        message:
+          'require() / import() with a computed specifier cannot be checked (allowlist mode)',
+      },
+    ]);
+  });
+
+  it('does none of this in blocklist mode', () => {
+    const source =
+      "import dayjs from 'dayjs';\nimport { UserService } from './user.service';\nconst a = require(name);";
+    const settings = resolveSettings({
+      impurePaths: { add: [{ pattern: '\\.service\\.ts$', reason: 'NestJS class file' }] },
+      imports: { allow: ['decimal.js'] },
+    });
+    expect(gate(source, settings)).toEqual([]);
+    expect(gate(source)).toEqual([]);
+  });
+});

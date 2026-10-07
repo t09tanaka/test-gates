@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseImports } from './imports';
+import { findUncheckableImports, parseImports } from './imports';
 
 const one = (source: string) => {
   const imports = parseImports(source);
@@ -130,5 +130,32 @@ describe('parseImports', () => {
 
   it('returns nothing for a file without imports', () => {
     expect(parseImports('export const a = 1;\n')).toEqual([]);
+  });
+});
+
+describe('findUncheckableImports', () => {
+  it('finds require() and import() whose argument is not a string literal', () => {
+    const source = [
+      'const a = require(name);',
+      "const b = require('fs');",
+      'const c = await import(base + "/x");',
+      'const d = await import( /* webpackChunkName */ path);',
+      'const e = require (  spec  );',
+    ].join('\n');
+    expect(findUncheckableImports(source)).toEqual([1, 3, 4, 5]);
+  });
+
+  it.each([
+    "const a = require('fs');",
+    'const b = await import("./x");',
+    'const c = require(`pg`);',
+    'const url = import.meta.url;',
+    'loader.require(name);',
+    'this.$import(name);',
+    'myrequire(name); reimport(name);',
+    'const f = require();',
+    "import a from 'a';",
+  ])('does not report %s', (source) => {
+    expect(findUncheckableImports(source)).toEqual([]);
   });
 });

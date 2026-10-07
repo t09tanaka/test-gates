@@ -1,5 +1,11 @@
-import { parseImports } from './imports.js';
-import type { ImportAlias, ResolvedSettings, Violation } from './types.js';
+import { findUncheckableImports, parseImports } from './imports.js';
+import {
+  isProjectImport,
+  judgePackageImport,
+  judgeProjectImport,
+  resolveSpecifier,
+} from './import-policy.js';
+import type { ResolvedSettings, Violation } from './types.js';
 
 const IGNORE_DIRECTIVE = /\b(istanbul|c8|v8)\s+ignore\b/;
 // A decorator at the start of a line: `@Injectable()`, `@Column({ … })`. A JSDoc tag such as
@@ -23,7 +29,15 @@ const SCRIPT_EXTENSION = /\.[cm]?[jt]sx?$/;
 
 type GateScanSettings = Pick<
   ResolvedSettings,
-  'impureImports' | 'allowedImports' | 'impureNamedImports' | 'forbiddenSource'
+  | 'impureImports'
+  | 'allowedImports'
+  | 'impureNamedImports'
+  | 'forbiddenSource'
+  | 'importMode'
+  | 'importAllow'
+  | 'importAliases'
+  | 'impurePaths'
+  | 'gateExtensions'
 >;
 
 function eachLine(source: string, visit: (line: string, lineNumber: number) => void): void {
@@ -72,6 +86,7 @@ export function scanGateSource(
     if (imported.typeOnly) {
       continue;
     }
+    const before = violations.length;
     if (!settings.allowedImports.some((regex) => regex.test(imported.module))) {
       for (const rule of settings.impureImports) {
         if (rule.regex.test(imported.module)) {
@@ -100,41 +115,39 @@ export function scanGateSource(
         });
       }
     }
+    // Allowlist mode adds to the rules above; an import they already reject is reported once.
+    if (settings.importMode === 'allowlist' && violations.length === before) {
+      const reason = isProjectImport(imported.module, settings.importAliases)
+        ? judgeProjectImport(
+            resolveSpecifier(imported.module, gatePath, settings.importAliases) as string,
+            settings.impurePaths,
+            settings.gateExtensions
+          )
+        : judgePackageImport(imported, settings.importAllow);
+      if (reason !== null) {
+        violations.push({
+          file: gatePath,
+          line: imported.line,
+          message: isProjectImport(imported.module, settings.importAliases)
+            ? `runtime import of "${imported.module}" (${reason})`
+            : reason,
+        });
+      }
+    }
+  }
+  if (settings.importMode === 'allowlist') {
+    for (const line of findUncheckableImports(source)) {
+      violations.push({
+        file: gatePath,
+        line,
+        message:
+          'require() / import() with a computed specifier cannot be checked (allowlist mode)',
+      });
+    }
   }
 
   // Every finding of a source scan has a line.
   return violations.sort((a, b) => (a.line as number) - (b.line as number));
-}
-
-function resolveSpecifier(
-  specifier: string,
-  fromFile: string,
-  aliases: ImportAlias[]
-): string | null {
-  let joined: string | null = null;
-  if (specifier.startsWith('.')) {
-    const directory = fromFile.includes('/') ? fromFile.slice(0, fromFile.lastIndexOf('/')) : '';
-    joined = directory === '' ? specifier : `${directory}/${specifier}`;
-  } else {
-    for (const alias of aliases) {
-      if (specifier.startsWith(alias.prefix)) {
-        joined = alias.target + specifier.slice(alias.prefix.length);
-        break;
-      }
-    }
-  }
-  if (joined === null) {
-    return null;
-  }
-  const segments: string[] = [];
-  for (const segment of joined.split('/')) {
-    if (segment === '..') {
-      segments.pop();
-    } else if (segment !== '.' && segment !== '') {
-      segments.push(segment);
-    }
-  }
-  return segments.join('/').replace(SCRIPT_EXTENSION, '');
 }
 
 /** Checks the text of a gate's spec: nothing skipped, nothing focused, the gate itself not mocked. */
