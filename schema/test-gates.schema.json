@@ -7,22 +7,34 @@
   "required": ["gates"],
   "additionalProperties": false,
   "properties": {
-    "$schema": { "type": "string" },
+    "$schema": {
+      "type": "string"
+    },
     "gates": {
       "description": "Pure modules that hold an important decision. Each must reach 100% on all four coverage metrics and leave no surviving mutant outside its allow list.",
       "type": "array",
       "minItems": 1,
-      "items": { "$ref": "#/definitions/gate" }
+      "items": {
+        "$ref": "#/definitions/gate"
+      }
     },
     "candidates": {
       "description": "Important logic that cannot be a gate yet. Nothing is enforced for these beyond their existence.",
       "type": "array",
-      "items": { "$ref": "#/definitions/candidate" }
+      "items": {
+        "$ref": "#/definitions/candidate"
+      }
     },
-    "settings": { "$ref": "#/definitions/settings" }
+    "settings": {
+      "$ref": "#/definitions/settings"
+    }
   },
   "definitions": {
-    "nonEmptyString": { "type": "string", "minLength": 1, "pattern": "\\S" },
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
     "gate": {
       "type": "object",
       "required": ["path", "decides", "impact"],
@@ -43,7 +55,16 @@
         "equivalentMutants": {
           "description": "Surviving mutants that are allowed because they cannot be observed from outside. One entry allows exactly one mutant.",
           "type": "array",
-          "items": { "$ref": "#/definitions/equivalentMutant" }
+          "items": {
+            "$ref": "#/definitions/equivalentMutant"
+          }
+        },
+        "expectedTimeouts": {
+          "description": "Since 0.2.0. Mutants that can never finish (a loop that no longer ends) and therefore always time out. Same key as equivalentMutants. They are not counted against settings.mutation.maxTimeouts. An entry whose mutant survives, or does not exist, fails the run; one that is killed is accepted.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/equivalentMutant"
+          }
         }
       }
     },
@@ -84,7 +105,9 @@
           "description": "File or directory, relative to the subproject.",
           "$ref": "#/definitions/nonEmptyString"
         },
-        "decides": { "$ref": "#/definitions/nonEmptyString" },
+        "decides": {
+          "$ref": "#/definitions/nonEmptyString"
+        },
         "blocker": {
           "description": "What has to happen before this can become a gate.",
           "$ref": "#/definitions/nonEmptyString"
@@ -94,15 +117,23 @@
     "patternRule": {
       "description": "A regular expression, either as a string or with flags and a reason.",
       "oneOf": [
-        { "$ref": "#/definitions/nonEmptyString" },
+        {
+          "$ref": "#/definitions/nonEmptyString"
+        },
         {
           "type": "object",
           "required": ["pattern"],
           "additionalProperties": false,
           "properties": {
-            "pattern": { "$ref": "#/definitions/nonEmptyString" },
-            "flags": { "type": "string" },
-            "reason": { "type": "string" }
+            "pattern": {
+              "$ref": "#/definitions/nonEmptyString"
+            },
+            "flags": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
           }
         }
       ]
@@ -116,7 +147,12 @@
           "type": "boolean",
           "default": true
         },
-        "add": { "type": "array", "items": { "$ref": "#/definitions/patternRule" } }
+        "add": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/patternRule"
+          }
+        }
       }
     },
     "settings": {
@@ -128,7 +164,10 @@
           "description": "File extensions a gate may have.",
           "type": "array",
           "minItems": 1,
-          "items": { "type": "string", "pattern": "^\\." },
+          "items": {
+            "type": "string",
+            "pattern": "^\\."
+          },
           "default": [".ts", ".mts", ".cts", ".js", ".mjs", ".cjs"]
         },
         "spec": {
@@ -138,7 +177,9 @@
             "suffixes": {
               "description": "Replaces the gate's extension to form the spec path. Default: \".spec<ext>\" and \".test<ext>\". An empty array means the project has no spec convention.",
               "type": "array",
-              "items": { "$ref": "#/definitions/nonEmptyString" }
+              "items": {
+                "$ref": "#/definitions/nonEmptyString"
+              }
             },
             "rewrite": {
               "description": "Regular expression replacements applied to the gate path before the suffix, for specs that live in another directory.",
@@ -148,8 +189,12 @@
                 "required": ["from", "to"],
                 "additionalProperties": false,
                 "properties": {
-                  "from": { "$ref": "#/definitions/nonEmptyString" },
-                  "to": { "type": "string" }
+                  "from": {
+                    "$ref": "#/definitions/nonEmptyString"
+                  },
+                  "to": {
+                    "type": "string"
+                  }
                 }
               }
             }
@@ -160,12 +205,22 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "defaults": { "type": "boolean", "default": true },
-            "add": { "type": "array", "items": { "$ref": "#/definitions/patternRule" } },
+            "defaults": {
+              "type": "boolean",
+              "default": true
+            },
+            "add": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/patternRule"
+              }
+            },
             "allow": {
               "description": "Module specifiers exempt from every rule (regular expressions).",
               "type": "array",
-              "items": { "$ref": "#/definitions/nonEmptyString" }
+              "items": {
+                "$ref": "#/definitions/nonEmptyString"
+              }
             }
           }
         },
@@ -174,7 +229,10 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "defaults": { "type": "boolean", "default": true },
+            "defaults": {
+              "type": "boolean",
+              "default": true
+            },
             "add": {
               "type": "array",
               "items": {
@@ -182,13 +240,19 @@
                 "required": ["module", "names"],
                 "additionalProperties": false,
                 "properties": {
-                  "module": { "$ref": "#/definitions/nonEmptyString" },
+                  "module": {
+                    "$ref": "#/definitions/nonEmptyString"
+                  },
                   "names": {
                     "type": "array",
                     "minItems": 1,
-                    "items": { "$ref": "#/definitions/nonEmptyString" }
+                    "items": {
+                      "$ref": "#/definitions/nonEmptyString"
+                    }
                   },
-                  "reason": { "type": "string" }
+                  "reason": {
+                    "type": "string"
+                  }
                 }
               }
             }
@@ -210,8 +274,12 @@
             "required": ["prefix", "target"],
             "additionalProperties": false,
             "properties": {
-              "prefix": { "$ref": "#/definitions/nonEmptyString" },
-              "target": { "type": "string" }
+              "prefix": {
+                "$ref": "#/definitions/nonEmptyString"
+              },
+              "target": {
+                "type": "string"
+              }
             }
           }
         },
@@ -219,7 +287,9 @@
           "description": "The command `test-gates selfcheck` runs. Default: `jest --config jest.gates.config.*` or `vitest run --config vitest.gates.config.*`, whichever config exists.",
           "type": "array",
           "minItems": 1,
-          "items": { "$ref": "#/definitions/nonEmptyString" }
+          "items": {
+            "$ref": "#/definitions/nonEmptyString"
+          }
         },
         "selfcheck": {
           "type": "object",
@@ -262,7 +332,74 @@
             "summaryExclude": {
               "description": "Paths left out of the reference total (regular expressions).",
               "type": "array",
-              "items": { "$ref": "#/definitions/nonEmptyString" }
+              "items": {
+                "$ref": "#/definitions/nonEmptyString"
+              }
+            }
+          }
+        },
+        "imports": {
+          "description": "Since 0.2.0. How runtime imports of a gate are judged.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "description": "blocklist (default): only the impureImports rules apply. allowlist: in addition, a runtime import must be relative, go through an import alias, or be listed in allow; a project import must not point at a file matched by impurePaths; a computed require() / import() is rejected.",
+              "enum": ["blocklist", "allowlist"],
+              "default": "blocklist"
+            },
+            "allow": {
+              "description": "Packages a gate may import in allowlist mode. A string is a package name (its subpaths included). { pattern } is a regular expression tested against the specifier. { module, names } allows only those named imports.",
+              "type": "array",
+              "items": {
+                "oneOf": [
+                  {
+                    "$ref": "#/definitions/nonEmptyString"
+                  },
+                  {
+                    "type": "object",
+                    "required": ["pattern"],
+                    "additionalProperties": false,
+                    "properties": {
+                      "pattern": {
+                        "$ref": "#/definitions/nonEmptyString"
+                      },
+                      "flags": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "required": ["module", "names"],
+                    "additionalProperties": false,
+                    "properties": {
+                      "module": {
+                        "$ref": "#/definitions/nonEmptyString"
+                      },
+                      "names": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "$ref": "#/definitions/nonEmptyString"
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "mutation": {
+          "description": "Since 0.2.0.",
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "maxTimeouts": {
+              "description": "How many timed-out mutants outside expectedTimeouts are tolerated. Above it the run fails. Not set: no limit.",
+              "type": "integer",
+              "minimum": 0
             }
           }
         }

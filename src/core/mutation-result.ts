@@ -59,11 +59,18 @@ export interface MutationSummary {
   notEvaluable: number;
   /** Survived / NoCoverage mutants with no allowance. */
   unallowed: number;
+  /** The part of `timeout` that `expectedTimeouts` entries cover. */
+  expectedTimeout: number;
 }
 
 export interface MutationVerdict {
   violations: Violation[];
   survivors: UnallowedSurvivor[];
+  /**
+   * Timed-out mutants that no `expectedTimeouts` entry covers. Informational unless
+   * `maxTimeouts` is set and exceeded, in which case `violations` says so.
+   */
+  unexpectedTimeouts: UnallowedSurvivor[];
   summary: MutationSummary;
 }
 
@@ -125,6 +132,29 @@ interface LocatedMutant {
   sameKeyCount: number;
 }
 
+/** A mutant as it is listed for the reader, with the entry that would cover it. */
+function describeMutant(file: string, entry: LocatedMutant): UnallowedSurvivor {
+  const { mutant } = entry;
+  return {
+    file,
+    line: mutant.location.start.line,
+    column: mutant.location.start.column,
+    status: mutant.status,
+    mutator: mutant.mutatorName,
+    original: normalizeCode(entry.original),
+    replacement: normalizeCode(entry.replacement),
+    occurrence: entry.occurrence,
+    sameKeyCount: entry.sameKeyCount,
+    allowance: {
+      mutator: mutant.mutatorName,
+      original: normalizeCode(entry.original),
+      replacement: normalizeCode(entry.replacement),
+      ...(entry.sameKeyCount > 1 ? { occurrence: entry.occurrence } : {}),
+      reason: '',
+    },
+  };
+}
+
 function describeAllowance(entry: EquivalentMutant): string {
   const occurrence = entry.occurrence === undefined ? '' : ` / occurrence ${entry.occurrence}`;
   return `${entry.mutator} / ${normalizeCode(entry.original)} → ${normalizeCode(entry.replacement)}${occurrence}`;
@@ -148,9 +178,15 @@ export function judgeMutationReport(input: {
   gates: Gate[];
   report: MutationReport;
   readSource: (gatePath: string) => string | undefined;
+  /**
+   * `settings.mutation.maxTimeouts`: how many timeouts outside `expectedTimeouts` are
+   * tolerated. `null` or absent means no limit.
+   */
+  maxTimeouts?: number | null;
 }): MutationVerdict {
   const violations: Violation[] = [];
   const survivors: UnallowedSurvivor[] = [];
+  const unexpectedTimeouts: UnallowedSurvivor[] = [];
   const summary: MutationSummary = {
     total: 0,
     detected: 0,
@@ -158,6 +194,7 @@ export function judgeMutationReport(input: {
     allowed: 0,
     notEvaluable: 0,
     unallowed: 0,
+    expectedTimeout: 0,
   };
 
   const files = new Map<string, ReportFile>();
@@ -169,7 +206,9 @@ export function judgeMutationReport(input: {
     const gatePath = normalizePath(gate.path);
     const shapeViolations = validateEquivalentMutants(gate.path, gate.equivalentMutants);
     violations.push(...shapeViolations);
-    const allowances = Array.isArray(gate.equivalentMutants) ? gate.equivalentMutants : [];
+    violations.push(
+      ...validateEquivalentMutants(gate.path, gate.expectedTimeouts, 'expectedTimeouts')
+    );
 
     const result = files.get(gatePath);
     if (!result || !Array.isArray(result.mutants) || result.mutants.length === 0) {
@@ -243,42 +282,62 @@ export function judgeMutationReport(input: {
       continue;
     }
 
-    // Decide which mutant each allowance points at.
-    const allowed = new Set<LocatedMutant>();
-    allowances.forEach((allowance, index) => {
-      if (!isUsableEquivalentMutant(allowance)) {
-        return; // already reported by validateEquivalentMutants
+    // Decide which mutant each entry of a list points at. `accept` returns why the mutant
+    // cannot be claimed, or null when it can.
+    const claim = (
+      field: 'equivalentMutants' | 'expectedTimeouts',
+      entries: unknown,
+      noun: 'allowance' | 'entry',
+      accept: (status: string) => string | null
+    ): Set<LocatedMutant> => {
+      const claimed = new Set<LocatedMutant>();
+      if (!Array.isArray(entries)) {
+        return claimed; // not a list: already reported by validateEquivalentMutants
       }
-      const at = `${gate.path}: equivalentMutants[${index}] (${describeAllowance(allowance)})`;
-      const group =
-        byKey.get(keyOf(allowance.mutator, allowance.original, allowance.replacement)) ?? [];
-      if (allowance.occurrence === undefined && group.length > 1) {
-        violations.push({
-          file: MANIFEST_FILE,
-          message: `${at}: matches ${group.length} mutants in the file. Add "occurrence" (1-based) to pick one`,
-        });
-        return;
-      }
-      const target = group[(allowance.occurrence ?? 1) - 1];
-      if (!target || !SURVIVED.has(target.mutant.status)) {
-        const why = target
-          ? `the mutant is now ${target.mutant.status}`
-          : 'no such mutant in this run';
-        violations.push({
-          file: MANIFEST_FILE,
-          message: `${at}: stale allowance (${why}). Remove it`,
-        });
-        return;
-      }
-      if (allowed.has(target)) {
-        violations.push({
-          file: MANIFEST_FILE,
-          message: `${at}: another allowance already covers this mutant`,
-        });
-        return;
-      }
-      allowed.add(target);
-    });
+      entries.forEach((entry: unknown, index: number) => {
+        if (!isUsableEquivalentMutant(entry)) {
+          return; // already reported by validateEquivalentMutants
+        }
+        const at = `${gate.path}: ${field}[${index}] (${describeAllowance(entry)})`;
+        const group = byKey.get(keyOf(entry.mutator, entry.original, entry.replacement)) ?? [];
+        if (entry.occurrence === undefined && group.length > 1) {
+          violations.push({
+            file: MANIFEST_FILE,
+            message: `${at}: matches ${group.length} mutants in the file. Add "occurrence" (1-based) to pick one`,
+          });
+          return;
+        }
+        const target = group[(entry.occurrence ?? 1) - 1];
+        const refusal = target
+          ? accept(target.mutant.status)
+          : `stale ${noun} (no such mutant in this run). Remove it`;
+        if (!target || refusal !== null) {
+          violations.push({ file: MANIFEST_FILE, message: `${at}: ${refusal}` });
+          return;
+        }
+        if (claimed.has(target)) {
+          violations.push({
+            file: MANIFEST_FILE,
+            message: `${at}: another ${noun} already covers this mutant`,
+          });
+          return;
+        }
+        claimed.add(target);
+      });
+      return claimed;
+    };
+
+    const allowed = claim('equivalentMutants', gate.equivalentMutants, 'allowance', (status) =>
+      SURVIVED.has(status) ? null : `stale allowance (the mutant is now ${status}). Remove it`
+    );
+    // An expected timeout that is Killed is accepted: a loop that never ends is reported as
+    // Timeout or as Killed depending on which timer fires first, and that depends on load.
+    // One that survives is not a timeout at all.
+    const expected = claim('expectedTimeouts', gate.expectedTimeouts, 'entry', (status) =>
+      SURVIVED.has(status)
+        ? `the mutant ${status === 'NoCoverage' ? 'has no coverage' : 'survived'} instead of timing out. Detect it with a test`
+        : null
+    );
 
     for (const entry of located) {
       const { mutant } = entry;
@@ -287,6 +346,11 @@ export function judgeMutationReport(input: {
         summary.detected += 1;
         if (mutant.status === 'Timeout') {
           summary.timeout += 1;
+          if (expected.has(entry)) {
+            summary.expectedTimeout += 1;
+          } else {
+            unexpectedTimeouts.push(describeMutant(gate.path, entry));
+          }
         }
       } else if (NOT_EVALUABLE.has(mutant.status)) {
         summary.notEvaluable += 1;
@@ -296,24 +360,7 @@ export function judgeMutationReport(input: {
           continue;
         }
         summary.unallowed += 1;
-        survivors.push({
-          file: gate.path,
-          line: mutant.location.start.line,
-          column: mutant.location.start.column,
-          status: mutant.status,
-          mutator: mutant.mutatorName,
-          original: normalizeCode(entry.original),
-          replacement: normalizeCode(entry.replacement),
-          occurrence: entry.occurrence,
-          sameKeyCount: entry.sameKeyCount,
-          allowance: {
-            mutator: mutant.mutatorName,
-            original: normalizeCode(entry.original),
-            replacement: normalizeCode(entry.replacement),
-            ...(entry.sameKeyCount > 1 ? { occurrence: entry.occurrence } : {}),
-            reason: '',
-          },
-        });
+        survivors.push(describeMutant(gate.path, entry));
       } else {
         violations.push({
           file: gate.path,
@@ -334,7 +381,15 @@ export function judgeMutationReport(input: {
     });
   }
 
-  return { violations, survivors, summary };
+  const maxTimeouts = input.maxTimeouts ?? null;
+  if (maxTimeouts !== null && unexpectedTimeouts.length > maxTimeouts) {
+    violations.push({
+      file: MANIFEST_FILE,
+      message: `${unexpectedTimeouts.length} mutant(s) timed out outside expectedTimeouts; settings.mutation.maxTimeouts allows ${maxTimeouts}`,
+    });
+  }
+
+  return { violations, survivors, unexpectedTimeouts, summary };
 }
 
 /** `file:line:column / mutator / original → replacement / occurrence n of m`. */

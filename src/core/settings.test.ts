@@ -81,6 +81,12 @@ describe('resolveSettings: defaults', () => {
     expect(defaults.lcovSummaryExclude).toEqual([]);
   });
 
+  it('uses the blocklist, with no package allow list and no timeout limit', () => {
+    expect(defaults.importMode).toBe('blocklist');
+    expect(defaults.importAllow).toEqual([]);
+    expect(defaults.maxTimeouts).toBeNull();
+  });
+
   it('gives the same result for an empty object', () => {
     expect(resolveSettings({})).toEqual(defaults);
   });
@@ -100,6 +106,15 @@ describe('resolveSettings: overrides', () => {
       selfcheck: { mode: 'first', failurePattern: 'threshold.*{gate}' },
       stryker: { configFile: 'stryker.conf.mjs', reportFile: 'out/m.json' },
       lcov: { file: 'coverage/lcov.info', summaryExclude: ['\\.g\\.dart$'] },
+      imports: {
+        mode: 'allowlist',
+        allow: [
+          'decimal.js',
+          { pattern: '^@ACME/pure-', flags: 'i' },
+          { module: '@prisma/client', names: ['Prisma'] },
+        ],
+      },
+      mutation: { maxTimeouts: 0 },
     });
     expect(settings).toEqual({
       gateExtensions: ['.dart'],
@@ -118,6 +133,13 @@ describe('resolveSettings: overrides', () => {
       strykerReportFile: 'out/m.json',
       lcovFile: 'coverage/lcov.info',
       lcovSummaryExclude: [/\.g\.dart$/],
+      importMode: 'allowlist',
+      importAllow: [
+        { module: 'decimal.js' },
+        { regex: /^@ACME\/pure-/i },
+        { module: '@prisma/client', names: ['Prisma'] },
+      ],
+      maxTimeouts: 0,
     });
   });
 
@@ -380,6 +402,86 @@ describe('resolveSettings: mistakes are errors, not silent defaults', () => {
       'summaryExclude as a string',
       { lcov: { summaryExclude: 'x' } },
       'settings.lcov.summaryExclude: must be an array of non-empty strings',
+    ],
+    [
+      'an unknown import mode',
+      { imports: { mode: 'strict' } },
+      'settings.imports.mode: must be "blocklist" or "allowlist"',
+    ],
+    [
+      'an unknown imports key',
+      { imports: { transitive: true } },
+      'settings.imports: unknown key "transitive"',
+    ],
+    [
+      'imports.allow as a string',
+      { imports: { allow: 'x' } },
+      'settings.imports.allow: must be an array',
+    ],
+    [
+      'an empty allow entry',
+      { imports: { allow: [''] } },
+      'settings.imports.allow[0]: must be a package name, { pattern, flags? } or { module, names }',
+    ],
+    [
+      'an allow entry that is a number',
+      { imports: { allow: [1] } },
+      'settings.imports.allow[0]: must be a package name, { pattern, flags? } or { module, names }',
+    ],
+    [
+      'an allow entry with neither pattern nor module',
+      { imports: { allow: [{ names: ['a'] }] } },
+      'settings.imports.allow[0]: must be a package name, { pattern, flags? } or { module, names }',
+    ],
+    [
+      'an allow pattern with an unknown key',
+      { imports: { allow: [{ pattern: 'a', names: ['a'] }] } },
+      'settings.imports.allow[0]: unknown key "names"',
+    ],
+    [
+      'an allow pattern with non-string flags',
+      { imports: { allow: [{ pattern: 'a', flags: 1 }] } },
+      'settings.imports.allow[0].flags: must be a string',
+    ],
+    [
+      'an invalid allow pattern',
+      { imports: { allow: [{ pattern: '(' }] } },
+      'settings.imports.allow[0]: invalid regular expression "("',
+    ],
+    [
+      'an allow module without names',
+      { imports: { allow: [{ module: 'm' }] } },
+      'settings.imports.allow[0].names: must be an array of non-empty strings',
+    ],
+    [
+      'an allow module with no name',
+      { imports: { allow: [{ module: 'm', names: [] }] } },
+      'settings.imports.allow[0].names: must list at least one name',
+    ],
+    [
+      'an allow module with an unknown key',
+      { imports: { allow: [{ module: 'm', names: ['a'], reason: 'x' }] } },
+      'settings.imports.allow[0]: unknown key "reason"',
+    ],
+    [
+      'a negative maxTimeouts',
+      { mutation: { maxTimeouts: -1 } },
+      'settings.mutation.maxTimeouts: must be an integer >= 0',
+    ],
+    [
+      'a fractional maxTimeouts',
+      { mutation: { maxTimeouts: 1.5 } },
+      'settings.mutation.maxTimeouts: must be an integer >= 0',
+    ],
+    [
+      'maxTimeouts as a string',
+      { mutation: { maxTimeouts: '0' } },
+      'settings.mutation.maxTimeouts: must be an integer >= 0',
+    ],
+    [
+      'an unknown mutation key',
+      { mutation: { maxTimeout: 0 } },
+      'settings.mutation: unknown key "maxTimeout"',
     ],
     [
       'an invalid summaryExclude',

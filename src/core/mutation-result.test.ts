@@ -155,6 +155,7 @@ describe('judgeMutationReport: status handling', () => {
       allowed: 0,
       notEvaluable: 0,
       unallowed: 0,
+      expectedTimeout: 0,
     });
   });
 
@@ -172,6 +173,7 @@ describe('judgeMutationReport: status handling', () => {
       allowed: 0,
       notEvaluable: 0,
       unallowed: 0,
+      expectedTimeout: 0,
     });
   });
 
@@ -184,6 +186,7 @@ describe('judgeMutationReport: status handling', () => {
       allowed: 0,
       notEvaluable: 0,
       unallowed: 1,
+      expectedTimeout: 0,
     });
     expect(verdict.survivors).toEqual([
       {
@@ -219,6 +222,7 @@ describe('judgeMutationReport: status handling', () => {
         allowed: 0,
         notEvaluable: 1,
         unallowed: 0,
+        expectedTimeout: 0,
       });
     }
   );
@@ -260,6 +264,7 @@ describe('judgeMutationReport: allow list', () => {
       allowed: 1,
       notEvaluable: 0,
       unallowed: 0,
+      expectedTimeout: 0,
     });
   });
 
@@ -681,6 +686,7 @@ describe('judgeMutationReport: the report itself', () => {
       allowed: 0,
       notEvaluable: 0,
       unallowed: 1,
+      expectedTimeout: 0,
     });
     expect(verdict.survivors.map((survivor) => survivor.file)).toEqual(['src/b.ts']);
   });
@@ -717,9 +723,248 @@ describe('formatting', () => {
         allowed: 6,
         notEvaluable: 3,
         unallowed: 1,
+        expectedTimeout: 0,
       })
     ).toBe(
       'mutants 120 / detected 110 (timeout 4) / allowed equivalent 6 / not evaluable 3 / unallowed survivors 1'
     );
+  });
+});
+
+describe('judgeMutationReport: timeouts', () => {
+  const expectedTimeout = (overrides: Partial<EquivalentMutant> = {}): EquivalentMutant =>
+    allowance({ reason: 'the loop never ends, so the run always times out', ...overrides });
+
+  function judgeTimeouts(
+    mutants: ReportMutant[],
+    options: { expectedTimeouts?: EquivalentMutant[]; maxTimeouts?: number | null } = {}
+  ) {
+    return judgeMutationReport({
+      gates: [
+        {
+          ...gate(),
+          ...(options.expectedTimeouts ? { expectedTimeouts: options.expectedTimeouts } : {}),
+        },
+      ],
+      report: { files: { [GATE_PATH]: { source: SOURCE, mutants } } },
+      readSource: () => SOURCE,
+      ...(options.maxTimeouts === undefined ? {} : { maxTimeouts: options.maxTimeouts }),
+    });
+  }
+
+  it('lists timeouts but does not fail on them when no limit is set', () => {
+    const verdict = judgeTimeouts([firstComparison('Timeout'), secondComparison('Timeout')]);
+    expect(verdict.violations).toEqual([]);
+    expect(verdict.summary).toMatchObject({ detected: 2, timeout: 2, expectedTimeout: 0 });
+    expect(verdict.unexpectedTimeouts.map(({ line, status }) => [line, status])).toEqual([
+      [1, 'Timeout'],
+      [3, 'Timeout'],
+    ]);
+  });
+
+  it('does not fail on a null limit either', () => {
+    const verdict = judgeTimeouts([firstComparison('Timeout')], { maxTimeouts: null });
+    expect(verdict.violations).toEqual([]);
+  });
+
+  it('passes when the number of timeouts equals the limit', () => {
+    const verdict = judgeTimeouts([firstComparison('Timeout'), yesLiteral('Timeout')], {
+      maxTimeouts: 2,
+    });
+    expect(verdict.violations).toEqual([]);
+    expect(verdict.unexpectedTimeouts).toHaveLength(2);
+  });
+
+  it('fails when the number of timeouts exceeds the limit', () => {
+    const verdict = judgeTimeouts([firstComparison('Timeout'), yesLiteral('Timeout')], {
+      maxTimeouts: 1,
+    });
+    expect(verdict.violations).toEqual([
+      {
+        file: 'test-gates.json',
+        message:
+          '2 mutant(s) timed out outside expectedTimeouts; settings.mutation.maxTimeouts allows 1',
+      },
+    ]);
+    expect(verdict.summary).toMatchObject({ detected: 2, timeout: 2 });
+  });
+
+  it('fails on a single timeout when the limit is 0, and not on none', () => {
+    expect(judgeTimeouts([firstComparison('Timeout')], { maxTimeouts: 0 }).violations).toEqual([
+      {
+        file: 'test-gates.json',
+        message:
+          '1 mutant(s) timed out outside expectedTimeouts; settings.mutation.maxTimeouts allows 0',
+      },
+    ]);
+    expect(judgeTimeouts([firstComparison('Killed')], { maxTimeouts: 0 }).violations).toEqual([]);
+  });
+
+  it('describes an unexpected timeout with an entry that can be pasted into expectedTimeouts', () => {
+    const verdict = judgeTimeouts([firstComparison('Timeout'), secondComparison('Killed')]);
+    expect(verdict.unexpectedTimeouts).toEqual([
+      {
+        file: GATE_PATH,
+        line: 1,
+        column: 41,
+        status: 'Timeout',
+        mutator: 'EqualityOperator',
+        original: 'age >= 18',
+        replacement: 'age > 18',
+        occurrence: 1,
+        sameKeyCount: 2,
+        allowance: {
+          mutator: 'EqualityOperator',
+          original: 'age >= 18',
+          replacement: 'age > 18',
+          occurrence: 1,
+          reason: '',
+        },
+      },
+    ]);
+  });
+
+  it('does not count an expected timeout against the limit', () => {
+    const verdict = judgeTimeouts([firstComparison('Timeout'), yesLiteral('Timeout')], {
+      maxTimeouts: 1,
+      expectedTimeouts: [expectedTimeout()],
+    });
+    expect(verdict.violations).toEqual([]);
+    expect(verdict.summary).toMatchObject({ detected: 2, timeout: 2, expectedTimeout: 1 });
+    expect(verdict.unexpectedTimeouts.map((mutant) => mutant.mutator)).toEqual(['StringLiteral']);
+  });
+
+  it('accepts an expected timeout that was killed instead', () => {
+    const verdict = judgeTimeouts([firstComparison('Killed')], {
+      maxTimeouts: 0,
+      expectedTimeouts: [expectedTimeout()],
+    });
+    expect(verdict.violations).toEqual([]);
+    expect(verdict.summary).toMatchObject({ detected: 1, timeout: 0, expectedTimeout: 0 });
+  });
+
+  it.each([
+    ['Survived', 'survived'],
+    ['NoCoverage', 'has no coverage'],
+  ])('fails when an expected timeout is %s', (status, wording) => {
+    const verdict = judgeTimeouts([firstComparison(status)], {
+      expectedTimeouts: [expectedTimeout()],
+    });
+    expect(verdict.violations).toEqual([
+      {
+        file: 'test-gates.json',
+        message: `src/age.ts: expectedTimeouts[0] (EqualityOperator / age >= 18 → age > 18): the mutant ${wording} instead of timing out. Detect it with a test`,
+      },
+    ]);
+    expect(verdict.survivors).toHaveLength(1);
+  });
+
+  it('fails on an expected timeout whose mutant does not exist', () => {
+    const verdict = judgeTimeouts([yesLiteral('Killed')], {
+      expectedTimeouts: [expectedTimeout()],
+    });
+    expect(verdict.violations).toEqual([
+      {
+        file: 'test-gates.json',
+        message:
+          'src/age.ts: expectedTimeouts[0] (EqualityOperator / age >= 18 → age > 18): stale entry (no such mutant in this run). Remove it',
+      },
+    ]);
+  });
+
+  it('requires occurrence when the key matches several mutants, and honours it', () => {
+    const mutants = [firstComparison('Timeout'), secondComparison('Timeout')];
+    expect(
+      judgeTimeouts(mutants, { maxTimeouts: 0, expectedTimeouts: [expectedTimeout()] }).violations
+    ).toEqual([
+      {
+        file: 'test-gates.json',
+        message:
+          'src/age.ts: expectedTimeouts[0] (EqualityOperator / age >= 18 → age > 18): matches 2 mutants in the file. Add "occurrence" (1-based) to pick one',
+      },
+      {
+        file: 'test-gates.json',
+        message:
+          '2 mutant(s) timed out outside expectedTimeouts; settings.mutation.maxTimeouts allows 0',
+      },
+    ]);
+    const picked = judgeTimeouts(mutants, {
+      maxTimeouts: 1,
+      expectedTimeouts: [expectedTimeout({ occurrence: 2 })],
+    });
+    expect(picked.violations).toEqual([]);
+    expect(picked.unexpectedTimeouts.map((mutant) => mutant.line)).toEqual([1]);
+  });
+
+  it('fails when two entries point at the same mutant', () => {
+    const verdict = judgeTimeouts([firstComparison('Timeout')], {
+      expectedTimeouts: [expectedTimeout(), expectedTimeout()],
+    });
+    expect(verdict.violations).toEqual([
+      {
+        file: 'test-gates.json',
+        message:
+          'src/age.ts: expectedTimeouts[1] (EqualityOperator / age >= 18 → age > 18): another entry already covers this mutant',
+      },
+    ]);
+    expect(verdict.summary.expectedTimeout).toBe(1);
+  });
+
+  it('requires a reason, and does not apply an entry without one', () => {
+    const verdict = judgeTimeouts([firstComparison('Timeout')], {
+      maxTimeouts: 0,
+      expectedTimeouts: [expectedTimeout({ reason: '' })],
+    });
+    expect(verdict.violations.map((violation) => violation.message)).toEqual([
+      'src/age.ts: expectedTimeouts[0]: "reason" is missing (say why the mutant cannot be observed)',
+      '1 mutant(s) timed out outside expectedTimeouts; settings.mutation.maxTimeouts allows 0',
+    ]);
+  });
+
+  it('fails when expectedTimeouts is not an array', () => {
+    const verdict = judgeMutationReport({
+      gates: [{ ...gate(), expectedTimeouts: 'x' as unknown as EquivalentMutant[] }],
+      report: { files: { [GATE_PATH]: { source: SOURCE, mutants: [firstComparison('Timeout')] } } },
+      readSource: () => SOURCE,
+    });
+    expect(verdict.violations).toEqual([
+      { file: 'test-gates.json', message: 'src/age.ts: expectedTimeouts must be an array' },
+    ]);
+    expect(verdict.unexpectedTimeouts).toHaveLength(1);
+  });
+
+  it('keeps equivalent mutants and expected timeouts apart', () => {
+    // An equivalentMutants entry cannot cover a timeout, and the timeout stays unexpected.
+    const verdict = judgeMutationReport({
+      gates: [gate([allowance()])],
+      report: { files: { [GATE_PATH]: { source: SOURCE, mutants: [firstComparison('Timeout')] } } },
+      readSource: () => SOURCE,
+      maxTimeouts: 0,
+    });
+    expect(verdict.violations.map((violation) => violation.message)).toEqual([
+      'src/age.ts: equivalentMutants[0] (EqualityOperator / age >= 18 → age > 18): stale allowance (the mutant is now Timeout). Remove it',
+      '1 mutant(s) timed out outside expectedTimeouts; settings.mutation.maxTimeouts allows 0',
+    ]);
+  });
+
+  it('counts timeouts over all gates', () => {
+    const verdict = judgeMutationReport({
+      gates: [gate(), { path: 'src/b.ts', decides: 'd', impact: 'i' }],
+      report: {
+        files: {
+          [GATE_PATH]: { source: SOURCE, mutants: [firstComparison('Timeout')] },
+          'src/b.ts': { source: SOURCE, mutants: [yesLiteral('Timeout')] },
+        },
+      },
+      readSource: () => SOURCE,
+      maxTimeouts: 1,
+    });
+    expect(verdict.violations.map((violation) => violation.message)).toEqual([
+      '2 mutant(s) timed out outside expectedTimeouts; settings.mutation.maxTimeouts allows 1',
+    ]);
+    expect(verdict.unexpectedTimeouts.map((mutant) => mutant.file)).toEqual([
+      GATE_PATH,
+      'src/b.ts',
+    ]);
   });
 });

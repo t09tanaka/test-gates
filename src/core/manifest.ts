@@ -53,17 +53,21 @@ function allowanceProblems(entry: unknown): string[] {
  * Checks the allow list of one gate. `reason` is mandatory: an allowance nobody can justify
  * is a mutant nobody checked.
  */
-export function validateEquivalentMutants(gatePath: string, value: unknown): Violation[] {
+export function validateEquivalentMutants(
+  gatePath: string,
+  value: unknown,
+  field: 'equivalentMutants' | 'expectedTimeouts' = 'equivalentMutants'
+): Violation[] {
   if (value === undefined) {
     return [];
   }
   if (!Array.isArray(value)) {
-    return [{ file: MANIFEST_FILE, message: `${gatePath}: equivalentMutants must be an array` }];
+    return [{ file: MANIFEST_FILE, message: `${gatePath}: ${field} must be an array` }];
   }
   return value.flatMap((entry: unknown, index: number) =>
     allowanceProblems(entry).map((problem) => ({
       file: MANIFEST_FILE,
-      message: `${gatePath}: equivalentMutants[${index}]${problem}`,
+      message: `${gatePath}: ${field}[${index}]${problem}`,
     }))
   );
 }
@@ -162,6 +166,9 @@ export function parseManifest(text: string): ParsedManifest {
   }
   for (const gate of gates) {
     violations.push(...validateEquivalentMutants(gate.path, gate.equivalentMutants));
+    violations.push(
+      ...validateEquivalentMutants(gate.path, gate.expectedTimeouts, 'expectedTimeouts')
+    );
   }
 
   return { gates, candidates, settings: raw.settings, violations };

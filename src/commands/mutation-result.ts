@@ -36,6 +36,7 @@ export function runMutationResult(dir: string, reportOverride: string | null, io
   const verdict = judgeMutationReport({
     gates: manifest.gates,
     report,
+    maxTimeouts: manifest.settings.maxTimeouts,
     readSource: (gatePath) => {
       try {
         return fs.readFileSync(path.join(manifest.dir, gatePath), 'utf8');
@@ -75,6 +76,24 @@ export function runMutationResult(dir: string, reportOverride: string | null, io
         const comma = index === survivors.length - 1 ? '' : ',';
         io.err(`    ${JSON.stringify(survivor.allowance)}${comma}`);
       });
+    }
+    io.err('');
+  }
+  const maxTimeouts = manifest.settings.maxTimeouts;
+  if (maxTimeouts !== null && verdict.unexpectedTimeouts.length > maxTimeouts) {
+    io.err(
+      `test-gates mutation: ${verdict.unexpectedTimeouts.length} mutant(s) timed out (settings.mutation.maxTimeouts: ${maxTimeouts})`
+    );
+    for (const mutant of verdict.unexpectedTimeouts) {
+      io.err(`  - ${formatSurvivor(mutant)}`);
+    }
+    io.err('');
+    io.err('A timeout counts as detected, but on a loaded machine a mutant that would survive');
+    io.err('can time out instead. Run again with less load (-- --concurrency 1). Only for a');
+    io.err('mutant that can never finish (a loop that no longer ends), add it to');
+    io.err('"expectedTimeouts" of the gate in test-gates.json and fill in "reason":');
+    for (const mutant of verdict.unexpectedTimeouts) {
+      io.err(`    ${mutant.file}: ${JSON.stringify(mutant.allowance)}`);
     }
     io.err('');
   }

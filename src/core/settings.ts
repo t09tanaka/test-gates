@@ -182,6 +182,8 @@ export function resolveSettings(raw: unknown): ResolvedSettings {
       'selfcheck',
       'stryker',
       'lcov',
+      'imports',
+      'mutation',
     ],
     'settings'
   );
@@ -302,6 +304,51 @@ export function resolveSettings(raw: unknown): ResolvedSettings {
     );
   }
 
+  const importsSection = section(settings.imports, ['mode', 'allow'], 'settings.imports');
+  if (
+    importsSection.mode !== undefined &&
+    importsSection.mode !== 'blocklist' &&
+    importsSection.mode !== 'allowlist'
+  ) {
+    throw new SettingsError('settings.imports.mode: must be "blocklist" or "allowlist"');
+  }
+  const importAllowRaw = importsSection.allow ?? [];
+  if (!Array.isArray(importAllowRaw)) {
+    throw new SettingsError('settings.imports.allow: must be an array');
+  }
+  const importAllow = importAllowRaw.map((item: unknown, index: number) => {
+    const at = `settings.imports.allow[${index}]`;
+    if (typeof item === 'string' && item !== '') {
+      return { module: item };
+    }
+    if (isRecord(item) && typeof item.pattern === 'string' && item.pattern !== '') {
+      rejectUnknownKeys(item, ['pattern', 'flags'], at);
+      if (item.flags !== undefined && typeof item.flags !== 'string') {
+        throw new SettingsError(`${at}.flags: must be a string`);
+      }
+      return { regex: compile(item.pattern, item.flags as string | undefined, at) };
+    }
+    if (isRecord(item) && typeof item.module === 'string' && item.module !== '') {
+      rejectUnknownKeys(item, ['module', 'names'], at);
+      const names = stringArray(item.names, `${at}.names`);
+      if (names.length === 0) {
+        throw new SettingsError(`${at}.names: must list at least one name`);
+      }
+      return { module: item.module, names };
+    }
+    throw new SettingsError(
+      `${at}: must be a package name, { pattern, flags? } or { module, names }`
+    );
+  });
+
+  const mutation = section(settings.mutation, ['maxTimeouts'], 'settings.mutation');
+  if (
+    mutation.maxTimeouts !== undefined &&
+    !(Number.isInteger(mutation.maxTimeouts) && (mutation.maxTimeouts as number) >= 0)
+  ) {
+    throw new SettingsError('settings.mutation.maxTimeouts: must be an integer >= 0');
+  }
+
   const stryker = section(settings.stryker, ['configFile', 'reportFile'], 'settings.stryker');
   const lcov = section(settings.lcov, ['file', 'summaryExclude'], 'settings.lcov');
 
@@ -326,6 +373,9 @@ export function resolveSettings(raw: unknown): ResolvedSettings {
     strykerConfigFile: optionalString(stryker.configFile, 'settings.stryker.configFile'),
     strykerReportFile:
       optionalString(stryker.reportFile, 'settings.stryker.reportFile') ?? DEFAULT_REPORT_FILE,
+    importMode: (importsSection.mode as 'blocklist' | 'allowlist' | undefined) ?? 'blocklist',
+    importAllow,
+    maxTimeouts: (mutation.maxTimeouts as number | undefined) ?? null,
     lcovFile: optionalString(lcov.file, 'settings.lcov.file'),
     lcovSummaryExclude:
       lcov.summaryExclude === undefined

@@ -148,6 +148,24 @@ describe('parseManifest: entries', () => {
   });
 });
 
+describe('expectedTimeouts', () => {
+  it('is validated like equivalentMutants, under its own name', () => {
+    const noReason: Record<string, string> = { ...allowance };
+    delete noReason.reason;
+    expect(
+      messages({ gates: [{ ...gate, expectedTimeouts: [allowance, noReason] }], candidates: [] })
+    ).toEqual([
+      'src/money.ts: expectedTimeouts[1]: "reason" is missing (say why the mutant cannot be observed)',
+    ]);
+    expect(messages({ gates: [{ ...gate, expectedTimeouts: {} }], candidates: [] })).toEqual([
+      'src/money.ts: expectedTimeouts must be an array',
+    ]);
+    expect(validateEquivalentMutants('src/a.ts', [null], 'expectedTimeouts')).toEqual([
+      { file: 'test-gates.json', message: 'src/a.ts: expectedTimeouts[0] must be an object' },
+    ]);
+  });
+});
+
 describe('validateEquivalentMutants', () => {
   const check = (entry: unknown) =>
     validateEquivalentMutants('src/a.ts', [entry]).map((violation) => violation.message);

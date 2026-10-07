@@ -13,6 +13,11 @@ export interface Gate {
   decides: string;
   impact: string;
   equivalentMutants?: EquivalentMutant[];
+  /**
+   * Mutants that always time out (a loop that never ends). Same key as `equivalentMutants`.
+   * They are not counted against `settings.mutation.maxTimeouts`.
+   */
+  expectedTimeouts?: EquivalentMutant[];
 }
 
 export interface Candidate {
@@ -82,6 +87,15 @@ export interface Settings {
     file?: string;
     summaryExclude?: string[];
   };
+  /** Since 0.2.0. */
+  imports?: {
+    mode?: 'blocklist' | 'allowlist';
+    allow?: (string | { pattern: string; flags?: string } | { module: string; names: string[] })[];
+  };
+  /** Since 0.2.0. */
+  mutation?: {
+    maxTimeouts?: number;
+  };
 }
 
 export interface Manifest {
@@ -115,6 +129,10 @@ export interface ResolvedSettings {
   strykerReportFile: string;
   lcovFile: string | null;
   lcovSummaryExclude: RegExp[];
+  importMode: 'blocklist' | 'allowlist';
+  importAllow: { module?: string; regex?: RegExp; names?: string[] }[];
+  /** `null`: no limit. */
+  maxTimeouts: number | null;
 }
 
 /** One finding. Printed as `file:line: message`. */
