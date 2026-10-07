@@ -1,5 +1,7 @@
 # test-gates
 
+[![CI](https://github.com/t09tanaka/test-gates/actions/workflows/ci.yml/badge.svg)](https://github.com/t09tanaka/test-gates/actions/workflows/ci.yml)
+
 Test gates for the code that must not be wrong.
 
 This package guards the handful of modules where a wrong decision costs money or trust: amounts and rounding, state transitions of payments and orders, authentication and role checks, expiry and remaining-quota rules.

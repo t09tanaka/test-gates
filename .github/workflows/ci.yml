@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  gates:
+    name: lint, test, gates, mutation (Node from .node-version)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - run: npm ci
+
+      - name: lint
+        run: npm run lint
+
+      - name: format
+        run: npm run format:check
+
+      - name: typecheck
+        run: npm run typecheck
+
+      - name: test (builds first)
+        run: npm test
+
+      - name: test gates (static checks + per-file 100% coverage)
+        run: npm run test:gates
+
+      - name: negative control
+        run: npm run test:gates:selfcheck
+
+      - name: mutation test (full run)
+        run: npm run test:gates:mutation -- --force
+
+  node20:
+    # engines.node is >=20. Stryker 10 does not start below Node 22.12, so the mutation test
+    # runs only in the job above.
+    name: build and test (Node 20)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: test (builds first; includes the CLI integration tests)
+        run: npm test
