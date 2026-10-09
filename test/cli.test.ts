@@ -309,20 +309,20 @@ describe('test-gates check', () => {
             allow: ['^express$'],
           },
           impurePaths: { add: [{ pattern: '\\.service\\.ts$', reason: 'NestJS class file' }] },
-          forbiddenSource: { add: [{ pattern: 'process\\.env', reason: 'reads the environment' }] },
+          forbiddenSource: { add: [{ pattern: 'Math\\.random', reason: 'not deterministic' }] },
         },
       },
       'src/user.service.ts': [
         "import { Response } from 'express';",
         "import { find } from './repository/user';",
-        'export const region = process.env.REGION;',
+        'export const id = Math.random();',
       ].join('\n'),
       'src/user.service.spec.ts': "it('x', () => {});\n",
     });
     expect(violationsOf(testGates(['check', '--dir', dir]).stderr)).toEqual([
       'src/user.service.ts: cannot be a gate (NestJS class file). Move it to candidates',
       'src/user.service.ts:2: runtime import of "./repository/user" (DB layer)',
-      'src/user.service.ts:3: reads the environment',
+      'src/user.service.ts:3: not deterministic',
     ]);
   });
 });
@@ -336,7 +336,10 @@ describe('test-gates mutation-result', () => {
   };
 
   it('passes when every mutant is detected, and prints the real numbers', () => {
-    const dir = validProject({ 'reports/mutation/mutation.json': report('Killed', 'Timeout') });
+    const dir = validProject(
+      { 'reports/mutation/mutation.json': report('Killed', 'Timeout') },
+      { settings: { mutation: { maxTimeouts: 1 } } }
+    );
     expect(testGates(['mutation-result', '--dir', dir])).toEqual({
       status: 0,
       stdout:
@@ -460,13 +463,16 @@ describe('test-gates mutation-result: timeouts', () => {
       { gates: [{ ...gateEntry, ...gateExtra }], ...(settings ? { settings } : {}) }
     );
 
-  it('passes with any number of timeouts when no limit is set, as in 0.1.0', () => {
-    expect(testGates(['mutation-result', '--dir', withTimeouts({})])).toEqual({
-      status: 0,
-      stdout:
-        'test-gates mutation: OK (mutants 2 / detected 2 (timeout 2) / allowed equivalent 0 / not evaluable 0 / unallowed survivors 0)\n',
-      stderr: '',
-    });
+  it('fails on any timeout when settings.mutation.maxTimeouts is not set', () => {
+    const result = testGates(['mutation-result', '--dir', withTimeouts({})]);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr.split('\n')[0]).toBe(
+      'test-gates mutation: 2 mutant(s) timed out (settings.mutation.maxTimeouts: 0)'
+    );
+    expect(result.stderr).toContain(
+      '(settings.mutation.maxTimeouts raises the limit for the whole project):'
+    );
   });
 
   it('fails above settings.mutation.maxTimeouts and lists every timeout', () => {
@@ -527,7 +533,7 @@ describe('test-gates mutation-result: timeouts', () => {
   });
 });
 
-describe('test-gates check: opt-in checks and warnings', () => {
+describe('test-gates check: allowlist mode and the Vitest coverage provider', () => {
   it('applies the allowlist only when settings.imports.mode asks for it', () => {
     const files = {
       'src/age.ts':
@@ -544,18 +550,19 @@ describe('test-gates check: opt-in checks and warnings', () => {
     ]);
   });
 
-  it('warns, without failing, about the v8 provider on Vitest 3', () => {
+  it('fails on the v8 provider with Vitest 3', () => {
     const dir = validProject({
       'vitest.gates.config.ts': 'export default createVitestGatesConfig({});\n',
       'node_modules/vitest/package.json': { name: 'vitest', version: '3.2.7' },
     });
     const result = testGates(['check', '--dir', dir]);
-    expect(result.status).toBe(0);
-    expect(result.stdout).toBe('test-gates check: OK (1 gate(s), 0 candidate(s))\n');
-    expect(result.stderr).toMatch(
-      /^test-gates check: warning: vitest\.gates\.config\.ts: Vitest 3\.2\.7 with the v8 coverage provider does not count/
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe('');
+    const violations = violationsOf(result.stderr);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatch(
+      /^vitest\.gates\.config\.ts: Vitest 3\.2\.7 with the v8 coverage provider does not count/
     );
-    expect(result.stderr.trim().split('\n')).toHaveLength(1);
   });
 
   it.each([
@@ -565,7 +572,7 @@ describe('test-gates check: opt-in checks and warnings', () => {
       '3.2.7',
       "export default createVitestGatesConfig({ coverageProvider: 'istanbul' });\n",
     ],
-  ])('does not warn with %s', (_name, version, config) => {
+  ])('passes with %s', (_name, version, config) => {
     const dir = validProject({
       'vitest.gates.config.ts': config,
       'node_modules/vitest/package.json': { name: 'vitest', version },
@@ -577,7 +584,7 @@ describe('test-gates check: opt-in checks and warnings', () => {
     });
   });
 
-  it('does not warn for a Jest project or when Vitest is not installed', () => {
+  it('says nothing for a Jest project or when Vitest is not installed', () => {
     expect(testGates(['check', '--dir', validProject({ 'jest.gates.config.js': '' })]).stderr).toBe(
       ''
     );

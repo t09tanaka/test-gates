@@ -5,9 +5,9 @@
  *
  * @param input.vitestVersion Installed Vitest version, or null when it cannot be found.
  * @param input.configSource Text of the gate config.
- * @returns A warning for `test-gates check`, or null when the setup detects the gap.
+ * @returns A violation for `test-gates check`, or null when the setup detects the gap.
  */
-export function vitestCoverageWarning(input: {
+export function vitestCoverageViolation(input: {
   vitestVersion: string | null;
   configSource: string;
 }): string | null {

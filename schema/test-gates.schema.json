@@ -263,7 +263,7 @@
           "$ref": "#/definitions/ruleList"
         },
         "forbiddenSource": {
-          "description": "Lines that must not appear in a gate (regular expressions, tested one line at a time). Default: 'use client' / 'use server'.",
+          "description": "Lines that must not appear in a gate (regular expressions, tested one line at a time). Default: 'use client' / 'use server', and process.env (since 0.3.0).",
           "$ref": "#/definitions/ruleList"
         },
         "importAliases": {
@@ -397,7 +397,7 @@
           "additionalProperties": false,
           "properties": {
             "maxTimeouts": {
-              "description": "How many timed-out mutants outside expectedTimeouts are tolerated. Above it the run fails. Not set: no limit.",
+              "description": "How many timed-out mutants outside expectedTimeouts are tolerated. Above it the run fails. Default: 0 (since 0.3.0; before that, not set meant no limit).",
               "type": "integer",
               "minimum": 0
             }

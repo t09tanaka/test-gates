@@ -209,11 +209,34 @@ describe('scanGateSource: forbidden source', () => {
 
   it('applies settings.forbiddenSource.add line by line', () => {
     const settings = resolveSettings({
-      forbiddenSource: { add: [{ pattern: 'process\\.env', reason: 'reads the environment' }] },
+      forbiddenSource: { add: [{ pattern: 'Math\\.random', reason: 'not deterministic' }] },
     });
-    expect(gate('const a = 1;\nconst b = process.env.B;', settings)).toEqual([
-      { file: GATE, line: 2, message: 'reads the environment' },
+    expect(gate('const a = 1;\nconst b = Math.random();', settings)).toEqual([
+      { file: GATE, line: 2, message: 'not deterministic' },
     ]);
+  });
+
+  it.each([
+    'const b = process.env.B;',
+    "  return process.env['B'] ?? fallback;",
+    'f(process.env);',
+  ])('reports process.env by default: %s', (line) => {
+    expect(gate(`const a = 1;\n${line}`)).toEqual([
+      {
+        file: GATE,
+        line: 2,
+        message: 'reads process.env (not a pure module). Take the value as an argument',
+      },
+    ]);
+  });
+
+  it('does not report a name that only contains process.env', () => {
+    expect(gate('const a = subprocess.env;\nconst b = process.environment;')).toEqual([]);
+  });
+
+  it('drops the built-in rules with settings.forbiddenSource.defaults: false', () => {
+    const settings = resolveSettings({ forbiddenSource: { defaults: false } });
+    expect(gate("'use client';\nconst b = process.env.B;", settings)).toEqual([]);
   });
 });
 

@@ -3,7 +3,7 @@ import path from 'node:path';
 import { MANIFEST_FILE } from '../core/manifest.js';
 import { scanGateSource, scanSpecSource, scanStrykerConfig } from '../core/scan.js';
 import { gateExtensionOf, looksLikeSpec } from '../core/spec-path.js';
-import { vitestCoverageWarning } from '../core/vitest-coverage.js';
+import { vitestCoverageViolation } from '../core/vitest-coverage.js';
 import type { Violation } from '../core/types.js';
 import { existsExact, readText } from '../fs.js';
 import { readManifest, type LoadedManifest } from '../load.js';
@@ -115,6 +115,8 @@ export function checkGates(manifest: LoadedManifest): Violation[] {
     }
   }
 
+  violations.push(...checkVitestCoverage(manifest));
+
   return violations;
 }
 
@@ -141,25 +143,22 @@ function installedVitestVersion(startDir: string): string | null {
   }
 }
 
-/** Things worth knowing that do not fail the check. */
-export function checkWarnings(manifest: LoadedManifest): string[] {
+/** A Vitest gate run whose coverage provider misses untested branches. */
+function checkVitestCoverage(manifest: LoadedManifest): Violation[] {
   const config = VITEST_GATE_CONFIGS.find((name) => fs.existsSync(path.join(manifest.dir, name)));
   if (!config) {
     return [];
   }
-  const warning = vitestCoverageWarning({
+  const message = vitestCoverageViolation({
     vitestVersion: installedVitestVersion(manifest.dir),
     configSource: readText(manifest.dir, config),
   });
-  return warning === null ? [] : [`${config}: ${warning}`];
+  return message === null ? [] : [{ file: config, message }];
 }
 
 export function runCheck(dir: string, io: Io): number {
   const manifest = readManifest(dir);
   const violations = checkGates(manifest);
-  for (const warning of checkWarnings(manifest)) {
-    io.err(`test-gates check: warning: ${warning}`);
-  }
   if (violations.length > 0) {
     printViolations(io, 'check', violations);
     return 1;

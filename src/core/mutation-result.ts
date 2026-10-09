@@ -67,8 +67,8 @@ export interface MutationVerdict {
   violations: Violation[];
   survivors: UnallowedSurvivor[];
   /**
-   * Timed-out mutants that no `expectedTimeouts` entry covers. Informational unless
-   * `maxTimeouts` is set and exceeded, in which case `violations` says so.
+   * Timed-out mutants that no `expectedTimeouts` entry covers. When there are more of them
+   * than `maxTimeouts`, `violations` says so.
    */
   unexpectedTimeouts: UnallowedSurvivor[];
   summary: MutationSummary;
@@ -180,9 +180,9 @@ export function judgeMutationReport(input: {
   readSource: (gatePath: string) => string | undefined;
   /**
    * `settings.mutation.maxTimeouts`: how many timeouts outside `expectedTimeouts` are
-   * tolerated. `null` or absent means no limit.
+   * tolerated. Absent means 0.
    */
-  maxTimeouts?: number | null;
+  maxTimeouts?: number;
 }): MutationVerdict {
   const violations: Violation[] = [];
   const survivors: UnallowedSurvivor[] = [];
@@ -381,8 +381,8 @@ export function judgeMutationReport(input: {
     });
   }
 
-  const maxTimeouts = input.maxTimeouts ?? null;
-  if (maxTimeouts !== null && unexpectedTimeouts.length > maxTimeouts) {
+  const maxTimeouts = input.maxTimeouts ?? 0;
+  if (unexpectedTimeouts.length > maxTimeouts) {
     violations.push({
       file: MANIFEST_FILE,
       message: `${unexpectedTimeouts.length} mutant(s) timed out outside expectedTimeouts; settings.mutation.maxTimeouts allows ${maxTimeouts}`,
