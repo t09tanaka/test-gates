@@ -64,7 +64,7 @@ export const DEFAULT_FORBIDDEN_SOURCE: PatternRule[] = [
     reason: "'use client' / 'use server' directive (not a pure module)",
   },
   {
-    pattern: '\\bprocess\\.env\\b',
+    pattern: '\\bprocess\\??\\.env\\b',
     reason: 'reads process.env (not a pure module). Take the value as an argument',
   },
 ];

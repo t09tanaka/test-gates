@@ -220,6 +220,7 @@ describe('scanGateSource: forbidden source', () => {
     'const b = process.env.B;',
     "  return process.env['B'] ?? fallback;",
     'f(process.env);',
+    'const b = process?.env.B;',
   ])('reports process.env by default: %s', (line) => {
     expect(gate(`const a = 1;\n${line}`)).toEqual([
       {
