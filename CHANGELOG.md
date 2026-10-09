@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.0
+
+Three defaults move to the strict side. A project that passed with 0.2.0 can fail with 0.3.0 without any change of its own; each case below says what to do.
+
+### Changed (breaking)
+
+- `settings.mutation.maxTimeouts` defaults to `0` (was: no limit). A mutant that times out outside `expectedTimeouts` now fails `test-gates mutation`. Run again with less load (`-- --concurrency 1`) first. For a mutant that can never finish, add it to `expectedTimeouts` of the gate with the reason. To tolerate some for now, set `settings.mutation.maxTimeouts` to a number.
+- `test-gates check` fails, instead of warning, when the gate run uses Vitest below 4 with the v8 provider and neither `istanbul` nor `experimentalAstAwareRemapping: true`. Use `createVitestGatesConfig({ coverageProvider: 'istanbul' })` (needs `@vitest/coverage-istanbul`), or move to Vitest 4.
+- A gate that reads `process.env` fails `test-gates check` (new built-in `forbiddenSource` rule). Take the value as an argument and read the environment in the caller. `settings.forbiddenSource.defaults: false` turns the built-in rules off, including the `'use client'` / `'use server'` one.
+
+### Removed
+
+- The `warning:` line of `test-gates check`. Nothing is reported as a warning any more.
+
 ## 0.2.0
 
 Everything added here is opt-in. With an unchanged `test-gates.json` and unchanged config files, 0.2.0 gives the same verdicts, exit codes and summary line as 0.1.0. The one visible difference is a warning on stderr from `test-gates check` for Vitest 3 with the v8 provider (see below); it does not change the exit code.
