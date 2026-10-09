@@ -199,12 +199,14 @@ Static checks, before the gate run. Reports every violation as `file:line: reaso
 - Every gate exists, and so does its spec. **The check is case-sensitive** even on macOS and Windows, because CI on Linux is.
 - No path is listed twice, or in both `gates` and `candidates`. Candidates exist.
 - A gate has no decorator (`@Name(` at the start of a line) and no runtime import of a framework, database client or SDK. `import type` is ignored.
+- A gate does not read `process.env` (since 0.3.0). What comes from the environment is an input: take it as an argument.
 - A gate and its spec have no coverage ignore directive (`istanbul ignore`, `c8 ignore`, `v8 ignore`).
 - A spec has no `.skip`, `.only`, `.todo`, `xit`, `xdescribe`, `fit`, `fdescribe`, `.skipIf`, `.runIf`, `.fails`.
 - A spec does not `jest.mock` / `vi.mock` the module it is supposed to test.
 - A gate has no `Stryker disable` / `Stryker restore` comment. Such a comment turns off a whole line for a whole mutator, which takes non-equivalent mutants out with it.
 - `equivalentMutants` entries are well formed and each has a `reason`.
 - The Stryker config does not use `excludedMutations`, `ignoreStatic` or `ignorers`.
+- A Vitest gate run below Vitest 4 does not use the plain v8 coverage provider (since 0.3.0), see [Vitest: v8 or istanbul](#vitest-v8-or-istanbul).
 
 ### `test-gates mutation [-- <stryker arguments>]`
 
@@ -228,9 +230,9 @@ The run also fails when
 - two allowances point at the same mutant, or an allowance has no `reason`,
 - a gate is missing from the report or has no mutants, or no mutant was evaluated at all,
 - the report was made from a different version of a gate than the one on disk.
-- more mutants timed out than `settings.mutation.maxTimeouts` allows (only when that setting is present, see [Timeouts](#timeouts)).
+- a mutant timed out outside `expectedTimeouts`, or more of them than `settings.mutation.maxTimeouts` allows (see [Timeouts](#timeouts)).
 
-`Timeout` counts as detected, but its count is always printed on its own (`detected N (timeout M)`). On a loaded machine mutants time out that would otherwise survive, so a rising timeout count means the run may be hiding survivors: rerun with lower `--concurrency`.
+`Timeout` counts as detected, but its count is always printed on its own (`detected N (timeout M)`). On a loaded machine mutants time out that would otherwise survive, so a timeout nobody has explained fails the run.
 
 On failure every unallowed survivor is listed as `file:line:column / mutator / original → replacement / occurrence`, followed by a JSON fragment that can be pasted into `equivalentMutants`. The last line gives the real numbers, never a percentage:
 
@@ -240,7 +242,7 @@ test-gates mutation: OK (mutants 317 / detected 308 (timeout 0) / allowed equiva
 
 #### Timeouts
 
-A timeout is a detection only if the mutant really cannot finish. On a loaded machine a mutant that would have survived can time out instead, and the run looks better than it is. Two opt-in controls (since 0.2.0):
+A timeout is a detection only if the mutant really cannot finish. On a loaded machine a mutant that would have survived can time out instead, and the run looks better than it is. Since 0.3.0 a timeout therefore fails the run unless the gate lists it:
 
 ```json
 {
@@ -258,13 +260,12 @@ A timeout is a detection only if the mutant really cannot finish. On a loaded ma
         }
       ]
     }
-  ],
-  "settings": { "mutation": { "maxTimeouts": 0 } }
+  ]
 }
 ```
 
-- `settings.mutation.maxTimeouts`: how many timeouts outside `expectedTimeouts` are tolerated. Above it the run fails with exit code 1 and lists every such mutant as `file:line:column / mutator / original → replacement`, with a fragment to paste. Not set means no limit, which is the 0.1.0 behaviour.
 - `expectedTimeouts` (per gate): mutants that turn a loop into one that never ends. Same key as `equivalentMutants` (`mutator` + `original` + `replacement`, `occurrence` when ambiguous, `reason` required).
+- `settings.mutation.maxTimeouts`: how many timeouts outside `expectedTimeouts` are tolerated, default `0`. Above it the run fails with exit code 1 and lists every such mutant as `file:line:column / mutator / original → replacement`, with a fragment to paste. Up to 0.2.0 the default was no limit; a project that cannot get its timeouts to zero yet sets a number here and lowers it.
 
 How an `expectedTimeouts` entry is judged:
 
@@ -277,7 +278,7 @@ How an `expectedTimeouts` entry is judged:
 
 `Killed` is accepted on purpose, unlike a stale `equivalentMutants` entry. A mutant that hangs is reported as `Timeout` when Stryker's timer fires first and as `Killed` when the test runner's own per-test timeout fires first; which one wins depends on the load. Failing on `Killed` would make the list flap between two runs of the same code. And nothing is hidden by accepting it: `Killed` is the best possible outcome.
 
-When the limit is exceeded, first run again with less load (`npm run test:gates:mutation -- --concurrency 1`). Add an entry only for a mutant that can never finish.
+When the run fails on a timeout, first run again with less load (`npm run test:gates:mutation -- --concurrency 1`). Add an entry only for a mutant that can never finish.
 
 ### `test-gates selfcheck [--all | --first] [-- <gate command>]`
 
@@ -360,7 +361,7 @@ All optional. Patterns are regular expressions written as JSON strings; a rule i
 | `impureImports.allow`          | none                                                         | Module patterns exempt from every rule (e.g. `^express$` where `express` is imported only for its types without `import type`)                       |
 | `impureNamedImports`           | `PrismaClient` from `@prisma/client`                         | `{ "defaults", "add": [{ "module", "names", "reason" }] }`: names banned from a module that is otherwise fine                                        |
 | `impurePaths`                  | `.vue` `.jsx` `.tsx`, `.d.ts`                                | `{ "defaults", "add" }`: gate paths that are rejected (`\\.service\\.ts$`, `^src/hooks/`)                                                            |
-| `forbiddenSource`              | `'use client'` / `'use server'`                              | `{ "defaults", "add" }`: lines that must not appear in a gate, tested one line at a time                                                             |
+| `forbiddenSource`              | `'use client'` / `'use server'`, `process.env` (0.3.0)       | `{ "defaults", "add" }`: lines that must not appear in a gate, tested one line at a time                                                             |
 | `importAliases`                | none                                                         | `[{ "prefix": "@/", "target": "src/" }]`, to recognise `jest.mock('@/x')` of the module under test                                                   |
 | `gateCommand`                  | derived from `jest.gates.config.*` / `vitest.gates.config.*` | Command `selfcheck` runs, as an array (`["jest", "--config", "jest.gates.config.js", "--maxWorkers=2"]`)                                             |
 | `selfcheck.mode`               | `all`                                                        | `all` or `first`                                                                                                                                     |
@@ -371,7 +372,7 @@ All optional. Patterns are regular expressions written as JSON strings; a rule i
 | `lcov.summaryExclude`          | none                                                         | Paths left out of the reference total (`\\.g\\.dart$`)                                                                                               |
 | `imports.mode` (0.2.0)         | `blocklist`                                                  | `allowlist` turns the import check around, see [Allowlist mode](#allowlist-mode)                                                                     |
 | `imports.allow` (0.2.0)        | none                                                         | Packages a gate may import in allowlist mode: `"decimal.js"`, `{ "pattern": "^@acme/pure-" }`, `{ "module": "@prisma/client", "names": ["Prisma"] }` |
-| `mutation.maxTimeouts` (0.2.0) | none (no limit)                                              | Timeouts tolerated outside `expectedTimeouts`, see [Timeouts](#timeouts)                                                                             |
+| `mutation.maxTimeouts` (0.2.0) | `0` (0.3.0; no limit before)                                 | Timeouts tolerated outside `expectedTimeouts`, see [Timeouts](#timeouts)                                                                             |
 
 Built-in impure imports: `@nestjs/*`, `class-validator`, `class-transformer`, `typeorm`, `sequelize`, `mongoose`, `knex`, `pg`, `mysql`, `mysql2`, `ioredis`, `redis`, `@prisma/adapter-*`, `react`, `react-dom`, `next`, `server-only`, `client-only`, `vue`, `vue-router`, `vue-i18n`, `pinia`, `nuxt`, `#app`, `#imports`, `*.vue`, `express`, `express-jwt`, `fastify`, `koa`, `rxjs`, `passport`, `passport-*`, `axios`, `openapi-fetch`, `stripe`, `nodemailer`, `firebase-admin`, `@aws-sdk/*`, `@sentry/*`, `@slack/*`, `@stripe/*`, and the Node.js modules `fs`, `http`, `https`, `http2`, `net`, `tls`, `dgram`, `dns`, `child_process`, `worker_threads`.
 
@@ -490,7 +491,7 @@ export default defineConfig(
 );
 ```
 
-The default stays `v8` because changing it would break every project that has only `@vitest/coverage-v8` installed. Instead `test-gates check` prints a warning (the exit code does not change) when it finds a `vitest.gates.config.*`, an installed Vitest below 4, and neither `istanbul` nor `experimentalAstAwareRemapping: true` in that config.
+The helper's default stays `v8` because changing it would break every project that has only `@vitest/coverage-v8` installed. Instead `test-gates check` fails (since 0.3.0; a warning in 0.2.0) when it finds a `vitest.gates.config.*`, an installed Vitest below 4, and neither `istanbul` nor `experimentalAstAwareRemapping: true` in that config. On Vitest 4 the v8 provider passes the check.
 
 ## Cost, and how to use Stryker's incremental mode
 
@@ -523,6 +524,7 @@ How the incremental file and this tool interact (covered by `test/incremental.te
 - **Stryker 10 does not start on Node.js 22.10** (`ERR_REQUIRE_ESM`). It runs on 22.14 and 22.22. On Node.js below 22.12 use Stryker 9.
 - **Do not call the gate while the spec file is being collected** (in the body of `describe`, or at module level). The mutants reached that way become _static_ mutants, and with Stryker 10 and Vitest 3 a spec file that throws during collection was reported as `Survived`, not `Killed`. Call the gate inside `it` / `beforeEach`.
 - **Jest treats an empty `testMatch` as its default pattern** and would run every test of the project. The helpers never produce an empty list; if you write the gate config by hand, do not either.
+- **`process.env` is found by text too.** A comment that mentions it is reported, and reading the environment through another name (`const { env } = process`) is not. The clock (`Date.now()`, `new Date()`) and `Math.random()` are not checked: a default argument such as `now = new Date()` is a legitimate way to pass them in, and text cannot tell it from a direct read. Add a `forbiddenSource` rule if the project wants one.
 - **Imports are found by text, not by parsing.** The checks run without the project's dependencies installed, so an import inside a comment is reported too, and only the gate's own imports are looked at, not what those modules import in turn.
 - **An ordinary `import { Request } from 'express'` used only as a type is reported.** Write `import type`, or exempt the module with `impureImports.allow`.
 - **`test-gates lcov` checks lines only.** lcov from Flutter carries no branch data, and Dart has no established mutation testing tool; a Dart gate is guarded by coverage alone.

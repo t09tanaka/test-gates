@@ -81,10 +81,10 @@ describe('resolveSettings: defaults', () => {
     expect(defaults.lcovSummaryExclude).toEqual([]);
   });
 
-  it('uses the blocklist, with no package allow list and no timeout limit', () => {
+  it('uses the blocklist, with no package allow list, and tolerates no timeout', () => {
     expect(defaults.importMode).toBe('blocklist');
     expect(defaults.importAllow).toEqual([]);
-    expect(defaults.maxTimeouts).toBeNull();
+    expect(defaults.maxTimeouts).toBe(0);
   });
 
   it('gives the same result for an empty object', () => {

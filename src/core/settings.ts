@@ -63,7 +63,14 @@ export const DEFAULT_FORBIDDEN_SOURCE: PatternRule[] = [
     pattern: '^\\s*([\'"])use (client|server)\\1',
     reason: "'use client' / 'use server' directive (not a pure module)",
   },
+  {
+    pattern: '\\bprocess\\??\\.env\\b',
+    reason: 'reads process.env (not a pure module). Take the value as an argument',
+  },
 ];
+
+/** Timeouts tolerated outside `expectedTimeouts` when `settings.mutation.maxTimeouts` is not set. */
+export const DEFAULT_MAX_TIMEOUTS = 0;
 
 export class SettingsError extends Error {}
 
@@ -375,7 +382,7 @@ export function resolveSettings(raw: unknown): ResolvedSettings {
       optionalString(stryker.reportFile, 'settings.stryker.reportFile') ?? DEFAULT_REPORT_FILE,
     importMode: (importsSection.mode as 'blocklist' | 'allowlist' | undefined) ?? 'blocklist',
     importAllow,
-    maxTimeouts: (mutation.maxTimeouts as number | undefined) ?? null,
+    maxTimeouts: (mutation.maxTimeouts as number | undefined) ?? DEFAULT_MAX_TIMEOUTS,
     lcovFile: optionalString(lcov.file, 'settings.lcov.file'),
     lcovSummaryExclude:
       lcov.summaryExclude === undefined

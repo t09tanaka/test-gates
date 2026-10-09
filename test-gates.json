@@ -77,9 +77,6 @@
     "imports": {
       "mode": "allowlist",
       "allow": []
-    },
-    "mutation": {
-      "maxTimeouts": 0
     }
   }
 }

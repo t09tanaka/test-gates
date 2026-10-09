@@ -80,7 +80,7 @@ export function runMutationResult(dir: string, reportOverride: string | null, io
     io.err('');
   }
   const maxTimeouts = manifest.settings.maxTimeouts;
-  if (maxTimeouts !== null && verdict.unexpectedTimeouts.length > maxTimeouts) {
+  if (verdict.unexpectedTimeouts.length > maxTimeouts) {
     io.err(
       `test-gates mutation: ${verdict.unexpectedTimeouts.length} mutant(s) timed out (settings.mutation.maxTimeouts: ${maxTimeouts})`
     );
@@ -91,7 +91,8 @@ export function runMutationResult(dir: string, reportOverride: string | null, io
     io.err('A timeout counts as detected, but on a loaded machine a mutant that would survive');
     io.err('can time out instead. Run again with less load (-- --concurrency 1). Only for a');
     io.err('mutant that can never finish (a loop that no longer ends), add it to');
-    io.err('"expectedTimeouts" of the gate in test-gates.json and fill in "reason":');
+    io.err('"expectedTimeouts" of the gate in test-gates.json and fill in "reason"');
+    io.err('(settings.mutation.maxTimeouts raises the limit for the whole project):');
     for (const mutant of verdict.unexpectedTimeouts) {
       io.err(`    ${mutant.file}: ${JSON.stringify(mutant.allowance)}`);
     }

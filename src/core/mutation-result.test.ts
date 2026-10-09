@@ -160,11 +160,23 @@ describe('judgeMutationReport: status handling', () => {
   });
 
   it('counts Timeout as detected, and separately as a timeout', () => {
-    const verdict = judge([
-      firstComparison('Timeout'),
-      yesLiteral('Killed'),
-      secondComparison('Timeout'),
-    ]);
+    const verdict = judgeMutationReport({
+      gates: [gate()],
+      report: {
+        files: {
+          [GATE_PATH]: {
+            source: SOURCE,
+            mutants: [
+              firstComparison('Timeout'),
+              yesLiteral('Killed'),
+              secondComparison('Timeout'),
+            ],
+          },
+        },
+      },
+      readSource: () => SOURCE,
+      maxTimeouts: 2,
+    });
     expect(verdict.violations).toEqual([]);
     expect(verdict.summary).toEqual({
       total: 3,
@@ -737,7 +749,7 @@ describe('judgeMutationReport: timeouts', () => {
 
   function judgeTimeouts(
     mutants: ReportMutant[],
-    options: { expectedTimeouts?: EquivalentMutant[]; maxTimeouts?: number | null } = {}
+    options: { expectedTimeouts?: EquivalentMutant[]; maxTimeouts?: number } = {}
   ) {
     return judgeMutationReport({
       gates: [
@@ -752,19 +764,20 @@ describe('judgeMutationReport: timeouts', () => {
     });
   }
 
-  it('lists timeouts but does not fail on them when no limit is set', () => {
+  it('fails on any timeout when no limit is given: the default is 0', () => {
     const verdict = judgeTimeouts([firstComparison('Timeout'), secondComparison('Timeout')]);
-    expect(verdict.violations).toEqual([]);
+    expect(verdict.violations).toEqual([
+      {
+        file: 'test-gates.json',
+        message:
+          '2 mutant(s) timed out outside expectedTimeouts; settings.mutation.maxTimeouts allows 0',
+      },
+    ]);
     expect(verdict.summary).toMatchObject({ detected: 2, timeout: 2, expectedTimeout: 0 });
     expect(verdict.unexpectedTimeouts.map(({ line, status }) => [line, status])).toEqual([
       [1, 'Timeout'],
       [3, 'Timeout'],
     ]);
-  });
-
-  it('does not fail on a null limit either', () => {
-    const verdict = judgeTimeouts([firstComparison('Timeout')], { maxTimeouts: null });
-    expect(verdict.violations).toEqual([]);
   });
 
   it('passes when the number of timeouts equals the limit', () => {
@@ -926,6 +939,7 @@ describe('judgeMutationReport: timeouts', () => {
       gates: [{ ...gate(), expectedTimeouts: 'x' as unknown as EquivalentMutant[] }],
       report: { files: { [GATE_PATH]: { source: SOURCE, mutants: [firstComparison('Timeout')] } } },
       readSource: () => SOURCE,
+      maxTimeouts: 1,
     });
     expect(verdict.violations).toEqual([
       { file: 'test-gates.json', message: 'src/age.ts: expectedTimeouts must be an array' },

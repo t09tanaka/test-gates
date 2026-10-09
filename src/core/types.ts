@@ -131,8 +131,8 @@ export interface ResolvedSettings {
   lcovSummaryExclude: RegExp[];
   importMode: 'blocklist' | 'allowlist';
   importAllow: { module?: string; regex?: RegExp; names?: string[] }[];
-  /** `null`: no limit. */
-  maxTimeouts: number | null;
+  /** Timeouts tolerated outside `expectedTimeouts`. */
+  maxTimeouts: number;
 }
 
 /** One finding. Printed as `file:line: message`. */

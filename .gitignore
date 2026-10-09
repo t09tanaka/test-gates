@@ -3,6 +3,7 @@ dist/
 coverage/
 reports/
 .stryker-tmp/
+.worktrees/
 *.tgz
 *.log
 *.tsbuildinfo
