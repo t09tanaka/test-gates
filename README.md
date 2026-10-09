@@ -280,6 +280,8 @@ How an `expectedTimeouts` entry is judged:
 
 When the run fails on a timeout, first run again with less load (`npm run test:gates:mutation -- --concurrency 1`). Add an entry only for a mutant that can never finish.
 
+`createStrykerGatesConfig` sets Stryker's `timeoutMS` to 30000 (since 0.3.1; Stryker's own default is 5000). After a mutant that really never ends, Stryker starts a new test runner, and with 5000 the mutant that comes next can run out of time while that runner is still starting: in one project with 11 such mutants, 2 to 7 others timed out on every full run, a different set each time, and none in a run with 30000. A longer limit hides nothing, because a timeout that is not listed fails the run anyway. The price is the wait for each mutant that hangs without tripping Stryker's loop counter. Pass `timeoutMS` to the helper to change it.
+
 ### `test-gates selfcheck [--all | --first] [-- <gate command>]`
 
 Negative control. For each gate, runs the gate with that gate's spec left out and requires the run to **fail on the coverage threshold of that very file**. A gate that stays green without its spec measures nothing; a run that fails for another reason (a config that does not load) proves nothing either.
@@ -460,6 +462,7 @@ Why these choices:
 - Jest measures with istanbul (`babel`), because the v8 provider does not count the untaken side of an `if` without `else`.
 - Jest fails on a `coverageThreshold` path key that matches no file, so a typo in `test-gates.json` cannot pass. Vitest does the opposite: a glob or path key in `thresholds` that matches nothing passes. The Vitest helper therefore narrows `coverage.include` to the gates and uses `perFile`.
 - Stryker never fails on its own score (`break: null`). The verdict comes from `test-gates mutation`, which knows the allow list.
+- The Stryker helper also sets defaults that can be overridden: `coverageAnalysis: 'perTest'`, `incremental` with its file under `reports/`, and `timeoutMS: 30000` (see [Timeouts](#timeouts)).
 
 `loadGates(dir)` returns the validated manifest: `gates` (each with its resolved `spec`), `candidates` and the resolved `settings`. It throws when the manifest has any problem.
 

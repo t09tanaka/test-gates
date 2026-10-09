@@ -11,6 +11,13 @@ export interface StrykerGatesOptions {
 const WEAKENING_OPTIONS = ['ignoreStatic', 'ignorers'];
 
 /**
+ * Stryker's own default is 5000. After a mutant that really never ends, Stryker starts a new
+ * test runner, and the next mutant then pays that start-up inside its time limit: with 5000 a
+ * mutant that would be killed is reported as `Timeout`, which fails the run since 0.3.0.
+ */
+export const DEFAULT_TIMEOUT_MS = 30_000;
+
+/**
  * Stryker config for the gates: mutate exactly the gates, never fail on the score
  * (`thresholds.break: null`), and write the JSON report that `test-gates mutation` judges.
  *
@@ -53,6 +60,7 @@ export function createStrykerGatesConfig(
     incremental: true,
     incrementalFile: 'reports/stryker-incremental.json',
     tempDirName: '.stryker-tmp',
+    timeoutMS: DEFAULT_TIMEOUT_MS,
     clearTextReporter: { logTests: false, reportTests: false },
     ...overrides,
     mutate: manifest.gates.map((gate) => gate.path),

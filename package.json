@@ -1,6 +1,6 @@
 {
   "name": "@t09tanaka/test-gates",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Test gates for the code that must not be wrong: per-file 100% coverage as the floor, mutation testing with a per-mutant allow list as the real check.",
   "author": "t09tanaka",
   "license": "MIT",

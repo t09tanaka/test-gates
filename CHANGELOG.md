@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1
+
+### Changed
+
+- `createStrykerGatesConfig` sets Stryker's `timeoutMS` to 30000 unless the project passes its own (Stryker's default is 5000). With `maxTimeouts` at 0 since 0.3.0, a mutant that would be killed but ran out of time fails the run. That happened on every full run in two projects with mutants that really never end: after each of them Stryker starts a new test runner, and the next mutant timed out while it was starting. A full run takes longer by up to 25 seconds for each mutant that hangs without tripping Stryker's loop counter.
+
 ## 0.3.0
 
 Three defaults move to the strict side. A project that passed with 0.2.0 can fail with 0.3.0 without any change of its own; each case below says what to do.
