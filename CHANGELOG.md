@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.2
+
+### Changed
+
+- `createStrykerGatesConfig` sets Stryker's `maxTestRunnerReuse` to 50 unless the project passes its own (Stryker's default is 0: one test runner process for the whole run). In a project with mutants that never end, the runner became about three times slower from the first of them on, and mutants that are killed in seconds on their own timed out. Starting a new process every 50 mutants kept the speed: a full run of 781 mutants went from 14 to 18 minutes with stray timeouts to under 7 minutes with none.
+- `timeoutMS` is no longer set by the helper; Stryker's default (5000) applies again. The 30000 of 0.3.1 was the wrong fix. It rested on the idea that a restarted runner makes the next mutant slow, when in fact a runner that is not restarted stays slow. With 30000 the same full run took 47 minutes and still failed, and mutants that exhaust the heap crashed the runner and were reported as `RuntimeError` instead of `Timeout`.
+
+A project that set `timeoutMS` itself to work around stray timeouts can remove it.
+
 ## 0.3.1
 
 ### Changed
