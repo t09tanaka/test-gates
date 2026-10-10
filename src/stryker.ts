@@ -11,11 +11,13 @@ export interface StrykerGatesOptions {
 const WEAKENING_OPTIONS = ['ignoreStatic', 'ignorers'];
 
 /**
- * Stryker's own default is 5000. After a mutant that really never ends, Stryker starts a new
- * test runner, and the next mutant then pays that start-up inside its time limit: with 5000 a
- * mutant that would be killed is reported as `Timeout`, which fails the run since 0.3.0.
+ * Stryker's own default is 0: one test runner process for the whole run. Measured on a Jest
+ * project with three mutants that never end (`Hit limit reached`): from the first of them on
+ * the runner handled about a third as many mutants per minute for the rest of the run, and
+ * mutants that are killed in seconds on their own ran out of time. With a new process every 50
+ * mutants the speed stayed the same to the end.
  */
-export const DEFAULT_TIMEOUT_MS = 30_000;
+export const DEFAULT_MAX_TEST_RUNNER_REUSE = 50;
 
 /**
  * Stryker config for the gates: mutate exactly the gates, never fail on the score
@@ -60,7 +62,7 @@ export function createStrykerGatesConfig(
     incremental: true,
     incrementalFile: 'reports/stryker-incremental.json',
     tempDirName: '.stryker-tmp',
-    timeoutMS: DEFAULT_TIMEOUT_MS,
+    maxTestRunnerReuse: DEFAULT_MAX_TEST_RUNNER_REUSE,
     clearTextReporter: { logTests: false, reportTests: false },
     ...overrides,
     mutate: manifest.gates.map((gate) => gate.path),

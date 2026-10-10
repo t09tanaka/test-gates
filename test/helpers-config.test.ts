@@ -341,14 +341,14 @@ describe('createStrykerGatesConfig', () => {
       jsonReporter: { fileName: 'reports/mutation/mutation.json' },
       clearTextReporter: { logTests: false, reportTests: false },
       tempDirName: '.stryker-tmp',
-      timeoutMS: 30000,
+      maxTestRunnerReuse: 50,
     });
   });
 
-  it('lets the project set its own timeoutMS', () => {
-    expect(createStrykerGatesConfig({ rootDir: validProject(), timeoutMS: 8000 }).timeoutMS).toBe(
-      8000
-    );
+  it('lets the project set its own maxTestRunnerReuse, and leaves timeoutMS to Stryker', () => {
+    const config = createStrykerGatesConfig({ rootDir: validProject(), maxTestRunnerReuse: 0 });
+    expect(config.maxTestRunnerReuse).toBe(0);
+    expect(config).not.toHaveProperty('timeoutMS');
   });
 
   it('writes the report where settings.stryker.reportFile says', () => {
