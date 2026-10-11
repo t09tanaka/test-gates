@@ -7,7 +7,7 @@ import { existsExact } from '../fs.js';
 import { readManifest } from '../load.js';
 import { type Io, printViolations } from './output.js';
 
-/** Per-file 100% line coverage from an lcov tracefile, for stacks without mutation testing. */
+/** Per-file 100% line coverage from an lcov tracefile. Lines only: no branches, no mutation test. */
 export function runLcov(dir: string, fileOption: string | null, io: Io): number {
   const manifest = readManifest(dir);
   const file = fileOption ?? manifest.settings.lcovFile;
