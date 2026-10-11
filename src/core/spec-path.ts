@@ -1,0 +1,43 @@
+import type { ResolvedSettings } from './types.js';
+
+type SpecSettings = Pick<ResolvedSettings, 'gateExtensions' | 'specSuffixes' | 'specRewrite'>;
+
+/** The configured gate extension `gatePath` ends with (longest wins), or null. */
+export function gateExtensionOf(gatePath: string, gateExtensions: string[]): string | null {
+  const matching = gateExtensions
+    .filter((extension) => gatePath.endsWith(extension))
+    .sort((a, b) => b.length - a.length);
+  return matching[0] ?? null;
+}
+
+function suffixesFor(extension: string, settings: SpecSettings): string[] {
+  return settings.specSuffixes ?? [`.spec${extension}`, `.test${extension}`];
+}
+
+/**
+ * Where the spec of a gate may live, in order of preference.
+ *
+ * `src/shipping-fee.ts` → `src/shipping-fee.spec.ts`, `src/shipping-fee.test.ts` by default. `settings.spec.suffixes`
+ * replaces the suffix list (an empty list means "this project has no spec convention"), and
+ * `settings.spec.rewrite` moves the directory first (`^app/` → `tests/`).
+ */
+export function specCandidatesFor(gatePath: string, settings: SpecSettings): string[] {
+  const extension = gateExtensionOf(gatePath, settings.gateExtensions);
+  if (extension === null) {
+    return [];
+  }
+  let base = gatePath.slice(0, -extension.length);
+  for (const { regex, to } of settings.specRewrite) {
+    base = base.replace(regex, to);
+  }
+  return suffixesFor(extension, settings).map((suffix) => base + suffix);
+}
+
+/** True when `gatePath` is a gate extension and is itself named like a spec. */
+export function looksLikeSpec(gatePath: string, settings: SpecSettings): boolean {
+  const extension = gateExtensionOf(gatePath, settings.gateExtensions);
+  return (
+    extension !== null &&
+    suffixesFor(extension, settings).some((suffix) => gatePath.endsWith(suffix))
+  );
+}

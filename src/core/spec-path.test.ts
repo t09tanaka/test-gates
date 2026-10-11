@@ -1,0 +1,102 @@
+import { describe, expect, it } from 'vitest';
+import { gateExtensionOf, looksLikeSpec, specCandidatesFor } from './spec-path';
+
+const defaults = {
+  gateExtensions: ['.ts', '.mts', '.cts', '.js', '.mjs', '.cjs'],
+  specSuffixes: null,
+  specRewrite: [],
+};
+
+describe('gateExtensionOf', () => {
+  it('returns the extension the path ends with', () => {
+    expect(gateExtensionOf('src/a.ts', ['.ts', '.js'])).toBe('.ts');
+    expect(gateExtensionOf('src/a.js', ['.ts', '.js'])).toBe('.js');
+  });
+
+  it('prefers the longest matching extension, whatever the order', () => {
+    expect(gateExtensionOf('lib/a.g.dart', ['.dart', '.g.dart'])).toBe('.g.dart');
+    expect(gateExtensionOf('lib/a.g.dart', ['.g.dart', '.dart'])).toBe('.g.dart');
+  });
+
+  it('returns null when no extension matches', () => {
+    expect(gateExtensionOf('src/a.vue', ['.ts', '.js'])).toBeNull();
+    expect(gateExtensionOf('src/a.ts', [])).toBeNull();
+  });
+});
+
+describe('specCandidatesFor', () => {
+  it('looks for .spec and .test next to the gate, keeping its extension', () => {
+    expect(specCandidatesFor('src/common/shipping-fee.ts', defaults)).toEqual([
+      'src/common/shipping-fee.spec.ts',
+      'src/common/shipping-fee.test.ts',
+    ]);
+    expect(specCandidatesFor('lib/rate.mjs', defaults)).toEqual([
+      'lib/rate.spec.mjs',
+      'lib/rate.test.mjs',
+    ]);
+  });
+
+  it('uses settings.spec.suffixes literally when given', () => {
+    expect(
+      specCandidatesFor('src/shipping-fee.ts', { ...defaults, specSuffixes: ['.test.ts'] })
+    ).toEqual(['src/shipping-fee.test.ts']);
+  });
+
+  it('returns nothing when the project has no spec convention', () => {
+    expect(specCandidatesFor('src/shipping-fee.ts', { ...defaults, specSuffixes: [] })).toEqual([]);
+  });
+
+  it('applies settings.spec.rewrite to the directory before adding the suffix', () => {
+    expect(
+      specCandidatesFor('app/utils/lateFee.ts', {
+        ...defaults,
+        specSuffixes: ['.spec.ts'],
+        specRewrite: [{ regex: /^app\//, to: 'tests/' }],
+      })
+    ).toEqual(['tests/utils/lateFee.spec.ts']);
+  });
+
+  it('applies every rewrite in order', () => {
+    expect(
+      specCandidatesFor('lib/models/shipping_fee.dart', {
+        gateExtensions: ['.dart'],
+        specSuffixes: ['_test.dart'],
+        specRewrite: [
+          { regex: /^lib\//, to: 'test/' },
+          { regex: /^test\/models\//, to: 'test/unit/models/' },
+        ],
+      })
+    ).toEqual(['test/unit/models/shipping_fee_test.dart']);
+  });
+
+  it('returns nothing for a path that is not a gate extension', () => {
+    expect(specCandidatesFor('src/Button.vue', defaults)).toEqual([]);
+  });
+});
+
+describe('looksLikeSpec', () => {
+  it.each(['src/shipping-fee.spec.ts', 'src/shipping-fee.test.ts', 'src/shipping-fee.test.mjs'])(
+    'is true for %s',
+    (file) => {
+      expect(looksLikeSpec(file, defaults)).toBe(true);
+    }
+  );
+
+  it('is false for an implementation file', () => {
+    expect(looksLikeSpec('src/shipping-fee.ts', defaults)).toBe(false);
+    expect(looksLikeSpec('src/spec.ts', defaults)).toBe(false);
+  });
+
+  it('follows settings.spec.suffixes', () => {
+    const settings = { ...defaults, specSuffixes: ['.test.ts'] };
+    expect(looksLikeSpec('src/shipping-fee.test.ts', settings)).toBe(true);
+    expect(looksLikeSpec('src/shipping-fee.spec.ts', settings)).toBe(false);
+  });
+
+  it('is false for a path that is not a gate extension, even when it ends with a suffix', () => {
+    expect(looksLikeSpec('src/shipping-fee.spec.tsx', defaults)).toBe(false);
+    expect(
+      looksLikeSpec('src/shipping-fee.spec.tsx', { ...defaults, specSuffixes: ['.spec.tsx'] })
+    ).toBe(false);
+  });
+});
