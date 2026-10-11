@@ -32,6 +32,8 @@ describe('test-gates (general)', () => {
     for (const command of ['check', 'mutation', 'mutation-result', 'selfcheck', 'lcov']) {
       expect(result.stdout).toMatch(new RegExp(`^  ${command}\\b`, 'm'));
     }
+    // The tracefile can come from settings.lcov.file, so the option is shown as optional.
+    expect(result.stdout).toContain('  lcov [--file <lcov.info>]  ');
   });
 
   it.each([

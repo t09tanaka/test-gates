@@ -19,7 +19,7 @@ Commands:
                               Unknown arguments and everything after "--" go to Stryker
   mutation-result             Judge an existing Stryker JSON report
   selfcheck [-- <command>]    Negative control: leave one spec out, the gate must fail
-  lcov --file <lcov.info>     Per-file 100% line coverage from an lcov tracefile
+  lcov [--file <lcov.info>]   Per-file 100% line coverage from an lcov tracefile
 
 Options:
   --dir <subproject>          Directory that holds test-gates.json (default: .)

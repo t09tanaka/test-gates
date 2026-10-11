@@ -184,7 +184,7 @@ test-gates:
 
 ## Commands
 
-All commands take `--dir <subproject>` (default: the current directory).
+All commands take `--dir <subproject>` (default: the current directory). `test-gates -h` (`--help`) prints the usage and `test-gates -v` (`--version`) the version.
 
 | Exit code | Meaning                                                                    |
 | --------- | -------------------------------------------------------------------------- |
@@ -298,9 +298,11 @@ jest.mock('./shipping-fee');
 expect(shippingFeeCents).toHaveBeenCalledWith(weightGrams); // called with the weight, not with the price
 ```
 
-### `test-gates lcov --file <lcov.info>`
+### `test-gates lcov [--file <lcov.info>]`
 
-For stacks without mutation testing (Flutter / Dart): requires `LH == LF` for every gate in an lcov tracefile. A gate without a record, or with no instrumented line, fails. Paths are compared as written in the tracefile (`lib/shipping_fee.dart`); absolute paths under the subproject are made relative.
+A line coverage floor from an lcov tracefile, without a mutation test: requires `LH == LF` for every gate in the tracefile. `--file` names the tracefile and can be left out when `settings.lcov.file` is set; with neither, the command exits with code 2. A gate without a record, or with no instrumented line, fails. Paths are compared as written in the tracefile (`lib/shipping_fee.dart`); absolute paths under the subproject are made relative.
+
+For Dart and Flutter, use [`test_gates`](https://github.com/t09tanaka/test-gates-dart) instead. It reads the same `test-gates.json`, requires 100% of lines and of branches, has a negative control and judges a mutation test. The example below shows what this command alone does with a Dart package.
 
 ```bash
 flutter test --coverage && npx test-gates lcov --file coverage/lcov.info
@@ -560,12 +562,18 @@ How the incremental file and this tool interact (covered by `test/incremental.te
 - **`process.env` is found by text too.** A comment that mentions it is reported, and reading the environment through another name (`const { env } = process`) is not. The clock (`Date.now()`, `new Date()`) and `Math.random()` are not checked: a default argument such as `now = new Date()` is a legitimate way to pass them in, and text cannot tell it from a direct read. Add a `forbiddenSource` rule if the project wants one.
 - **Imports are found by text, not by parsing.** The checks run without the project's dependencies installed, so an import inside a comment is reported too, and only the gate's own imports are looked at, not what those modules import in turn.
 - **An ordinary `import { Request } from 'express'` used only as a type is reported.** Write `import type`, or exempt the module with `impureImports.allow`.
-- **`test-gates lcov` checks lines only.** lcov from Flutter carries no branch data, and Dart has no established mutation testing tool; a Dart gate is guarded by coverage alone.
+- **`test-gates lcov` checks lines only.** It does not read the branch entries (`BRDA:`) of a tracefile and runs no mutation test, so a gate that only this command checks is guarded by line coverage alone. Dart and Flutter code is guarded by [`test_gates`](https://github.com/t09tanaka/test-gates-dart), which checks lines and branches and judges a mutation test.
 - **knip reports the Stryker runner as unused** once no npm script calls `stryker run` directly. Tell knip where the config is: `"stryker": { "config": ["stryker.gates.config.mjs"] }` in `knip.json`.
 - **A directory or worktree whose name contains `test-`** (for example a checkout called `test-gates-migration`) makes `@darraghor/eslint-plugin-nestjs-typed` treat every file as a test file, because it matches the whole path against a test pattern. Not caused by this package, but a name like that is easy to choose while adopting it.
 - **A comment line that starts with `@t09tanaka/…`** in a config file can be read by ESLint's JSDoc rules as a tag. Put the package name in the middle of the sentence.
 - **Vitest 4's `text` reporter can print only the summary line** and no per-file table for the gate run. The thresholds and the negative control still work.
 - **The checks do not judge what belongs in `gates`.** Whether every important decision has been extracted and registered is for people to review; `candidates` is where the known gaps are written down.
+
+## Related tools
+
+- [test_gates](https://github.com/t09tanaka/test-gates-dart) (pub.dev): the same gates for Dart and Flutter.
+- [dart_mutant](https://github.com/t09tanaka/dart_mutant): mutation testing for Dart, the tool that writes the mutation report those gates judge.
+- [contract-fixtures](https://github.com/t09tanaka/contract-fixtures) (TypeScript and Dart): shared request and response fixtures that keep an API and its clients in step.
 
 ## License
 
