@@ -411,15 +411,16 @@ describe('the runs the shared run is verified with', () => {
 });
 
 describe('sharedRunPrecheck', () => {
-  const jestConfig = 'module.exports = createJestGatesConfig({ rootDir: __dirname });';
-  const vitestConfig = "export default createVitestGatesConfig({ coverageProvider: 'istanbul' });";
+  const configForJest = 'module.exports = createJestGatesConfig({ rootDir: __dirname });';
+  const configForVitest =
+    "export default createVitestGatesConfig({ coverageProvider: 'istanbul' });";
 
   it('says nothing when the run for notes may be of use', () => {
     expect(
-      sharedRunPrecheck({ program: 'jest', version: '30.5.2', configSource: jestConfig })
+      sharedRunPrecheck({ program: 'jest', version: '30.5.2', configSource: configForJest })
     ).toBeNull();
     expect(
-      sharedRunPrecheck({ program: 'vitest', version: '3.2.7', configSource: vitestConfig })
+      sharedRunPrecheck({ program: 'vitest', version: '3.2.7', configSource: configForVitest })
     ).toBeNull();
     // a gate command of the project's own: its config is not known
     expect(
@@ -427,7 +428,7 @@ describe('sharedRunPrecheck', () => {
     ).toBeNull();
     // the runner is not installed where it is looked for
     expect(
-      sharedRunPrecheck({ program: 'vitest', version: null, configSource: vitestConfig })
+      sharedRunPrecheck({ program: 'vitest', version: null, configSource: configForVitest })
     ).toBeNull();
     expect(sharedRunPrecheck({ program: 'vitest', version: null, configSource: null })).toBeNull();
   });
@@ -440,7 +441,7 @@ describe('sharedRunPrecheck', () => {
 
   it('knows beforehand that a version outside of the table gets a run per gate', () => {
     expect(
-      sharedRunPrecheck({ program: 'vitest', version: '4.0.1', configSource: vitestConfig })
+      sharedRunPrecheck({ program: 'vitest', version: '4.0.1', configSource: configForVitest })
     ).toBe('the shared run is verified with vitest 3.2, not with 4.0.1');
     expect(sharedRunPrecheck({ program: 'jest', version: '29.7.0', configSource: null })).toBe(
       'the shared run is verified with jest 30.5, not with 29.7.0'
@@ -455,11 +456,11 @@ describe('sharedRunPrecheck', () => {
         configSource: 'module.exports = {};',
       })
     ).toBe('the gate config does not use createJestGatesConfig');
-    expect(sharedRunPrecheck({ program: 'jest', version: null, configSource: vitestConfig })).toBe(
-      'the gate config does not use createJestGatesConfig'
-    );
     expect(
-      sharedRunPrecheck({ program: 'vitest', version: '3.2.7', configSource: jestConfig })
+      sharedRunPrecheck({ program: 'jest', version: null, configSource: configForVitest })
+    ).toBe('the gate config does not use createJestGatesConfig');
+    expect(
+      sharedRunPrecheck({ program: 'vitest', version: '3.2.7', configSource: configForJest })
     ).toBe('the gate config does not use createVitestGatesConfig');
   });
 
@@ -470,7 +471,7 @@ describe('sharedRunPrecheck', () => {
     );
     // Jest has one provider under the helper.
     expect(
-      sharedRunPrecheck({ program: 'jest', version: '30.5.2', configSource: jestConfig })
+      sharedRunPrecheck({ program: 'jest', version: '30.5.2', configSource: configForJest })
     ).toBeNull();
   });
 });
