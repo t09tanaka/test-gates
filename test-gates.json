@@ -17,6 +17,11 @@
       "impact": "A gate that measures nothing is reported as working"
     },
     {
+      "path": "src/core/jobs.ts",
+      "decides": "Whether negative controls may run at the same time, and whether a control that ran next to others can be taken as it is or has to be run again on its own",
+      "impact": "A control that only looks as if it held, because another run disturbed it, is reported as holding"
+    },
+    {
       "path": "src/core/manifest.ts",
       "decides": "Whether test-gates.json and each allowance in it are well formed (reason required, no duplicates, no path in both lists)",
       "impact": "An allowance without a reason or a duplicated gate is accepted, and configs are derived from a broken list"

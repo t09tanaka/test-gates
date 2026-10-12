@@ -18,6 +18,10 @@ const withoutMarks = (stdout: string) =>
 
 const helper = (name: string) => pathToFileURL(path.join(repoRoot, 'dist', `${name}.js`)).href;
 
+// For a check by hand of the runs next to others: the number of rounds, and of runs at once.
+const STRESS = Number(process.env.TEST_GATES_STRESS ?? 0);
+const JOBS = process.env.TEST_GATES_STRESS_JOBS ?? '4';
+
 const GATES = [
   'plain-one', // only its own spec touches it
   'plain-two',
@@ -224,7 +228,7 @@ describe.each([
 ] as const)('test-gates selfcheck with a real %s', (_name, dialect) => {
   it(
     'says in a shared run what it says in a run per gate, and gives touched gates their own run',
-    { timeout: 600_000 },
+    { timeout: STRESS > 0 ? 7_200_000 : 600_000 },
     async () => {
       const dir = project(fixture(dialect));
       fs.symlinkSync(path.join(repoRoot, 'node_modules'), path.join(dir, 'node_modules'), 'dir');
@@ -276,8 +280,193 @@ describe.each([
       expect(withoutMarks(part.stdout)).toBe(partPerGate.stdout);
       expect(verdicts(withoutMarks(part.stderr))).toEqual(verdicts(partPerGate.stderr));
       expect(part.status).toBe(partPerGate.status);
+
+      // Several controls at the same time (the gate command has to be the runner itself for
+      // that, with the pool of this dialect): the lines of one at a time, whatever had to be
+      // run again.
+      const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'test-gates.json'), 'utf8'));
+      fs.writeFileSync(
+        path.join(dir, 'test-gates.json'),
+        JSON.stringify({ ...manifest, settings: { gateCommand: dialect.command } })
+      );
+      const again =
+        /^test-gates selfcheck: (\d+) of \d+ negative control\(s\) did not hold cleanly[^\n]*\n/;
+      const counts: number[] = [];
+      for (let round = 0; round < Math.max(1, STRESS); round += 1) {
+        const atOnce = await testGatesAsync(['selfcheck', '--jobs', JOBS, '--dir', dir]);
+        expect(atOnce.stdout).not.toContain('one negative control at a time');
+        expect(atOnce.stdout.replace(again, '')).toBe(perGate.stdout);
+        expect(verdicts(atOnce.stderr)).toEqual(verdicts(perGate.stderr));
+        expect(atOnce.status).toBe(perGate.status);
+        // The controls that do not hold needed a run of their own. On a quiet machine none
+        // that holds does; under load any of them may.
+        const count = Number(again.exec(atOnce.stdout)?.[1]);
+        expect(count).toBeGreaterThanOrEqual(NOT_HELD.length);
+        counts.push(count);
+      }
+      if (STRESS > 0) {
+        console.log(`${_name}: --jobs ${JOBS}, ${STRESS} rounds, run again: ${counts.join(' ')}`);
+      }
+      expect(fs.readdirSync(dir).filter((name) => name.startsWith('.test-gates'))).toEqual([]);
     }
   );
+});
+
+// What a run next to others can show of a disturbance. Both projects were first built as
+// counterexamples: a control that does not hold on its own was reported as holding with
+// --jobs, because the run next to others lost a lock to another run. Here the lock is taken
+// inside a package the project vouches for, so nothing in the text of the project speaks
+// against running at the same time; the summary of the runner has to.
+describe.each([
+  [
+    'vitest, when a test skips itself',
+    vitest,
+    // The spec that also covers `victim` skips that test when it does not get the lock.
+    "it('covers the other gate', async (context) => {\n  if (!take()) {\n    context.skip();\n  }\n  price(1);\n  price(0);\n  await hold();\n  give();\n});\n",
+    '',
+  ],
+  [
+    'jest, when a test fails and the reporter does not say so',
+    jest,
+    "it('covers the other gate', async () => {\n  expect(take()).toBe(true);\n  price(1);\n  price(0);\n  await hold();\n  give();\n});\n",
+    "reporters: ['<rootDir>/quiet.js'], ",
+  ],
+] as const)('test-gates selfcheck --jobs with a real %s', (_name, dialect, covering, reporters) => {
+  it(
+    'runs the control again on its own, and says what one at a time says',
+    { timeout: 600_000 },
+    async () => {
+      const names = ['one', 'two', 'three', 'victim', 'attacker'];
+      const src = (name: string) => `src/${name}.${dialect.ext}`;
+      const root = project({
+        // Above the project, where the walk through the imports finds it as a package.
+        'node_modules/lock-fixture/package.json': { name: 'lock-fixture', version: '1.0.0' },
+        'node_modules/lock-fixture/index.js':
+          "const fs = require('node:fs');\n" +
+          "exports.take = () => {\n  try {\n    fs.closeSync(fs.openSync('taken.lock', 'wx'));\n    return true;\n  } catch {\n    return false;\n  }\n};\n" +
+          "exports.give = () => fs.rmSync('taken.lock', { force: true });\n" +
+          'exports.hold = () => new Promise((done) => setTimeout(done, 1500));\n',
+        ...Object.fromEntries(
+          Object.entries({
+            ...dialect.files,
+            'quiet.js': 'module.exports = class Quiet {};\n',
+            'test-gates.json': {
+              gates: names.map((name) => ({ path: src(name), decides: 'd', impact: 'i' })),
+              candidates: [],
+              settings: { imports: { mode: 'allowlist', allow: ['lock-fixture'] } },
+            },
+            ...Object.fromEntries(
+              names.flatMap((name) => [
+                [src(name), dialect.module({ price: 'return value ? 10 : 5;' })],
+                [
+                  `src/${name}.spec.${dialect.ext}`,
+                  dialect.specHead +
+                    dialect.use(['price'], name) +
+                    "it('prices', () => {\n  expect(price(1)).toBe(10);\n  expect(price(0)).toBe(5);\n});\n",
+                ],
+              ])
+            ),
+            [`src/attacker.spec.${dialect.ext}`]:
+              dialect.specHead +
+              dialect.use(['price'], 'victim') +
+              dialect.use([dialect.ext === 'ts' ? 'price as own' : 'price: own'], 'attacker') +
+              (dialect.ext === 'ts'
+                ? "import { give, hold, take } from 'lock-fixture';\n"
+                : "const { give, hold, take } = require('lock-fixture');\n") +
+              "it('prices', () => {\n  expect(own(1)).toBe(10);\n  expect(own(0)).toBe(5);\n});\n" +
+              covering,
+          }).map(([file, content]) => [`app/${file}`, content])
+        ),
+      });
+      const dir = path.join(root, 'app');
+      fs.symlinkSync(path.join(repoRoot, 'node_modules'), path.join(dir, 'node_modules'), 'dir');
+      const config = fs.readdirSync(dir).find((name) => name.includes('.gates.config.')) as string;
+      // (no setup file in this project)
+      fs.writeFileSync(
+        path.join(dir, config),
+        fs
+          .readFileSync(path.join(dir, config), 'utf8')
+          .replace(/setupFiles: \[[^\]]*\],? ?/, reporters)
+      );
+      const verdicts = (result: { stdout: string; stderr: string }) =>
+        `${result.stdout}${result.stderr}`
+          .split('\n')
+          .filter((line) => /^ {2}[✓✗] |^test-gates selfcheck: (?:OK|FAILED)/.test(line));
+
+      const perGate = await testGatesAsync(['selfcheck', '--dir', dir]);
+      // One at a time the lock is always free, so the other spec covers `victim` as well.
+      expect(perGate.status).toBe(1);
+      expect(verdicts(perGate).filter((line) => line.startsWith('  ✗'))).toEqual([
+        expect.stringContaining(`  ✗ ${src('victim')}: the gate passed although the spec`),
+      ]);
+
+      const atOnce = await testGatesAsync(['selfcheck', '--jobs', '5', '--dir', dir]);
+      expect(atOnce.stdout).not.toContain('one negative control at a time');
+      expect(verdicts(atOnce)).toEqual(verdicts(perGate));
+      expect(atOnce.status).toBe(1);
+      // Four runs want the lock at the same time and one gets it.
+      const again = /(\d+) of 5 negative control\(s\) did not hold cleanly/.exec(atOnce.stdout);
+      expect(Number(again?.[1])).toBeGreaterThanOrEqual(2);
+    }
+  );
+});
+
+// How long `selfcheck` takes with --jobs, for the README. Not a test of anything: it runs only
+// when asked, as `TEST_GATES_MEASURE=<gates> npm run test:heavy -- -t "takes with"`.
+const MEASURE = Number(process.env.TEST_GATES_MEASURE ?? 0);
+
+describe.skipIf(MEASURE === 0).each([
+  ['vitest', vitest, '--no-file-parallelism'],
+  ['jest', jest, '--runInBand'],
+] as const)('how long test-gates selfcheck takes with %s', (name, dialect, oneWorker) => {
+  it('prints the seconds', { timeout: 7_200_000 }, async () => {
+    const names = Array.from({ length: MEASURE }, (_unused, index) => `gate${index + 1}`);
+    const dir = project({
+      ...dialect.files,
+      ...Object.fromEntries(
+        names.flatMap((gate) => [
+          [`src/${gate}.${dialect.ext}`, dialect.module({ price: 'return value ? 10 : 5;' })],
+          [
+            `src/${gate}.spec.${dialect.ext}`,
+            dialect.specHead +
+              dialect.use(['price'], gate) +
+              "it('prices', () => {\n  expect(price(1)).toBe(10);\n  expect(price(0)).toBe(5);\n});\n",
+          ],
+        ])
+      ),
+    });
+    fs.symlinkSync(path.join(repoRoot, 'node_modules'), path.join(dir, 'node_modules'), 'dir');
+    const config = fs.readdirSync(dir).find((file) => file.includes('.gates.config.')) as string;
+    fs.writeFileSync(
+      path.join(dir, config),
+      fs.readFileSync(path.join(dir, config), 'utf8').replace(/setupFiles: \[[^\]]*\],? ?/, '')
+    );
+    const lines: string[] = [];
+    for (const workers of [[], [oneWorker]]) {
+      fs.writeFileSync(
+        path.join(dir, 'test-gates.json'),
+        JSON.stringify({
+          gates: names.map((gate) => ({
+            path: `src/${gate}.${dialect.ext}`,
+            decides: 'd',
+            impact: 'i',
+          })),
+          candidates: [],
+          settings: { gateCommand: [...dialect.command, ...workers] },
+        })
+      );
+      for (const jobs of ['1', '2', '4', '8']) {
+        const start = Date.now();
+        const result = await testGatesAsync(['selfcheck', '--jobs', jobs, '--dir', dir]);
+        expect(result.stdout.trimEnd().split('\n')).toHaveLength(MEASURE + 1);
+        expect(result.status).toBe(0);
+        lines.push(
+          `${name} ${workers.join(' ') || '(default workers)'} --jobs ${jobs}: ${((Date.now() - start) / 1000).toFixed(1)} s`
+        );
+      }
+    }
+    console.log(`${MEASURE} gates\n${lines.join('\n')}`);
+  });
 });
 
 // Notes that miss something. The first version of the shared run took the note of a spec in
