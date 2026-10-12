@@ -412,31 +412,35 @@ describe.each(['git', 'walk'] as const)(
       const monorepo = (extra: Record<string, string | object> = {}) =>
         create(
           {
-            'package.json': { name: 'root', private: true },
+            'package.json': { name: 'root', private: true, workspaces: ['fee-rules'] },
             'package-lock.json': { lockfileVersion: 3 },
             'tsconfig.base.json': {},
-            'shared/money/round.ts': 'export const round = (value: number) => Math.round(value);\n',
-            'shared/money/README.md': 'money\n',
-            'shared/unrelated/other.ts': 'export {};\n',
-            'web/src/page.ts': 'export {};\n',
+            'pricing-kit/rounding/half-up.ts':
+              'export const halfUp = (value: number) => Math.round(value);\n',
+            'pricing-kit/rounding/README.md': 'money\n',
+            'pricing-kit/labels/other.ts': 'export {};\n',
+            'catalog-site/src/listing.ts': 'export {};\n',
             'docs/guide.md': 'guide\n',
-            ...subproject('api/'),
-            'api/tsconfig.json': { extends: '../tsconfig.base.json' },
-            'api/src/rates.ts':
-              "import { round } from '../../shared/money/round';\nexport const rate = round(1.5);\n",
+            ...subproject('fee-rules/'),
+            'fee-rules/tsconfig.json': { extends: '../tsconfig.base.json' },
+            'fee-rules/src/rates.ts':
+              "import { halfUp } from '../../pricing-kit/rounding/half-up';\nexport const rate = halfUp(1.5);\n",
             ...extra,
           },
           kind,
-          'api'
+          'fee-rules'
         );
-      const api = (root: string) => path.join(root, 'api');
+      const sub = (root: string) => path.join(root, 'fee-rules');
 
       it('reuses after a change in a package the subproject does not point at', () => {
         const root = monorepo();
-        mutation(api(root));
-        write(root, { 'web/src/page.ts': 'export const page = 1;\n', 'docs/guide.md': 'more\n' });
-        write(root, { 'shared/unrelated/other.ts': 'export const other = 1;\n' });
-        expect(mutation(api(root))).toEqual(REUSED);
+        mutation(sub(root));
+        write(root, {
+          'catalog-site/src/listing.ts': 'export const listing = 1;\n',
+          'docs/guide.md': 'more\n',
+        });
+        write(root, { 'pricing-kit/labels/other.ts': 'export const other = 1;\n' });
+        expect(mutation(sub(root))).toEqual(REUSED);
       });
 
       it.each([
@@ -448,20 +452,20 @@ describe.each(['git', 'walk'] as const)(
         ],
         [
           'a file outside the subproject that a file imports',
-          'shared/money/round.ts',
-          'shared/money/round.ts',
+          'pricing-kit/rounding/half-up.ts',
+          'pricing-kit/rounding/half-up.ts',
         ],
         [
           'another file of the directory that import leads to',
-          'shared/money/README.md',
-          'shared/money/README.md',
+          'pricing-kit/rounding/README.md',
+          'pricing-kit/rounding/README.md',
         ],
       ])('runs every mutant again after a change of %s', (_name, file, shown) => {
         const root = monorepo();
-        mutation(api(root));
+        mutation(sub(root));
         write(root, { [file]: '{"changed":true}\n' });
-        expect(mutation(api(root))).toEqual(forcedBy(`${CHANGED}${shown}`));
-        expect(mutation(api(root))).toEqual(REUSED);
+        expect(mutation(sub(root))).toEqual(forcedBy(`${CHANGED}${shown}`));
+        expect(mutation(sub(root))).toEqual(REUSED);
       });
 
       it('runs every mutant again after a change in a package linked into node_modules', () => {
@@ -472,9 +476,9 @@ describe.each(['git', 'walk'] as const)(
           path.join(root, 'node_modules/@acme/kit'),
           'dir'
         );
-        mutation(api(root));
+        mutation(sub(root));
         write(root, { 'packages/kit/index.ts': 'export const kit = 2;\n' });
-        expect(mutation(api(root))).toEqual(forcedBy(`${CHANGED}packages/kit/index.ts`));
+        expect(mutation(sub(root))).toEqual(forcedBy(`${CHANGED}packages/kit/index.ts`));
       });
 
       it.each([
@@ -482,41 +486,106 @@ describe.each(['git', 'walk'] as const)(
           'a path to a directory that contains the subproject',
           `export const root = join(__dirname, '${up(2)}');\n`,
         ],
-        ['a path whose start is not known', "export const mapped = '<rootDir>/../shared/$1';\n"],
+        [
+          'a path whose start is not known',
+          "export const mapped = '<rootDir>/../pricing-kit/$1';\n",
+        ],
       ])('looks at every file of the repository when a file holds %s', (_name, source) => {
-        const root = monorepo({ 'api/src/paths.ts': source });
-        mutation(api(root));
-        expect(mutation(api(root))).toEqual(REUSED);
-        write(root, { 'web/src/page.ts': 'export const page = 1;\n' });
-        expect(mutation(api(root))).toEqual(forcedBy(`${CHANGED}web/src/page.ts`));
+        const root = monorepo({ 'fee-rules/src/paths.ts': source });
+        mutation(sub(root));
+        expect(mutation(sub(root))).toEqual(REUSED);
+        write(root, { 'catalog-site/src/listing.ts': 'export const listing = 1;\n' });
+        expect(mutation(sub(root))).toEqual(forcedBy(`${CHANGED}catalog-site/src/listing.ts`));
         // The gate and its spec stay with Stryker.
-        write(root, { 'api/src/age.spec.ts': `${SPEC_SOURCE}// a comment\n` });
-        expect(mutation(api(root))).toEqual(REUSED);
+        write(root, { 'fee-rules/src/age.spec.ts': `${SPEC_SOURCE}// a comment\n` });
+        expect(mutation(sub(root))).toEqual(REUSED);
       });
 
       it('never reuses when a path leads to a directory outside of the repository', () => {
         const root = monorepo({
-          'api/src/paths.ts': `export const outside = join(__dirname, '${up(3)}');\n`,
+          'fee-rules/src/paths.ts': `export const outside = join(__dirname, '${up(3)}');\n`,
         });
-        mutation(api(root));
-        expect(fs.existsSync(path.join(api(root), RECORD))).toBe(false);
-        expect(mutation(api(root)).reason).toMatch(
+        mutation(sub(root));
+        expect(fs.existsSync(path.join(sub(root), RECORD))).toBe(false);
+        expect(mutation(sub(root)).reason).toMatch(
           /^the files the run depends on could not be listed \(src\/paths\.ts points outside of what can be listed \(/
         );
-        expect(fs.existsSync(path.join(api(root), RECORD))).toBe(false);
+        expect(fs.existsSync(path.join(sub(root), RECORD))).toBe(false);
       });
 
       it('takes no notice of text that looks like a path to a directory that is not there', () => {
         const root = monorepo({
-          'api/src/paths.ts': "export const other = '../../no-such-directory/x';\n",
+          'fee-rules/src/paths.ts': "export const other = '../../no-such-directory/x';\n",
         });
-        mutation(api(root));
-        write(root, { 'web/src/page.ts': 'export const page = 1;\n' });
-        expect(mutation(api(root))).toEqual(REUSED);
+        mutation(sub(root));
+        write(root, { 'catalog-site/src/listing.ts': 'export const listing = 1;\n' });
+        expect(mutation(sub(root))).toEqual(REUSED);
       });
     });
   }
 );
+
+describe('test-gates mutation, reuse of the last run (without git)', () => {
+  it('reads no further up than the directory with a .git entry', () => {
+    // A checkout whose .git is there but which git cannot read, two levels above the subproject.
+    const outer = create(
+      {
+        'sibling/notes.txt': 'not part of the checkout\n',
+        'checkout/.git/HEAD': 'not a repository git can read\n',
+        'checkout/package.json': { name: 'root', private: true },
+        'checkout/package-lock.json': { lockfileVersion: 3 },
+        'checkout/tools/unrelated.ts': 'export {};\n',
+        ...subproject('checkout/services/fee-rules/'),
+      },
+      'walk',
+      'checkout/services/fee-rules'
+    );
+    const dir = path.join(outer, 'checkout/services/fee-rules');
+    mutation(dir);
+    const record = JSON.parse(fs.readFileSync(path.join(dir, RECORD), 'utf8'));
+    expect(record.snapshot.mode).toBe('walk');
+    expect(Object.keys(record.snapshot.files).sort()).toEqual([
+      'package-lock.json',
+      'package.json',
+      'services/fee-rules/package.json',
+      'services/fee-rules/src/expect-true.ts',
+      'services/fee-rules/stryker.gates.config.mjs',
+      'services/fee-rules/test-gates.json',
+    ]);
+    write(outer, {
+      'sibling/notes.txt': 'changed\n',
+      'package.json': { name: 'above the checkout' },
+    });
+    expect(mutation(dir)).toEqual(REUSED);
+    write(outer, { 'checkout/package-lock.json': { lockfileVersion: 2 } });
+    expect(mutation(dir)).toEqual(forcedBy(`${CHANGED}package-lock.json`));
+  });
+
+  it('stays in the subproject when nothing above it says where the project ends', () => {
+    const outer = create(
+      { 'package.json': { name: 'not a workspace root' }, ...subproject('fee-rules/') },
+      'walk',
+      'fee-rules'
+    );
+    const dir = path.join(outer, 'fee-rules');
+    mutation(dir);
+    const record = JSON.parse(fs.readFileSync(path.join(dir, RECORD), 'utf8'));
+    expect(Object.keys(record.snapshot.files).sort()).toEqual([
+      'package.json',
+      'src/expect-true.ts',
+      'stryker.gates.config.mjs',
+      'test-gates.json',
+    ]);
+    write(outer, { 'package.json': { name: 'changed' } });
+    expect(mutation(dir)).toEqual(REUSED);
+    // A lock file and what is installed are looked at by name, also above the subproject.
+    write(outer, { 'package-lock.json': { lockfileVersion: 3 } });
+    expect(mutation(dir)).toEqual(forcedBy(`${CHANGED}../package-lock.json`));
+    write(outer, { 'node_modules/.package-lock.json': { packages: {} } });
+    expect(mutation(dir)).toEqual(forcedBy(`${CHANGED}../node_modules/.package-lock.json`));
+    expect(mutation(dir)).toEqual(REUSED);
+  });
+});
 
 describe('test-gates mutation, reuse of the last run (git only)', () => {
   const fresh = () => create({ ...subproject(), 'scratch.log': '' }, 'git');
@@ -564,14 +633,18 @@ describe('test-gates mutation, reuse of the last run (git only)', () => {
 
   it('reads the directories when git does not list the subproject', () => {
     const root = create(
-      { '.gitignore': `${IGNORE}generated\n`, 'README.md': 'x\n', ...subproject('generated/api/') },
+      {
+        '.gitignore': `${IGNORE}generated\n`,
+        'README.md': 'x\n',
+        ...subproject('generated/fee-rules/'),
+      },
       'git',
-      'generated/api'
+      'generated/fee-rules'
     );
-    const dir = path.join(root, 'generated/api');
+    const dir = path.join(root, 'generated/fee-rules');
     mutation(dir);
     expect(JSON.parse(fs.readFileSync(path.join(dir, RECORD), 'utf8')).snapshot.mode).toBe('walk');
     write(dir, { 'src/expect-true.ts': '// weaker\n' });
-    expect(mutation(dir).reason).toBe(`${CHANGED}src/expect-true.ts`);
+    expect(mutation(dir).reason).toBe(`${CHANGED}generated/fee-rules/src/expect-true.ts`);
   });
 });

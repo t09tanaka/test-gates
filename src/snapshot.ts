@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
+import os from 'node:os';
 import path from 'node:path';
 import type { Snapshot } from './core/reuse-guard.js';
 
@@ -27,6 +28,15 @@ const TOOLS = [
 
 /** Files a package manager writes into node_modules when it installs. */
 const INSTALL_MARKERS = ['.package-lock.json', '.yarn-integrity', '.modules.yaml'];
+
+const LOCK_FILES = [
+  'package-lock.json',
+  'npm-shrinkwrap.json',
+  'yarn.lock',
+  'pnpm-lock.yaml',
+  'bun.lock',
+  'bun.lockb',
+];
 
 /** Directories that are never part of a snapshot. */
 const NEVER = ['node_modules', '.git'];
@@ -133,6 +143,48 @@ function upTo(from: string, to: string): string[] {
   return directories;
 }
 
+function declaresWorkspaces(directory: string): boolean {
+  if (fs.existsSync(path.join(directory, 'pnpm-workspace.yaml'))) {
+    return true;
+  }
+  try {
+    const manifest = JSON.parse(fs.readFileSync(path.join(directory, 'package.json'), 'utf8')) as {
+      workspaces?: unknown;
+    };
+    return manifest.workspaces !== undefined;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * How far up the directories are read without git: to the nearest directory with a `.git`
+ * entry, else to the topmost one that declares workspaces, else no further than the subproject.
+ * Never the home directory or anything above it: what lies there is not part of a project.
+ */
+function walkRoot(dir: string): string {
+  const candidates = withinBounds(dir);
+  const repository = candidates.find((directory) => fs.existsSync(path.join(directory, '.git')));
+  if (repository !== undefined) {
+    return repository;
+  }
+  return candidates.filter(declaresWorkspaces).pop() ?? dir;
+}
+
+/** `dir` and the directories above it, without the home directory and what lies above that. */
+function withinBounds(dir: string): string[] {
+  let home: string | null = null;
+  try {
+    home = fs.realpathSync(os.homedir());
+  } catch {
+    // no home directory: only the root of the file system is out of bounds
+  }
+  return upTo(dir, path.parse(dir).root).filter(
+    (directory) =>
+      directory !== path.parse(dir).root && (home === null || !isInside(directory, home))
+  );
+}
+
 /** Packages of the same repository that are linked into a node_modules directory. */
 function linkedPackages(nodeModules: string, root: string): string[] {
   const found: string[] = [];
@@ -223,12 +275,7 @@ export function takeSnapshot(input: {
   if (top === null || !lister(dir, false).includes(manifest)) {
     // No git, or the subproject is not something git lists: read the directories.
     mode = 'walk';
-    root = dir;
-    for (const directory of upTo(dir, path.parse(dir).root)) {
-      if (fs.existsSync(path.join(directory, 'package.json'))) {
-        root = directory;
-      }
-    }
+    root = walkRoot(dir);
     lister = walkLister(root);
   }
 
@@ -273,8 +320,16 @@ export function takeSnapshot(input: {
         enqueue(linked, path.join(directory, 'node_modules'));
       }
     }
-    for (const marker of INSTALL_MARKERS) {
-      const file = path.join(directory, 'node_modules', marker);
+  }
+  // What is installed, and the lock files: also above what is listed, where the node_modules
+  // of a workspace may be. By name only; nothing else up there is read.
+  const above = withinBounds(listRoot).slice(1);
+  for (const directory of [dir, ...ancestors, ...above]) {
+    const candidates = [
+      ...INSTALL_MARKERS.map((marker) => path.join(directory, 'node_modules', marker)),
+      ...(above.includes(directory) ? LOCK_FILES.map((name) => path.join(directory, name)) : []),
+    ];
+    for (const file of candidates) {
       const hash = hashFile(file);
       if (hash !== null) {
         files[toPosix(path.relative(listRoot, file))] = hash;

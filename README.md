@@ -245,13 +245,13 @@ What is compared:
 
 - Every file of the subproject except the gates and their specs: other sources, helpers of the specs, configs, `test-gates.json`, the lock file.
 - The files directly in the directories above the subproject, up to the root of the repository: the lock file and the shared configs of a monorepo.
-- Packages of the same repository that are linked into `node_modules`, and directories outside the subproject that a file points at with a relative path (`../../shared/money/round`). When a path cannot be followed (`<rootDir>/../shared`, or a path to a directory that contains the subproject), every file of the repository is compared.
+- Packages of the same repository that are linked into `node_modules`, and directories outside the subproject that a file points at with a relative path (`../../pricing-kit/rounding/half-up`). When a path cannot be followed (`<rootDir>/../pricing-kit`, or a path to a directory that contains the subproject), every file of the repository is compared.
 - What is installed (`node_modules/.package-lock.json`, or what yarn and pnpm write in its place), the versions of Node.js, of this package, of Stryker and of the test runners, and the arguments handed to Stryker.
 - The incremental file itself: it has to be the one the recorded run wrote.
 
-With git, "every file" is what git tracks plus the untracked files it does not ignore. Without git, or when git ignores the subproject, every file is read except `node_modules`, `.git` and what the run writes itself. The record is removed before each run and written only after Stryker finished one, so a run that failed or was interrupted is followed by a full one. A run that is given `--force` is not changed. When Stryker does not run in incremental mode, nothing is recorded or compared.
+With git, "every file" is what git tracks plus the untracked files it does not ignore. Without git, or when git ignores the subproject, every file is read except `node_modules`, `.git` and what the run writes itself, up to the nearest directory that has a `.git` entry, else the topmost one that declares workspaces, else only the subproject. Such a listing also contains what git would ignore (coverage output, logs), so a file that changes between two runs makes every run a full one; reuse is meant for a checkout with git. The record is removed before each run and written only after Stryker finished one, so a run that failed or was interrupted is followed by a full one. A run that is given `--force` is not changed. When Stryker does not run in incremental mode, nothing is recorded or compared.
 
-The comparison reads and hashes those files before each run: 0.37 s more for a project of 5,200 files written for this measurement.
+The comparison loads the Stryker config in a process of its own, to see where the incremental file is, and reads and hashes those files before each run. Timed with a stand-in for Stryker, so that only this tool is measured, in a project of 5,200 files written for the measurement: 0.14 s without the comparison, 0.51 to 0.60 s with it (other jobs were running on the machine).
 
 What it does not see, and what therefore still needs `-- --force` by hand, or CI, where the run should always be a full one:
 
