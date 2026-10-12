@@ -37,7 +37,9 @@ function parseShard(value: string): Shard {
   const match = /^([1-9]\d*)\/([1-9]\d*)$/.exec(value);
   const index = Number(match?.[1]);
   const total = Number(match?.[2]);
-  if (match === null || index > total) {
+  // Without a match both numbers are NaN, and NaN is not a safe integer either. A total beyond
+  // the safe integers would not be the number that was written.
+  if (!Number.isSafeInteger(total) || index > total) {
     throw new UsageError(
       `--shard needs <index>/<total> with 1 <= index <= total (for example 2/4), got ${value}`
     );
@@ -93,6 +95,9 @@ function consume(
       if (name === '--gate') {
         parsed.gates.push(value);
       } else if (name === '--shard') {
+        if (parsed.shard !== null) {
+          throw new UsageError('--shard can be given only once');
+        }
         parsed.shard = parseShard(value);
       } else {
         const key = name.slice(2) as 'dir' | 'report' | 'file';
@@ -163,6 +168,14 @@ export function parseArgs(argv: string[]): ParsedArgs {
   ].filter((option) => option !== null);
   if (selections.length > 1) {
     throw new UsageError(`${selections.join(' and ')} cannot be combined`);
+  }
+  // `npm run selfcheck -- --shard 2/4` on a script that already ends in `-- <gate command>`
+  // would hand the option to the test runner, which has a --shard of its own.
+  const misplaced = parsed.rest.find((arg) => /^--(gate|shard)(=|$)/.test(arg));
+  if (parsed.command === 'selfcheck' && misplaced !== undefined) {
+    throw new UsageError(
+      `${misplaced.split('=')[0]} after "--" would go to the gate command. Write it before "--"`
+    );
   }
   if (parsed.command === 'selfcheck' && parsed.rest.length === 0 && argv.includes('--')) {
     throw new UsageError('"--" must be followed by the gate command');

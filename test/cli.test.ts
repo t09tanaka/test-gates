@@ -766,7 +766,7 @@ describe('test-gates selfcheck', () => {
       status: 0,
       stdout:
         '  ✓ without src/rate.spec.ts the gate fails (exit 1)\n' +
-        'test-gates selfcheck: OK (1 negative control(s) failed as they should, 1 gate(s) not selected)\n',
+        'test-gates selfcheck: OK (1 negative control(s) failed as they should, 1 gate(s) not selected by --gate)\n',
       stderr: '',
     });
     expect(runs(dir)).toEqual(['src/rate.spec.ts']);
@@ -781,7 +781,7 @@ describe('test-gates selfcheck', () => {
       dir,
     ]);
     expect(both.stdout).toContain(
-      'test-gates selfcheck: OK (2 negative control(s) failed as they should, 0 gate(s) not selected)'
+      'test-gates selfcheck: OK (2 negative control(s) failed as they should, 0 gate(s) not selected by --gate)'
     );
     expect(runs(dir)).toEqual(['src/rate.spec.ts', 'src/age.spec.ts', 'src/rate.spec.ts']);
   });
@@ -795,14 +795,16 @@ describe('test-gates selfcheck', () => {
     );
     expect(result.stderr).not.toContain('✗ src/age.ts');
     expect(result.stderr).toContain(
-      'test-gates selfcheck: FAILED (1 of 1 negative control(s), 1 gate(s) not selected)'
+      'test-gates selfcheck: FAILED (1 of 1 negative control(s), 1 gate(s) not selected by --shard 2/2)'
     );
     expect(runs(dir)).toHaveLength(1);
   });
 
   it('runs every gate exactly once over the parts of --shard, and lets --shard win over settings.selfcheck.mode', () => {
     const dir = twoGates(HONEST, { selfcheck: { mode: 'first' } });
-    expect(testGates(['selfcheck', '--shard', '1/2', '--dir', dir]).status).toBe(0);
+    expect(testGates(['selfcheck', '--shard', '1/2', '--dir', dir]).stdout).toContain(
+      'test-gates selfcheck: OK (1 negative control(s) failed as they should, 1 gate(s) not selected by --shard 1/2)'
+    );
     expect(testGates(['selfcheck', '--shard=2/2', '--dir', dir]).status).toBe(0);
     expect(runs(dir)).toEqual(['src/age.spec.ts', 'src/rate.spec.ts']);
   });
@@ -817,7 +819,35 @@ describe('test-gates selfcheck', () => {
     const tooMany = testGates(['selfcheck', '--shard', '3/3', '--dir', dir]);
     expect(tooMany.status).toBe(2);
     expect(tooMany.stderr).toContain('test-gates: --shard 3/3: there are only 2 gate(s).');
+    // An option that ends up behind the gate command would go to the test runner.
+    const misplaced = testGates([
+      'selfcheck',
+      '--dir',
+      dir,
+      '--',
+      'node',
+      'gate.cjs',
+      '--shard',
+      '1/2',
+    ]);
+    expect(misplaced.status).toBe(2);
+    expect(misplaced.stderr).toContain(
+      'test-gates: --shard after "--" would go to the gate command.'
+    );
     expect(fs.existsSync(path.join(dir, 'runs.log'))).toBe(false);
+
+    // The selection is refused before the gate command is looked for.
+    const noCommand = twoGates(HONEST);
+    write(noCommand, {
+      'test-gates.json': {
+        gates: [gateEntry, { path: 'src/rate.ts', decides: 'd', impact: 'i' }],
+        candidates: [],
+      },
+    });
+    const typo = testGates(['selfcheck', '--gate', 'src/nope.ts', '--dir', noCommand]);
+    expect(typo.status).toBe(2);
+    expect(typo.stderr).toContain('test-gates: --gate src/nope.ts: not a gate of test-gates.json');
+    expect(testGates(['selfcheck', '--dir', noCommand]).stderr).toContain('no gate config found');
   });
 
   it('fails when the gate stays green without a spec', () => {

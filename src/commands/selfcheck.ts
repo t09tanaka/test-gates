@@ -56,9 +56,6 @@ export function runSelfcheck(
     io.err('test-gates selfcheck: test-gates.json has problems. Run "test-gates check" first');
     return 1;
   }
-  const command = commandOverride.length > 0 ? commandOverride : resolveGateCommand(manifest);
-  const [program, ...args] = command as [string, ...string[]];
-  const executable = findLocalBin(manifest.dir, program) ?? program;
   const chosen = selectControls({
     gates: manifest.gates.map((gate) => gate.path),
     mode: selection.mode ?? manifest.settings.selfcheckMode,
@@ -69,11 +66,18 @@ export function runSelfcheck(
     throw new UsageError(chosen.error);
   }
   const targets = manifest.gates.filter((gate) => chosen.selected.includes(gate.path));
-  // Said only for --gate and --shard: a run of a part must not read like a run of every gate.
+  // Said for --gate and --shard, so that such a run does not read like a run of every gate and
+  // a CI log shows which part it was.
+  const skipped = manifest.gates.length - targets.length;
   const notSelected =
-    selection.gates.length > 0 || selection.shard !== null
-      ? `, ${manifest.gates.length - targets.length} gate(s) not selected`
-      : '';
+    selection.shard !== null
+      ? `, ${skipped} gate(s) not selected by --shard ${selection.shard.index}/${selection.shard.total}`
+      : selection.gates.length > 0
+        ? `, ${skipped} gate(s) not selected by --gate`
+        : '';
+  const command = commandOverride.length > 0 ? commandOverride : resolveGateCommand(manifest);
+  const [program, ...args] = command as [string, ...string[]];
+  const executable = findLocalBin(manifest.dir, program) ?? program;
 
   let failed = 0;
   for (const gate of targets) {

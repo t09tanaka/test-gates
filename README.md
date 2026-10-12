@@ -199,6 +199,8 @@ test-gates-selfcheck:
     - run: npm run test:gates:selfcheck -- --shard ${{ matrix.part }}/4
 ```
 
+The number of parts is written twice, in `matrix.part` and after the `/`; keep the two in step. The `test:gates:selfcheck` script must not itself end in `-- <gate command>`, or the option would land behind it (which is refused); put the command into `settings.gateCommand` instead.
+
 ## Commands
 
 All commands take `--dir <subproject>` (default: the current directory). `test-gates -h` (`--help`) prints the usage and `test-gates -v` (`--version`) the version.
@@ -254,7 +256,7 @@ The run also fails when
 On failure every unallowed survivor is listed as `file:line:column / mutator / original → replacement / occurrence`, followed by a JSON fragment that can be pasted into `equivalentMutants`. The last line gives the real numbers, never a percentage. For the gates of this repository:
 
 ```
-test-gates mutation: OK (mutants 1127 / detected 1127 (timeout 2) / allowed equivalent 0 / not evaluable 0 / unallowed survivors 0)
+test-gates mutation: OK (mutants 1145 / detected 1145 (timeout 2) / allowed equivalent 0 / not evaluable 0 / unallowed survivors 0)
 ```
 
 #### Timeouts
@@ -301,21 +303,21 @@ When the run fails on a timeout, first run again with less load (`npm run test:g
 
 0.3.1 set `timeoutMS` to 30000 instead. That was the wrong fix and 0.3.2 takes it back: the longer limit let most slow mutants finish, but the same full run then took about three times as long as without it, and in another project mutants that exhaust the heap crashed the test runner before the limit and came back as `RuntimeError`, which is only counted, not failed. `timeoutMS` is Stryker's default (5000) again unless the project sets it.
 
-### `test-gates selfcheck [--all | --first | --gate <path> | --shard <index>/<total>] [-- <gate command>]`
+### `test-gates selfcheck [--all | --first | --gate <path>… | --shard <index>/<total>] [-- <gate command>]`
 
 Negative control. For each gate, runs the gate with that gate's spec left out and requires the run to **fail on the coverage threshold of that very file**. A gate that stays green without its spec measures nothing; a run that fails for another reason (a config that does not load) proves nothing either.
 
 The spec to leave out is passed in the environment variable `TEST_GATES_EXCLUDE_SPEC`. The config helpers read it. The gate command is `jest --config jest.gates.config.*` or `vitest run --config vitest.gates.config.*`, whichever config exists; override it with `settings.gateCommand` or after `--`. `--all` (default) checks every gate in turn, `--first` only the first.
 
-**A part of the gates.** Each gate is one run of the gate command, and each of those runs executes the specs of all the other gates, so the time grows with the square of the number of gates (see [Cost](#cost-and-how-to-use-strykers-incremental-mode)). Two options run only a part. A gate gets the same verdict in a part as in the whole run, because the runs do not depend on each other.
+**A part of the gates.** Each gate is one run of the gate command, and each of those runs executes the specs of all the other gates, so the time grows faster than the number of gates (see [Cost](#cost-and-how-to-use-strykers-incremental-mode)). Two options run only a part. A gate gets the same verdict in a part as in the whole run, because the runs do not depend on each other.
 
 - `--shard <index>/<total>` splits the gates into `<total>` parts and checks part `<index>` (from 1). The parts are disjoint, and together they are every gate: the gates are dealt out in the order of `test-gates.json`. This is for parallel CI jobs; **every index has to run**, a single part says nothing about the gates of the others. More parts than gates is an error (exit code 2), because a part without a gate would pass without checking anything.
-- `--gate <path>` checks only that gate and can be given more than once. The path is written as in `test-gates.json`; anything else is an error (exit code 2).
+- `--gate <path>` checks only that gate and can be given more than once. The path is written as in `test-gates.json`; a path that is not a gate there is an error (exit code 2).
 
-`--all`, `--first`, `--gate` and `--shard` cannot be combined. `--gate` and `--shard` win over `settings.selfcheck.mode`. The last line of such a run says how many gates were left out:
+`--all`, `--first`, `--gate` and `--shard` cannot be combined, and `--shard` can be given only once. `--gate` and `--shard` win over `settings.selfcheck.mode`. Both are written before `--`: after it they would go to the gate command (Jest and Vitest have a `--shard` of their own, which would leave specs out of every run), so that is an error too (exit code 2). The last line of a run with `--gate` or `--shard` says how many gates were left out, and by what:
 
 ```
-test-gates selfcheck: OK (2 negative control(s) failed as they should, 6 gate(s) not selected)
+test-gates selfcheck: OK (2 negative control(s) failed as they should, 6 gate(s) not selected by --shard 1/4)
 ```
 
 `--gate` is meant for a quick look while working on one gate, not as the check before a push: the negative control of a gate also changes when the spec of **another** gate starts to cover it (see the next paragraph), and that is a change in a file `--gate` was not pointed at. Run every gate in CI.
@@ -575,7 +577,7 @@ The time grows with the number of mutants and depends heavily on cores and on `c
 - **CI: full.** `npm run test:gates:mutation -- --force`. CI has no incremental file to start from anyway, and the full run is the one that counts.
 - If even CI is too slow, split by subproject (each has its own `test-gates.json`) before you think about sampling.
 
-The negative control (`selfcheck`) is the step that grows fastest. It runs the gate command once per gate, and each of those runs executes the specs of all the other gates, so twice as many gates take about four times as long. Measured on a project written for this measurement: N gates of 20 lines each, one spec of five tests per gate, Vitest 3.2 with istanbul or Jest 30 with ts-jest, Stryker 10 with its default `concurrency`; the same machine as above, Node 22.22, other jobs running. Read the growth, not the seconds:
+The negative control (`selfcheck`) is the step that grows fastest. It runs the gate command once per gate, and each of those runs executes the specs of all the other gates, so it grows faster than the number of gates, up to its square. Measured on a project written for this measurement: N gates of 20 lines each, one spec of five tests per gate, Vitest 3.2 with istanbul or Jest 30 with ts-jest, Stryker 10 without a `concurrency` setting; an Apple M2 Max (12 cores), Node 22.22, other jobs running. Read the growth, not the seconds:
 
 | Gates | Runner | Gate run | `selfcheck`, every gate | `mutation -- --force` |
 | ----- | ------ | -------- | ----------------------- | --------------------- |
@@ -586,7 +588,7 @@ The negative control (`selfcheck`) is the step that grows fastest. It runs the g
 | 30    | Jest   | 2.4 s    | 1 min 19 s              | 22 s                  |
 | 100   | Jest   | 3.1 s    | 6 min 2 s               | 1 min 8 s             |
 
-From a few dozen gates on, the negative control costs more than the full mutation test. `selfcheck --shard <index>/<total>` splits it over parallel CI jobs: each part runs its share of the gates, so with 100 gates and four parts a job runs 25 of the 100 gate runs. The total work stays the same; only the waiting time gets shorter.
+In this project, whose gates are small, the negative control costs more than the full mutation test from 30 gates on; the mutation test grows with the number of mutants, not of gates. `selfcheck --shard <index>/<total>` splits it over parallel CI jobs: each part runs its share of the gates, so with 100 gates and four parts a job runs 25 of the 100 gate runs. The total work stays the same; only the waiting time gets shorter.
 
 How the incremental file and this tool interact (covered by `test/incremental.test.ts`, which runs a real Stryker):
 
