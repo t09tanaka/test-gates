@@ -75,7 +75,7 @@ describe('refuseReuse', () => {
     expect(ask(stored)).toBe('the record of the last run is not one this version can read');
   });
 
-  it('reads a well-formed record back as it was written, in walk mode too', () => {
+  it('reads a complete record back as it was written, in walk mode too', () => {
     expect(parseRecord(record())).toEqual(record());
     const walked = record({ snapshot: snapshot({ mode: 'walk', args: [], files: {} }) });
     expect(parseRecord(walked)).toEqual(walked);

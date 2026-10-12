@@ -290,7 +290,7 @@ describe.each(['git', 'walk'] as const)(
       const dir = fresh();
       mutation(dir);
       const original = fs.readFileSync(path.join(dir, 'src/expect-true.ts'), 'utf8');
-      // A change, and a run that Stryker does not finish: it leaves a half-written incremental file.
+      // A change, and a run that Stryker does not finish: it leaves a partial incremental file.
       write(dir, { 'src/expect-true.ts': '// weaker\n', 'stryker-fails': '' });
       const failed = mutation(dir);
       expect(failed.status).toBe(1);
@@ -418,7 +418,7 @@ describe.each(['git', 'walk'] as const)(
             'pricing-kit/rounding/half-up.ts':
               'export const halfUp = (value: number) => Math.round(value);\n',
             'pricing-kit/rounding/README.md': 'money\n',
-            'pricing-kit/labels/other.ts': 'export {};\n',
+            'pricing-kit/labels/label-set.ts': 'export {};\n',
             'catalog-site/src/listing.ts': 'export {};\n',
             'docs/guide.md': 'guide\n',
             ...subproject('fee-rules/'),
@@ -439,7 +439,7 @@ describe.each(['git', 'walk'] as const)(
           'catalog-site/src/listing.ts': 'export const listing = 1;\n',
           'docs/guide.md': 'more\n',
         });
-        write(root, { 'pricing-kit/labels/other.ts': 'export const other = 1;\n' });
+        write(root, { 'pricing-kit/labels/label-set.ts': 'export const other = 1;\n' });
         expect(mutation(sub(root))).toEqual(REUSED);
       });
 
@@ -469,7 +469,7 @@ describe.each(['git', 'walk'] as const)(
       });
 
       it('runs every mutant again after a change in a package linked into node_modules', () => {
-        const root = monorepo({ 'packages/kit/index.ts': 'export const kit = 1;\n' });
+        const root = monorepo({ 'packages/kit/kit.ts': 'export const kit = 1;\n' });
         fs.mkdirSync(path.join(root, 'node_modules/@acme'), { recursive: true });
         fs.symlinkSync(
           path.join(root, 'packages/kit'),
@@ -477,8 +477,8 @@ describe.each(['git', 'walk'] as const)(
           'dir'
         );
         mutation(sub(root));
-        write(root, { 'packages/kit/index.ts': 'export const kit = 2;\n' });
-        expect(mutation(sub(root))).toEqual(forcedBy(`${CHANGED}packages/kit/index.ts`));
+        write(root, { 'packages/kit/kit.ts': 'export const kit = 2;\n' });
+        expect(mutation(sub(root))).toEqual(forcedBy(`${CHANGED}packages/kit/kit.ts`));
       });
 
       it.each([
