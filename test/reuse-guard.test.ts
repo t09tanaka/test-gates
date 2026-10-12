@@ -589,7 +589,7 @@ describe.each(['git', 'walk'] as const)(
 
       it('never reuses when node_modules links a directory outside of the repository', () => {
         const root = monorepo();
-        const elsewhere = project({ 'index.js': 'module.exports = 1;\n' });
+        const elsewhere = project({ 'kit-entry.js': 'module.exports = 1;\n' });
         fs.mkdirSync(path.join(root, 'node_modules'), { recursive: true });
         fs.symlinkSync(elsewhere, path.join(root, 'node_modules/outside-kit'), 'dir');
         mutation(sub(root));

@@ -250,7 +250,7 @@ What is compared:
 
 - Every file of the subproject: gates, specs, other sources, helpers of the specs, configs, `test-gates.json`, the lock file.
 - The files directly in the directories above the subproject, up to the root of the repository: the lock file and the shared configs of a monorepo.
-- Packages of the same repository that are linked into `node_modules`, and directories outside the subproject that a file leads to, with a link or with a relative path (`../../pricing-kit/rounding/half-up`). When a path cannot be followed (`<rootDir>/../pricing-kit`, `path.join(__dirname, '..', '..')`, a path to a file or a directory above the subproject), every file of the repository is compared.
+- Packages of the same repository that are linked into `node_modules`, and directories outside the subproject that a file leads to, with a link or with a relative path (`../../pricing-kit/rounding/half-up`). When a path cannot be followed (`<rootDir>/../pricing-kit`, a way up handed to `path.join` as separate `'..'` arguments, a path to a file or a directory above the subproject), every file of the repository is compared.
 - What is installed (`node_modules/.package-lock.json`, or what yarn and pnpm write in its place), the versions of Node.js, of this package, of Stryker and of the test runners, and the arguments handed to Stryker.
 - The incremental file itself: it has to be the one the recorded run wrote.
 
