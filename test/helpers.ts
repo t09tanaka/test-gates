@@ -34,6 +34,16 @@ export function cleanup(): void {
   }
 }
 
+/**
+ * The environment for a run of the CLI in a test: without the CI of the machine the tests run
+ * on, which `selfcheck --quick` looks at. A test that is about CI passes it itself.
+ */
+function withoutCi(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const inherited = { ...process.env };
+  delete inherited.CI;
+  return { ...inherited, ...extra };
+}
+
 export interface CliResult {
   status: number | null;
   stdout: string;
@@ -47,7 +57,7 @@ export function testGates(
 ): CliResult {
   const result = spawnSync(process.execPath, [cliPath, ...args], {
     cwd: options.cwd ?? repoRoot,
-    env: { ...process.env, ...options.env },
+    env: withoutCi(options.env),
     encoding: 'utf8',
   });
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
@@ -61,7 +71,7 @@ export function testGatesAsync(args: string[], env: NodeJS.ProcessEnv = {}): Pro
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [cliPath, ...args], {
       cwd: repoRoot,
-      env: { ...process.env, ...env },
+      env: withoutCi(env),
     });
     let stdout = '';
     let stderr = '';

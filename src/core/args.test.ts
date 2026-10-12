@@ -11,7 +11,7 @@ const base = {
   mode: null,
   gates: [],
   shard: null,
-  shared: false,
+  quick: false,
   rest: [],
 };
 
@@ -108,28 +108,28 @@ describe('parseArgs', () => {
     });
   });
 
-  it('reads --shared of selfcheck, alone and next to a selection', () => {
-    expect(parseArgs(['selfcheck', '--shared'])).toEqual({
+  it('reads --quick of selfcheck, alone and next to a selection', () => {
+    expect(parseArgs(['selfcheck', '--quick'])).toEqual({
       ...base,
       command: 'selfcheck',
-      shared: true,
+      quick: true,
     });
-    expect(parseArgs(['selfcheck', '--shard', '1/2', '--shared'])).toMatchObject({
-      shared: true,
+    expect(parseArgs(['selfcheck', '--shard', '1/2', '--quick'])).toMatchObject({
+      quick: true,
       shard: { index: 1, total: 2 },
       mode: null,
     });
-    expect(parseArgs(['selfcheck', '--shared', '--first'])).toMatchObject({
-      shared: true,
+    expect(parseArgs(['selfcheck', '--quick', '--first'])).toMatchObject({
+      quick: true,
       mode: 'first',
     });
-    expect(() => parseArgs(['selfcheck', '--shared=1'])).toThrow(
-      new UsageError('--shared does not take a value')
+    expect(() => parseArgs(['selfcheck', '--quick=1'])).toThrow(
+      new UsageError('--quick does not take a value')
     );
-    expect(() => parseArgs(['check', '--shared'])).toThrow(
-      new UsageError('unknown argument for check: --shared')
+    expect(() => parseArgs(['check', '--quick'])).toThrow(
+      new UsageError('unknown argument for check: --quick')
     );
-    expect(parseArgs(['mutation', '--shared']).rest).toEqual(['--shared']);
+    expect(parseArgs(['mutation', '--quick']).rest).toEqual(['--quick']);
   });
 
   it('collects every --gate of selfcheck, in both forms and in the order given', () => {

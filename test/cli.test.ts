@@ -912,12 +912,21 @@ describe('test-gates selfcheck', () => {
       'test-gates selfcheck: OK (5 negative control(s) failed as they should)\n';
     const shared =
       'all ["src/rate.spec.ts","src/fee.spec.ts","src/tax.spec.ts","src/toll.spec.ts"]';
+    /** What --quick prints when the controls of `together` were judged in the shared run. */
+    const quickOk = (together: string[], checked = names, tail = '') =>
+      checked
+        .map(
+          (name) =>
+            `  ✓ without src/${name}.spec.ts the gate fails (exit 1${together.includes(name) ? ', in the shared run' : ''})\n`
+        )
+        .join('') +
+      `test-gates selfcheck: OK (${checked.length} negative control(s) failed as they should${tail}). ${together.length} of them were judged in one shared run (--quick), which a spec that depends on other specs can make differ from a run per gate: run without --quick for the final check\n`;
 
-    it('shares one run among the gates only their own spec touched, and prints what a run per gate prints', () => {
+    it('shares one run among the gates only their own spec touched, and says which controls it judged there', () => {
       const dir = fiveGates();
-      expect(testGates(['selfcheck', '--shared', '--dir', dir])).toEqual({
+      expect(testGates(['selfcheck', '--quick', '--dir', dir])).toEqual({
         status: 0,
-        stdout: OK,
+        stdout: quickOk(['rate', 'fee', 'tax', 'toll']),
         stderr: '',
       });
       // src/age.ts is also touched by the spec of src/rate.ts: a run of its own.
@@ -940,16 +949,34 @@ describe('test-gates selfcheck', () => {
       write(dir, { '.test-gates-touch-old/x.json': '{}', '.test-gates-touch-new/x.json': '{}' });
       const longAgo = new Date(Date.now() - 2 * 3_600_000);
       fs.utimesSync(path.join(dir, '.test-gates-touch-old'), longAgo, longAgo);
-      expect(testGates(['selfcheck', '--shared', '--dir', dir]).status).toBe(0);
+      expect(testGates(['selfcheck', '--quick', '--dir', dir]).status).toBe(0);
       expect(fs.readdirSync(dir).filter((name) => name.startsWith('.test-gates-touch'))).toEqual([
         '.test-gates-touch-new',
       ]);
     });
 
+    it.each(['true', '1'])('refuses --quick when CI is %s, before anything runs', (value) => {
+      const dir = fiveGates();
+      const result = testGates(['selfcheck', '--quick', '--dir', dir], { env: { CI: value } });
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain(
+        'test-gates: --quick is refused in CI (the variable CI is set): what it reports as holding is not the final check.'
+      );
+      expect(fs.existsSync(path.join(dir, 'runs.log'))).toBe(false);
+      // Without --quick, CI changes nothing.
+      expect(testGates(['selfcheck', '--dir', dir], { env: { CI: value } }).stdout).toBe(OK);
+      // Another value of CI is not CI.
+      expect(
+        testGates(['selfcheck', '--quick', '--dir', dir], { env: { CI: 'false' } }).status
+      ).toBe(0);
+    });
+
     it('gives a gate the shared run does not confirm a run of its own', () => {
       const dir = fiveGates();
       write(dir, { 'shy.txt': 'src/tax.ts' });
-      expect(testGates(['selfcheck', '--shared', '--dir', dir]).stdout).toBe(OK);
+      expect(testGates(['selfcheck', '--quick', '--dir', dir]).stdout).toBe(
+        quickOk(['rate', 'fee', 'toll'])
+      );
       expect(runs(dir)).toEqual(['notes', shared, 'one src/age.spec.ts', 'one src/tax.spec.ts']);
     });
 
@@ -960,7 +987,7 @@ describe('test-gates selfcheck', () => {
     it('gives every gate its own run when the full gate run fails, and says so', () => {
       const dir = fiveGates();
       write(dir, { 'red.txt': '' });
-      expect(testGates(['selfcheck', '--shared', '--dir', dir]).stdout).toBe(
+      expect(testGates(['selfcheck', '--quick', '--dir', dir]).stdout).toBe(
         perGate('the gate run with every spec does not pass')
       );
       expect(runs(dir)).toEqual(everyGate);
@@ -969,7 +996,7 @@ describe('test-gates selfcheck', () => {
     it('gives every gate its own run when the runner counted more than the notes say', () => {
       const dir = fiveGates();
       write(dir, { 'leak.txt': 'src/tax.ts' });
-      expect(testGates(['selfcheck', '--shared', '--dir', dir]).stdout).toBe(
+      expect(testGates(['selfcheck', '--quick', '--dir', dir]).stdout).toBe(
         perGate('the notes of the specs do not add up to what the runner counted for src/tax.ts')
       );
       expect(runs(dir)).toEqual(everyGate);
@@ -997,7 +1024,7 @@ describe('test-gates selfcheck', () => {
     ])('gives every gate its own run for a run that says %s', (run, reason) => {
       const dir = fiveGates();
       write(dir, { 'run.txt': run });
-      expect(testGates(['selfcheck', '--shared', '--dir', dir]).stdout).toBe(perGate(reason));
+      expect(testGates(['selfcheck', '--quick', '--dir', dir]).stdout).toBe(perGate(reason));
       expect(runs(dir)).toEqual(everyGate);
     });
 
@@ -1007,7 +1034,7 @@ describe('test-gates selfcheck', () => {
         'src/fee.spec.ts':
           "if (process.env.TEST_GATES_EXCLUDE_SPEC === 'src/tax.spec.ts') { it('covers tax', () => {}); }\n",
       });
-      expect(testGates(['selfcheck', '--shared', '--dir', dir]).stdout).toBe(
+      expect(testGates(['selfcheck', '--quick', '--dir', dir]).stdout).toBe(
         perGate(
           'src/fee.spec.ts reads the environment or files, so what it executes may depend on which other specs ran'
         )
@@ -1028,14 +1055,14 @@ describe('test-gates selfcheck', () => {
       });
       fs.chmodSync(path.join(dir, 'node_modules/.bin/vitest'), 0o755);
       const perGateOnly = names.map((name) => `one src/${name}.spec.ts`);
-      expect(testGates(['selfcheck', '--shared', '--dir', dir]).stdout).toBe(
+      expect(testGates(['selfcheck', '--quick', '--dir', dir]).stdout).toBe(
         perGate('the gate config does not use createVitestGatesConfig')
       );
       expect(runs(dir)).toEqual(perGateOnly);
 
       fs.rmSync(path.join(dir, 'runs.log'));
       write(dir, { 'vitest.gates.config.ts': 'export default createVitestGatesConfig({});\n' });
-      expect(testGates(['selfcheck', '--shared', '--dir', dir]).stdout).toBe(
+      expect(testGates(['selfcheck', '--quick', '--dir', dir]).stdout).toBe(
         perGate(
           "Vitest measures with the v8 provider; the shared run needs coverageProvider: 'istanbul'"
         )
@@ -1048,7 +1075,7 @@ describe('test-gates selfcheck', () => {
           "export default createVitestGatesConfig({ coverageProvider: 'istanbul' });\n",
         'node_modules/vitest/package.json': { version: '4.0.2' },
       });
-      expect(testGates(['selfcheck', '--shared', '--dir', dir]).stdout).toBe(
+      expect(testGates(['selfcheck', '--quick', '--dir', dir]).stdout).toBe(
         perGate('the shared run is verified with vitest 3.2, not with 4.0.2')
       );
       expect(runs(dir)).toEqual(perGateOnly);
@@ -1056,18 +1083,20 @@ describe('test-gates selfcheck', () => {
       // With a version that is verified the run for notes is made, and one run is shared.
       fs.rmSync(path.join(dir, 'runs.log'));
       write(dir, { 'node_modules/vitest/package.json': { version: '3.2.7' } });
-      expect(testGates(['selfcheck', '--shared', '--dir', dir]).stdout).toBe(OK);
+      expect(testGates(['selfcheck', '--quick', '--dir', dir]).stdout).toBe(
+        quickOk(['rate', 'fee', 'tax', 'toll'])
+      );
       expect(runs(dir)).toEqual(['notes', shared, 'one src/age.spec.ts']);
     });
 
     it('plans for the selected gates only, with the notes of all', () => {
       const dir = fiveGates();
       expect(
-        testGates(['selfcheck', '--shared', '--shard', '1/1', '--gate', 'x', '--dir', dir]).status
+        testGates(['selfcheck', '--quick', '--shard', '1/1', '--gate', 'x', '--dir', dir]).status
       ).toBe(2);
       const part = testGates([
         'selfcheck',
-        '--shared',
+        '--quick',
         '--gate',
         'src/fee.ts',
         '--gate',
@@ -1078,10 +1107,7 @@ describe('test-gates selfcheck', () => {
         dir,
       ]);
       expect(part.stdout).toBe(
-        '  ✓ without src/age.spec.ts the gate fails (exit 1)\n' +
-          '  ✓ without src/fee.spec.ts the gate fails (exit 1)\n' +
-          '  ✓ without src/toll.spec.ts the gate fails (exit 1)\n' +
-          'test-gates selfcheck: OK (3 negative control(s) failed as they should, 2 gate(s) not selected by --gate)\n'
+        quickOk(['fee', 'toll'], ['age', 'fee', 'toll'], ', 2 gate(s) not selected by --gate')
       );
       expect(runs(dir)).toEqual([
         'notes',
@@ -1095,7 +1121,7 @@ describe('test-gates selfcheck', () => {
       expect(
         testGates([
           'selfcheck',
-          '--shared',
+          '--quick',
           '--gate',
           'src/fee.ts',
           '--gate',
