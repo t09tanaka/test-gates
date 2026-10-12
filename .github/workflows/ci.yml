@@ -40,20 +40,28 @@ jobs:
         run: npm test
 
   heavy:
-    name: heavy tests (a real Stryker, Jest and Vitest)
+    # Spread over shards by file (the heavy tests are slow on the few cores of a runner), on the
+    # Node.js of .node-version and on Node 20. Stryker 10 does not start below Node 22.12, so
+    # the tests with a real Stryker skip themselves on Node 20.
+    name: heavy tests (Node ${{ matrix.node }}, shard ${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22', '20']
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version-file: .node-version
+          node-version: ${{ matrix.node }}
           cache: npm
 
       - run: npm ci
 
       - name: heavy tests
-        run: npm run test:heavy
+        run: npm run test:heavy -- --shard=${{ matrix.shard }}/4
 
   gates:
     name: test gates (checks, 100% coverage, negative control)
@@ -113,6 +121,3 @@ jobs:
 
       - name: test (builds first; includes the CLI integration tests)
         run: npm test
-
-      - name: heavy tests (those with Stryker skip themselves)
-        run: npm run test:heavy

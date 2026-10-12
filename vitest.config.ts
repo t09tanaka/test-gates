@@ -3,9 +3,13 @@ import { defineConfig } from 'vitest/config';
 // Tests that start a real Stryker, Jest or Vitest, or a process for every case. They take about
 // two minutes together and run with `npm run test:heavy`, which CI always does.
 export const HEAVY_TESTS = [
-  'test/incremental.test.ts',
+  'test/incremental-reuse.test.ts',
+  'test/incremental-stale.test.ts',
   'test/reuse-guard.test.ts',
-  'test/selfcheck-runners.test.ts',
+  'test/selfcheck-runners-jest.test.ts',
+  'test/selfcheck-runners-other.test.ts',
+  'test/selfcheck-runners-vitest-threads.test.ts',
+  'test/selfcheck-runners-vitest.test.ts',
 ];
 
 export default defineConfig({
