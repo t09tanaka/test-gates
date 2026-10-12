@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- `test-gates check`, `lcov` and the config helpers read each directory once while they look for the gates and their specs, instead of once for every gate and every place its spec may be in. What they report is unchanged.
+
 ## 0.3.3
 
 Documentation only; the commands and the helpers behave as in 0.3.2.

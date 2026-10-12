@@ -5,7 +5,7 @@ import { scanGateSource, scanSpecSource, scanStrykerConfig } from '../core/scan.
 import { gateExtensionOf, looksLikeSpec } from '../core/spec-path.js';
 import { vitestCoverageViolation } from '../core/vitest-coverage.js';
 import type { Violation } from '../core/types.js';
-import { existsExact, readText } from '../fs.js';
+import { existsExact, type Listing, readText } from '../fs.js';
 import { readManifest, type LoadedManifest } from '../load.js';
 import { type Io, printViolations } from './output.js';
 
@@ -37,6 +37,7 @@ function isPlainRelativePath(file: string): boolean {
 export function checkGates(manifest: LoadedManifest): Violation[] {
   const { dir, settings } = manifest;
   const violations: Violation[] = [...manifest.violations];
+  const listing: Listing = new Map();
 
   for (const gate of manifest.gates) {
     if (!isPlainRelativePath(gate.path)) {
@@ -66,7 +67,7 @@ export function checkGates(manifest: LoadedManifest): Violation[] {
       }
     }
 
-    if (!existsExact(dir, gate.path)) {
+    if (!existsExact(dir, gate.path, 'file', listing)) {
       violations.push({
         file: gate.path,
         message: 'file not found (the check is case-sensitive)',
@@ -98,7 +99,7 @@ export function checkGates(manifest: LoadedManifest): Violation[] {
 
   for (const candidate of manifest.candidates) {
     // A candidate may be a directory ("everything under src/services").
-    if (!isPlainRelativePath(candidate.path) || !existsExact(dir, candidate.path, 'any')) {
+    if (!isPlainRelativePath(candidate.path) || !existsExact(dir, candidate.path, 'any', listing)) {
       violations.push({
         file: MANIFEST_FILE,
         message: `${candidate.path}: candidate not found. Remove it, or fix the path`,

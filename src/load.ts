@@ -5,7 +5,7 @@ import { resolveSettings, SettingsError } from './core/settings.js';
 import { excludedSpecs } from './core/selfcheck.js';
 import { specCandidatesFor } from './core/spec-path.js';
 import type { Candidate, Gate, ResolvedSettings, Violation } from './core/types.js';
-import { existsExact } from './fs.js';
+import { existsExact, type Listing } from './fs.js';
 
 export interface ResolvedGate extends Gate {
   /** Where the spec may live, in order of preference (relative to the subproject). */
@@ -54,9 +54,13 @@ export function readManifest(dir: string): LoadedManifest {
     throw error;
   }
 
+  // One reading of each directory for all gates: they mostly share theirs.
+  const listing: Listing = new Map();
   const gates = parsed.gates.map((gate) => {
     const specCandidates = specCandidatesFor(gate.path, settings);
-    const existingSpecs = specCandidates.filter((candidate) => existsExact(absoluteDir, candidate));
+    const existingSpecs = specCandidates.filter((candidate) =>
+      existsExact(absoluteDir, candidate, 'file', listing)
+    );
     return {
       ...gate,
       specCandidates,
