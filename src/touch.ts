@@ -42,10 +42,17 @@ export function writeTouchRecord(directory: string, spec: string, coverage: unkn
       ].some((count) => count > 0)
     )
     .map(([file]) => file);
-  const record: TouchRecord = { spec, touched };
   fs.mkdirSync(directory, { recursive: true });
-  const name = `${createHash('sha256').update(spec).digest('hex')}.json`;
-  fs.writeFileSync(path.join(directory, name), JSON.stringify(record));
+  const file = path.join(directory, `${createHash('sha256').update(spec).digest('hex')}.json`);
+  // The same spec may run more than once (two projects of one runner): keep what each run touched.
+  let before: string[] = [];
+  try {
+    before = (JSON.parse(fs.readFileSync(file, 'utf8')) as TouchRecord).touched;
+  } catch {
+    // the first record of this spec
+  }
+  const record: TouchRecord = { spec, touched: [...new Set([...before, ...touched])] };
+  fs.writeFileSync(file, JSON.stringify(record));
 }
 
 /** Every record in the directory; an empty list when there is none or one cannot be read. */
@@ -83,23 +90,23 @@ export function jestReporterFile(moduleUrl: string): string {
   return found;
 }
 
-// Vitest has no reporter that sees the coverage of one spec file, so a setup file writes the
-// record from inside the worker. After the last hook of the spec: Vitest runs the "after" hooks
-// in the reverse order of their registration, and a setup file registers before the spec does.
-// The counters are those of the istanbul provider; the v8 provider keeps none in the worker,
-// and nothing is written then.
-// It is kept as text and written into the touch directory, which lies in the subproject: Vite
-// refuses to load a file from outside the project (a package in a node_modules above it).
-const VITEST_SETUP = `import { createHash } from 'node:crypto';
+// Vitest has no reporter that sees the coverage of one spec file. What the worker hands over
+// after a spec file has run to its very end (every hook, every cleanup function) arrives at the
+// coverage provider, in onAfterSuiteRun: the data the thresholds are computed from. This module
+// wraps the istanbul provider and writes the record there. With modules shared between spec
+// files one hand-over can belong to several files; each of them then gets all of it, which says
+// "touched" too often, never too rarely.
+// It is kept as text and written into the touch directory, which lies in the subproject: Vitest
+// loads a provider module through Vite, and Vite refuses a file from outside the project.
+const VITEST_PROVIDER = `import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { afterAll, expect } from 'vitest';
+import istanbul from '@vitest/coverage-istanbul';
 
-afterAll(() => {
-  const directory = process.env.${TOUCH_ENV};
-  const spec = expect.getState().testPath;
-  const coverage = globalThis.__VITEST_COVERAGE__;
-  if (!directory || !spec || typeof coverage !== 'object' || coverage === null) {
+const directory = ${JSON.stringify('__DIRECTORY__')};
+
+function note(spec, coverage) {
+  if (typeof coverage !== 'object' || coverage === null) {
     return;
   }
   const touched = Object.entries(coverage)
@@ -111,15 +118,36 @@ afterAll(() => {
       ].some((count) => count > 0)
     )
     .map(([file]) => file);
-  const name = createHash('sha256').update(spec).digest('hex') + '.json';
-  fs.writeFileSync(path.join(directory, name), JSON.stringify({ spec, touched }));
-});
+  const file = path.join(directory, createHash('sha256').update(spec).digest('hex') + '.json');
+  let before = [];
+  try {
+    before = JSON.parse(fs.readFileSync(file, 'utf8')).touched;
+  } catch {
+    // the first record of this spec
+  }
+  fs.writeFileSync(file, JSON.stringify({ spec, touched: [...new Set([...before, ...touched])] }));
+}
+
+export default {
+  ...istanbul,
+  async getProvider() {
+    const provider = await istanbul.getProvider();
+    const handOver = provider.onAfterSuiteRun.bind(provider);
+    provider.onAfterSuiteRun = (meta) => {
+      for (const spec of meta.testFiles ?? []) {
+        note(spec, meta.coverage);
+      }
+      return handOver(meta);
+    };
+    return provider;
+  },
+};
 `;
 
-/** Writes the Vitest setup file into the touch directory and returns its path. */
-export function vitestSetupFile(directory: string): string {
-  const file = path.join(directory, 'vitest-setup.mjs');
+/** Writes the provider module for Vitest into the touch directory and returns its path. */
+export function vitestProviderFile(directory: string): string {
+  const file = path.join(directory, 'vitest-provider.mjs');
   fs.mkdirSync(directory, { recursive: true });
-  fs.writeFileSync(file, VITEST_SETUP);
+  fs.writeFileSync(file, VITEST_PROVIDER.replace('"__DIRECTORY__"', JSON.stringify(directory)));
   return file;
 }

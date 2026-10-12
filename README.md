@@ -109,7 +109,7 @@ export default createStrykerGatesConfig({
 });
 ```
 
-Add `reports/` and `.stryker-tmp/` to `.gitignore`.
+Add `reports/`, `.stryker-tmp/` and `.test-gates-touch-*` (see `test-gates selfcheck`) to `.gitignore`.
 
 ### 4. Scripts
 
@@ -294,7 +294,7 @@ The run also fails when
 On failure every unallowed survivor is listed as `file:line:column / mutator / original → replacement / occurrence`, followed by a JSON fragment that can be pasted into `equivalentMutants`. The last line gives the real numbers, never a percentage. For the gates of this repository:
 
 ```
-test-gates mutation: OK (mutants 1431 / detected 1431 (timeout 2) / allowed equivalent 0 / not evaluable 0 / unallowed survivors 0)
+test-gates mutation: OK (mutants 1429 / detected 1429 (timeout 2) / allowed equivalent 0 / not evaluable 0 / unallowed survivors 0)
 ```
 
 #### Timeouts
@@ -347,13 +347,20 @@ Negative control. For each gate, runs the gate with that gate's spec left out an
 
 The spec to leave out is passed in the environment variable `TEST_GATES_EXCLUDE_SPEC`. The config helpers read it. The gate command is `jest --config jest.gates.config.*` or `vitest run --config vitest.gates.config.*`, whichever config exists; override it with `settings.gateCommand` or after `--`. `--all` (default) checks every gate, `--first` only the first.
 
-**One run for the gates that only their own spec touches.** A run of the gate command for every gate executes the specs of all the other gates each time, and takes minutes with many gates (see [Cost](#cost-and-how-to-use-strykers-incremental-mode)). With three gates or more, `selfcheck` therefore starts with a full gate run in which the config helpers write down, for each spec file, which gates it executed anything of. Leaving out the spec of a gate changes the coverage of that gate only by what its spec executed of it. So for every gate that no other spec touched, the result is the same whatever other specs are left out with it, and all those gates lose their specs in **one** run. Each of them is judged in that run as it is in a run of its own: the run has to fail, and it has to report the coverage threshold of that very file. A gate that another spec touches (it imports the gate, a setup file calls it, an `afterAll` calls it), and a gate the shared run does not confirm, still gets a run of its own, and so does every gate when what a spec touched is not known:
+**One run for the gates that only their own spec touches.** A run of the gate command for every gate executes the specs of all the other gates each time, and takes minutes with many gates (see [Cost](#cost-and-how-to-use-strykers-incremental-mode)). With three gates or more, `selfcheck` therefore starts with a full gate run in which the config helpers write down, for each spec file, which gates it executed anything of. Leaving out the spec of a gate changes the coverage of that gate only by what its spec executed of it. So for a gate that no other spec touched, the result does not depend on which other specs are left out with it, and all those gates lose their specs in **one** run. Each of them is judged in that run as it is in a run of its own: the run has to fail, and it has to report the coverage threshold of that very file.
 
+The notes are taken from what the runner itself counts for a spec file, after the file has run to its end: with Jest, the coverage a reporter is given for the file; with Vitest, what the worker hands to the istanbul coverage provider. A gate keeps a run of its own when another spec touches it (it imports the gate, a setup file calls it, an `afterAll` or a cleanup function calls it), when its own spec is not seen to touch it, or when the shared run does not confirm it. Every gate keeps a run of its own when
+
+- the full gate run does not pass (a failing test, a gate below 100%),
 - the gate config does not use the helpers (the list of specs to leave out arrives in `TEST_GATES_EXCLUDE_SPECS` as a JSON list, the directory for the notes in `TEST_GATES_TOUCH_DIR`),
-- Vitest measures with the v8 provider, which keeps no counters where the specs run (use istanbul, see [Vitest: v8 or istanbul](#vitest-v8-or-istanbul)),
-- `settings.selfcheck.failurePattern` does not contain `{gate}`.
+- Vitest measures with the v8 provider, which the helper cannot wrap (use istanbul, see [Vitest: v8 or istanbul](#vitest-v8-or-istanbul)),
+- `settings.selfcheck.failurePattern` does not contain `{gate}`, or a gate has no single spec.
 
-The lines printed and the exit code are those of the run per gate; `--one-by-one` asks for that run, to compare. Checked against it with a real Jest and a real Vitest (`test/selfcheck-runners.test.ts`) for a gate that the spec of another gate covers, one that two other specs cover between them, one that another spec covers in part, one whose top-level code runs when another spec loads it, one that a setup file calls, one that another spec replaces with a mock, and one that another spec calls in `afterAll`. During the run a directory `.test-gates-touch-…` exists in the subproject; it is removed at the end.
+In those cases the full gate run was one run for nothing, also in every part of `--shard`; `--one-by-one` skips it.
+
+With Jest and Vitest the lines printed and the exit code are those of the run per gate, which `--one-by-one` asks for. (A gate command of your own whose exit code says what failed would show the code of the shared run in the `✓` lines.) The two are compared with a real Jest and a real Vitest in `test/selfcheck-runners.test.ts`, for a gate that the spec of another gate covers, one that two other specs cover between them, one that another spec covers in part, one whose top-level code runs when another spec loads it, one that a setup file calls, one that another spec replaces with a mock, one that another spec calls in `afterAll` (with Vitest's hooks in the order written), and one that another spec calls in a cleanup function returned by `beforeAll`.
+
+During the first run a directory `.test-gates-touch-…` exists in the subproject (Vitest loads the wrapped provider from there). It is removed when the run ends. A run that is interrupted leaves it behind; a later `selfcheck` removes what is older than an hour. Add `.test-gates-touch-*` to `.gitignore`.
 
 **A part of the gates.** Two options run only a part. A gate gets the same verdict in a part as in the whole run.
 
@@ -627,14 +634,14 @@ The negative control (`selfcheck`) was the step that grew fastest: a run of the 
 
 | Gates | Runner | Gate run | `selfcheck --one-by-one` | `selfcheck` | `mutation -- --force` |
 | ----- | ------ | -------- | ------------------------ | ----------- | --------------------- |
-| 5     | Vitest | 0.9 s    | 3.8 s                    | 1.6 s       | 13 s                  |
-| 30    | Vitest | 2.0 s    | 49 s                     | 2.7 s       | 38 s                  |
-| 100   | Vitest | 5.1 s    | 8 min 4 s                | 6.4 s       | 1 min 55 s            |
-| 5     | Jest   | 0.8 s    | 6.3 s                    | 1.1 s       | 8 s                   |
-| 30    | Jest   | 2.4 s    | 1 min 19 s               | 2.4 s       | 22 s                  |
-| 100   | Jest   | 3.1 s    | 6 min 2 s                | 3.5 s       | 1 min 8 s             |
+| 5     | Vitest | 0.9 s    | 3.8 s                    | 1.3 s       | 13 s                  |
+| 30    | Vitest | 2.0 s    | 49 s                     | 2.3 s       | 38 s                  |
+| 100   | Vitest | 5.1 s    | 8 min 4 s                | 5.2 s       | 1 min 55 s            |
+| 5     | Jest   | 0.8 s    | 6.3 s                    | 0.9 s       | 8 s                   |
+| 30    | Jest   | 2.4 s    | 1 min 19 s               | 2.1 s       | 22 s                  |
+| 100   | Jest   | 3.1 s    | 6 min 2 s                | 2.7 s       | 1 min 8 s             |
 
-In this project no spec touches the gate of another, so `selfcheck` is two runs of the gate command. Every gate that another spec touches adds a run of its own. Where the shared run is not available (see above) the column `--one-by-one` applies, and `selfcheck --shard <index>/<total>` splits those runs over parallel CI jobs: each part runs its share of the gates. That does not reduce the total work; only the waiting time gets shorter.
+In this project no spec touches the gate of another, so `selfcheck` is two runs of the gate command. (The `selfcheck` column was measured later, with fewer other jobs running than for the other columns; the difference in load is far smaller than the difference between the two columns.) Every gate that another spec touches adds a run of its own. Where the shared run is not available (see above) the column `--one-by-one` applies, and `selfcheck --shard <index>/<total>` splits those runs over parallel CI jobs: each part runs its share of the gates. That does not reduce the total work; only the waiting time gets shorter.
 
 How the incremental file and this tool interact (covered by `test/incremental.test.ts`, which runs a real Stryker):
 

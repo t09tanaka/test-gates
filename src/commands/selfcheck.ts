@@ -47,6 +47,8 @@ export function resolveGateCommand(manifest: LoadedManifest): string[] {
   );
 }
 
+const TOUCH_PREFIX = '.test-gates-touch-';
+
 function realPath(file: string): string {
   try {
     return fs.realpathSync(file);
@@ -65,37 +67,58 @@ function realPath(file: string): string {
  *
  * @returns The gates that shared the run and its result, or null when no run was shared.
  */
-function shareOneRun<Result>(
+function shareOneRun<Result extends { status: number | null }>(
   manifest: LoadedManifest,
   targets: LoadedManifest['gates'],
   runGate: (env: { excludeAll?: string[]; touchDir?: string }) => Result
 ): { gates: LoadedManifest['gates']; result: Result } | null {
-  // In the subproject: Vite does not load the setup file from anywhere else (see src/touch.ts).
-  const touchDir = fs.mkdtempSync(path.join(manifest.dir, '.test-gates-touch-'));
-  let plan: ReturnType<typeof planControls>;
+  let touchDir: string;
   try {
-    runGate({ touchDir });
-    const base = realPath(manifest.dir);
-    plan = planControls({
-      all: manifest.gates.map((gate) => ({
-        path: gate.path,
-        file: path.join(base, gate.path),
-        specFile: path.join(base, gate.spec ?? ''),
-      })),
-      targets: targets.map((gate) => gate.path),
-      records: readTouchRecords(touchDir).map((record) => ({
-        spec: realPath(record.spec),
-        touched: record.touched.map(realPath),
-      })),
-      failurePattern: manifest.settings.selfcheckFailurePattern,
-    });
+    // A run that was interrupted (Ctrl-C ends this process at once) left its directory behind.
+    // An hour is far beyond any gate run, so nothing that is still in use is removed.
+    for (const name of fs.readdirSync(manifest.dir)) {
+      const left = path.join(manifest.dir, name);
+      if (name.startsWith(TOUCH_PREFIX) && Date.now() - fs.statSync(left).mtimeMs > 3_600_000) {
+        fs.rmSync(left, { recursive: true, force: true });
+      }
+    }
+    // In the subproject: Vite does not load the provider module from anywhere else (see
+    // src/touch.ts).
+    touchDir = fs.mkdtempSync(path.join(manifest.dir, TOUCH_PREFIX));
+  } catch {
+    return null; // a project that cannot be written to: a run per gate
+  }
+  let plan: ReturnType<typeof planControls> | null = null;
+  try {
+    const recorded = runGate({ touchDir });
+    // A gate run that fails as it is (a failing test, a gate below 100%) is no ground to plan
+    // on: Vitest, for one, prints no thresholds after a failed test, and leaving out the
+    // failing spec with the others would bring them back.
+    if (recorded.status === 0) {
+      const base = realPath(manifest.dir);
+      plan = planControls({
+        all: manifest.gates.map((gate) => ({
+          path: gate.path,
+          file: path.join(base, gate.path),
+          specFile: path.join(base, gate.spec ?? ''),
+        })),
+        targets: targets.map((gate) => gate.path),
+        // Vitest names the spec relative to the subproject.
+        records: readTouchRecords(touchDir).map((record) => ({
+          spec: realPath(path.resolve(base, record.spec)),
+          touched: record.touched.map((file) => realPath(path.resolve(base, file))),
+        })),
+        failurePattern: manifest.settings.selfcheckFailurePattern,
+      });
+    }
   } finally {
     fs.rmSync(touchDir, { recursive: true, force: true });
   }
-  if (plan.together.length === 0) {
+  if (plan === null || plan.together.length === 0) {
     return null;
   }
-  const gates = targets.filter((gate) => plan.together.includes(gate.path));
+  const together = plan.together;
+  const gates = targets.filter((gate) => together.includes(gate.path));
   return { gates, result: runGate({ excludeAll: gates.map((gate) => gate.spec as string) }) };
 }
 

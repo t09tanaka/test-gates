@@ -152,7 +152,8 @@ export function planControls(input: {
   const { all, targets, records } = input;
   const everyoneAlone = { together: [], alone: targets };
   // A pattern that does not name the gate would match the failure of any gate of the run.
-  if (input.failurePattern !== null && !input.failurePattern.includes('{gate}')) {
+  // (An empty pattern counts as none, as it does for the judge.)
+  if (input.failurePattern && !input.failurePattern.includes('{gate}')) {
     return everyoneAlone;
   }
   // Without the record of every spec, what touches a gate is not known.

@@ -320,7 +320,7 @@ describe('planControls', () => {
   it('gives every gate its own run for a failure pattern that does not name the gate', () => {
     expect(plan({ failurePattern: 'threshold' })).toEqual(everyoneAlone);
     expect(plan({ failurePattern: 'threshold.*{gate}' })).toEqual({ together: targets, alone: [] });
-    expect(plan({ failurePattern: '' })).toEqual(everyoneAlone);
+    expect(plan({ failurePattern: '' })).toEqual({ together: targets, alone: [] });
   });
 
   it('gives a gate its own run when its path is part of the path of another gate', () => {

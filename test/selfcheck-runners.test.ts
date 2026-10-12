@@ -25,11 +25,12 @@ const GATES = [
   'boot', // the setup file of the gate run calls one of its two functions, for every spec
   'mocked', // the spec of `uses` replaces it with a mock
   'uses',
-  'late', // the spec of `plain-one` calls one of its two functions in afterAll
+  'late', // the spec of `plain-one` calls all of it in afterAll
+  'swept', // the spec of `plain-two` calls all of it after every hook (see Dialect.lastOfAll)
 ];
-const NOT_HELD = ['base', 'pair'];
+const NOT_HELD = ['base', 'pair', 'late', 'swept'];
 /** Gates another spec (or the setup file) touches: they need a run of their own. */
-const TOUCHED = ['base', 'pair', 'half', 'table', 'boot', 'late'];
+const TOUCHED = ['base', 'pair', 'half', 'table', 'boot', 'late', 'swept'];
 /** Jest loads the real module to shape its automatic mock, which runs the top-level code. */
 const TOUCHED_BY_JEST = [...TOUCHED, 'mocked'];
 
@@ -45,6 +46,8 @@ interface Dialect {
   /** Import for its effect only. */
   load: (from: string) => string;
   specHead: string;
+  /** Code that runs `call` as late as the runner allows, after the afterAll hooks if it can. */
+  lastOfAll: (call: string) => string;
   mock: (from: string) => string;
   files: Record<string, string | object>;
   command: string[];
@@ -59,13 +62,15 @@ const vitest: Dialect = {
       .join(''),
   use: (names, from) => `import { ${names.join(', ')} } from './${from}';\n`,
   load: (from) => `import './${from}';\n`,
-  specHead: "import { afterAll, expect, it, vi } from 'vitest';\n",
+  specHead: "import { afterAll, beforeAll, expect, it, vi } from 'vitest';\n",
+  // The function a beforeAll returns runs after every afterAll.
+  lastOfAll: (call) => `beforeAll(() => () => {\n  ${call}\n});\n`,
   mock: (from) => `vi.mock('./${from}');\n`,
   files: {
     'package.json': { name: 'selfcheck-fixture', private: true, type: 'module' },
     'vitest.gates.config.ts':
       `import { createVitestGatesConfig } from ${JSON.stringify(helper('vitest'))};\n` +
-      "export default createVitestGatesConfig({ rootDir: import.meta.url, coverageProvider: 'istanbul', test: { setupFiles: ['./src/setup.ts'] } });\n",
+      "export default createVitestGatesConfig({ rootDir: import.meta.url, coverageProvider: 'istanbul', test: { setupFiles: ['./src/setup.ts'], sequence: { hooks: 'list' } } });\n",
   },
   command: ['vitest', 'run', '--config', 'vitest.gates.config.ts'],
   touched: TOUCHED,
@@ -81,6 +86,7 @@ const jest: Dialect = {
   use: (names, from) => `const { ${names.join(', ')} } = require('./${from}');\n`,
   load: (from) => `require('./${from}');\n`,
   specHead: '',
+  lastOfAll: (call) => `afterAll(() => {\n  ${call}\n});\n`,
   mock: (from) => `jest.mock('./${from}');\n`,
   files: {
     'package.json': { name: 'selfcheck-fixture', private: true },
@@ -120,14 +126,16 @@ function fixture(d: Dialect): Record<string, string | object> {
       d.specHead +
       d.use(['double'], 'plain-one') +
       d.use([d.ext === 'ts' ? 'one as halfOne' : 'one: halfOne'], 'half') +
-      d.use(['done'], 'late') +
-      'afterAll(() => {\n  done(1);\n});\n' +
+      d.use([d.ext === 'ts' ? 'done, other as lateOther' : 'done, other: lateOther'], 'late') +
+      'afterAll(() => {\n  done(1);\n  lateOther(1);\n});\n' +
       test('doubles', 'expect(double(2)).toBe(4);\n  expect(halfOne(1)).toBe(2);'),
     [src('plain-two')]: d.module(double),
     [spec('plain-two')]:
       d.specHead +
       d.use(['double'], 'plain-two') +
       d.load('table') +
+      d.use(['sweep'], 'swept') +
+      d.lastOfAll('sweep(1);') +
       test('doubles', 'expect(double(2)).toBe(4);'),
 
     [src('base')]: d.module({ grown: 'return value >= 18 ? 1 : 0;' }),
@@ -186,6 +194,9 @@ function fixture(d: Dialect): Record<string, string | object> {
       d.mock('mocked') +
       test('asks for the fee of the value', 'total(4);\n  expect(fee).toHaveBeenCalledWith(4);'),
 
+    [src('swept')]: d.module({ sweep: 'return value;' }),
+    [spec('swept')]:
+      d.specHead + d.use(['sweep'], 'swept') + test('sweeps', 'expect(sweep(1)).toBe(1);'),
     [src('late')]: d.module({ done: 'return value;', other: 'return value + 1;' }),
     [spec('late')]:
       d.specHead +
@@ -227,8 +238,11 @@ describe.each([
       expect(verdicts(perGate.stderr)).toEqual([
         `  ✗ ${src('base')}: the gate passed although the spec of ${src('base')} was left out. The gate does not measure this file (does the gate config honor TEST_GATES_EXCLUDE_SPEC?)`,
         `      hint: ${src('derived')} import(s) this gate, so their specs cover it without its own spec. Mock the import in those specs and assert the call (toHaveBeenCalledWith), so that each spec only covers its own gate`,
-        `  ✗ ${src('pair')}: the gate passed although the spec of ${src('pair')} was left out. The gate does not measure this file (does the gate config honor TEST_GATES_EXCLUDE_SPEC?)`,
-        'test-gates selfcheck: FAILED (2 of 13 negative control(s))',
+        ...['pair', 'late', 'swept'].map(
+          (name) =>
+            `  ✗ ${src(name)}: the gate passed although the spec of ${src(name)} was left out. The gate does not measure this file (does the gate config honor TEST_GATES_EXCLUDE_SPEC?)`
+        ),
+        'test-gates selfcheck: FAILED (4 of 14 negative control(s))',
       ]);
 
       const shared = await testGatesAsync(['selfcheck', '--dir', dir]);
