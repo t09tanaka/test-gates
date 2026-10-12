@@ -27,7 +27,8 @@ Options:
   --all | --first             selfcheck: every gate in turn (default) or only the first
   --gate <path>               selfcheck: only this gate (may be given more than once)
   --shard <index>/<total>     selfcheck: one of <total> parts of the gates, for parallel CI jobs
-  --one-by-one                selfcheck: a run of the gate command for every gate, none shared
+  --shared                    selfcheck: one run for the gates only their own spec touches.
+                              Assumes that no spec depends on which other specs run
   --file <path>               lcov: tracefile (default: settings.lcov.file)
   -h, --help                  Show this help
   -v, --version               Show the version
@@ -61,7 +62,7 @@ function main(argv: string[]): number {
     case 'selfcheck':
       return runSelfcheck(
         args.dir,
-        { mode: args.mode, gates: args.gates, shard: args.shard, oneByOne: args.oneByOne },
+        { mode: args.mode, gates: args.gates, shard: args.shard, shared: args.shared },
         args.rest,
         io
       );

@@ -186,6 +186,12 @@ export function unverifiedVersion(
     : `the shared run is verified with ${runner} ${known.versions.join(', ')}, not with ${version}`;
 }
 
+// The shared run takes for granted that a spec executes the same code whichever other specs
+// run with it. A spec that looks at the environment (also at the variables of selfcheck
+// itself) or at files can tell, and can cover another gate only while that gate's spec is away.
+const SURROUNDINGS =
+  /\bprocess\s*\.\s*env\b|\bimport\.meta\.env\b|['"`](?:node:)?(?:fs|fs\/promises|child_process|worker_threads|net|http|https)['"`]/;
+
 /**
  * What can be said before any run: why a full gate run for notes would be for nothing, or null
  * when that is not known. Saying nothing is always right; it costs one run.
@@ -194,12 +200,18 @@ export function unverifiedVersion(
  * @param input.version Version of that runner as installed; null when it is not found.
  * @param input.configSource Text of the gate config, when the gate command is the one derived
  *   from it; null for a gate command of the project's own.
+ * @param input.specs The specs of all gates, with their text.
  */
 export function sharedRunPrecheck(input: {
   program: string;
   version: string | null;
   configSource: string | null;
+  specs: { path: string; source: string }[];
 }): string | null {
+  const reaching = input.specs.find((spec) => SURROUNDINGS.test(spec.source));
+  if (reaching !== undefined) {
+    return `${reaching.path} reads the environment or files, so what it executes may depend on which other specs ran`;
+  }
   const runner = ['jest', 'vitest'].find((name) => name === input.program);
   if (runner === undefined) {
     return null;

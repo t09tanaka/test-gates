@@ -915,7 +915,11 @@ describe('test-gates selfcheck', () => {
 
     it('shares one run among the gates only their own spec touched, and prints what a run per gate prints', () => {
       const dir = fiveGates();
-      expect(testGates(['selfcheck', '--dir', dir])).toEqual({ status: 0, stdout: OK, stderr: '' });
+      expect(testGates(['selfcheck', '--shared', '--dir', dir])).toEqual({
+        status: 0,
+        stdout: OK,
+        stderr: '',
+      });
       // src/age.ts is also touched by the spec of src/rate.ts: a run of its own.
       expect(runs(dir)).toEqual(['notes', shared, 'one src/age.spec.ts']);
       expect(fs.readdirSync(dir).filter((name) => name.startsWith('.test-gates-touch'))).toEqual(
@@ -923,7 +927,7 @@ describe('test-gates selfcheck', () => {
       );
 
       fs.rmSync(path.join(dir, 'runs.log'));
-      expect(testGates(['selfcheck', '--one-by-one', '--dir', dir])).toEqual({
+      expect(testGates(['selfcheck', '--dir', dir])).toEqual({
         status: 0,
         stdout: OK,
         stderr: '',
@@ -936,7 +940,7 @@ describe('test-gates selfcheck', () => {
       write(dir, { '.test-gates-touch-old/x.json': '{}', '.test-gates-touch-new/x.json': '{}' });
       const longAgo = new Date(Date.now() - 2 * 3_600_000);
       fs.utimesSync(path.join(dir, '.test-gates-touch-old'), longAgo, longAgo);
-      expect(testGates(['selfcheck', '--dir', dir]).status).toBe(0);
+      expect(testGates(['selfcheck', '--shared', '--dir', dir]).status).toBe(0);
       expect(fs.readdirSync(dir).filter((name) => name.startsWith('.test-gates-touch'))).toEqual([
         '.test-gates-touch-new',
       ]);
@@ -945,7 +949,7 @@ describe('test-gates selfcheck', () => {
     it('gives a gate the shared run does not confirm a run of its own', () => {
       const dir = fiveGates();
       write(dir, { 'shy.txt': 'src/tax.ts' });
-      expect(testGates(['selfcheck', '--dir', dir]).stdout).toBe(OK);
+      expect(testGates(['selfcheck', '--shared', '--dir', dir]).stdout).toBe(OK);
       expect(runs(dir)).toEqual(['notes', shared, 'one src/age.spec.ts', 'one src/tax.spec.ts']);
     });
 
@@ -956,7 +960,7 @@ describe('test-gates selfcheck', () => {
     it('gives every gate its own run when the full gate run fails, and says so', () => {
       const dir = fiveGates();
       write(dir, { 'red.txt': '' });
-      expect(testGates(['selfcheck', '--dir', dir]).stdout).toBe(
+      expect(testGates(['selfcheck', '--shared', '--dir', dir]).stdout).toBe(
         perGate('the gate run with every spec does not pass')
       );
       expect(runs(dir)).toEqual(everyGate);
@@ -965,7 +969,7 @@ describe('test-gates selfcheck', () => {
     it('gives every gate its own run when the runner counted more than the notes say', () => {
       const dir = fiveGates();
       write(dir, { 'leak.txt': 'src/tax.ts' });
-      expect(testGates(['selfcheck', '--dir', dir]).stdout).toBe(
+      expect(testGates(['selfcheck', '--shared', '--dir', dir]).stdout).toBe(
         perGate('the notes of the specs do not add up to what the runner counted for src/tax.ts')
       );
       expect(runs(dir)).toEqual(everyGate);
@@ -993,8 +997,22 @@ describe('test-gates selfcheck', () => {
     ])('gives every gate its own run for a run that says %s', (run, reason) => {
       const dir = fiveGates();
       write(dir, { 'run.txt': run });
-      expect(testGates(['selfcheck', '--dir', dir]).stdout).toBe(perGate(reason));
+      expect(testGates(['selfcheck', '--shared', '--dir', dir]).stdout).toBe(perGate(reason));
       expect(runs(dir)).toEqual(everyGate);
+    });
+
+    it('does not share a run when a spec can see which other specs ran', () => {
+      const dir = fiveGates();
+      write(dir, {
+        'src/fee.spec.ts':
+          "if (process.env.TEST_GATES_EXCLUDE_SPEC === 'src/tax.spec.ts') { it('covers tax', () => {}); }\n",
+      });
+      expect(testGates(['selfcheck', '--shared', '--dir', dir]).stdout).toBe(
+        perGate(
+          'src/fee.spec.ts reads the environment or files, so what it executes may depend on which other specs ran'
+        )
+      );
+      expect(runs(dir)).toEqual(names.map((name) => `one src/${name}.spec.ts`));
     });
 
     it('does not start the run for notes when it is known beforehand to be for nothing', () => {
@@ -1010,14 +1028,14 @@ describe('test-gates selfcheck', () => {
       });
       fs.chmodSync(path.join(dir, 'node_modules/.bin/vitest'), 0o755);
       const perGateOnly = names.map((name) => `one src/${name}.spec.ts`);
-      expect(testGates(['selfcheck', '--dir', dir]).stdout).toBe(
+      expect(testGates(['selfcheck', '--shared', '--dir', dir]).stdout).toBe(
         perGate('the gate config does not use createVitestGatesConfig')
       );
       expect(runs(dir)).toEqual(perGateOnly);
 
       fs.rmSync(path.join(dir, 'runs.log'));
       write(dir, { 'vitest.gates.config.ts': 'export default createVitestGatesConfig({});\n' });
-      expect(testGates(['selfcheck', '--dir', dir]).stdout).toBe(
+      expect(testGates(['selfcheck', '--shared', '--dir', dir]).stdout).toBe(
         perGate(
           "Vitest measures with the v8 provider; the shared run needs coverageProvider: 'istanbul'"
         )
@@ -1030,7 +1048,7 @@ describe('test-gates selfcheck', () => {
           "export default createVitestGatesConfig({ coverageProvider: 'istanbul' });\n",
         'node_modules/vitest/package.json': { version: '4.0.2' },
       });
-      expect(testGates(['selfcheck', '--dir', dir]).stdout).toBe(
+      expect(testGates(['selfcheck', '--shared', '--dir', dir]).stdout).toBe(
         perGate('the shared run is verified with vitest 3.2, not with 4.0.2')
       );
       expect(runs(dir)).toEqual(perGateOnly);
@@ -1038,17 +1056,18 @@ describe('test-gates selfcheck', () => {
       // With a version that is verified the run for notes is made, and one run is shared.
       fs.rmSync(path.join(dir, 'runs.log'));
       write(dir, { 'node_modules/vitest/package.json': { version: '3.2.7' } });
-      expect(testGates(['selfcheck', '--dir', dir]).stdout).toBe(OK);
+      expect(testGates(['selfcheck', '--shared', '--dir', dir]).stdout).toBe(OK);
       expect(runs(dir)).toEqual(['notes', shared, 'one src/age.spec.ts']);
     });
 
     it('plans for the selected gates only, with the notes of all', () => {
       const dir = fiveGates();
-      expect(testGates(['selfcheck', '--shard', '1/1', '--gate', 'x', '--dir', dir]).status).toBe(
-        2
-      );
+      expect(
+        testGates(['selfcheck', '--shared', '--shard', '1/1', '--gate', 'x', '--dir', dir]).status
+      ).toBe(2);
       const part = testGates([
         'selfcheck',
+        '--shared',
         '--gate',
         'src/fee.ts',
         '--gate',
@@ -1074,8 +1093,16 @@ describe('test-gates selfcheck', () => {
     it('does not ask for notes for fewer than three gates', () => {
       const dir = fiveGates();
       expect(
-        testGates(['selfcheck', '--gate', 'src/fee.ts', '--gate', 'src/toll.ts', '--dir', dir])
-          .status
+        testGates([
+          'selfcheck',
+          '--shared',
+          '--gate',
+          'src/fee.ts',
+          '--gate',
+          'src/toll.ts',
+          '--dir',
+          dir,
+        ]).status
       ).toBe(0);
       expect(runs(dir)).toEqual(['one src/fee.spec.ts', 'one src/toll.spec.ts']);
     });

@@ -11,7 +11,7 @@ const base = {
   mode: null,
   gates: [],
   shard: null,
-  oneByOne: false,
+  shared: false,
   rest: [],
 };
 
@@ -108,28 +108,28 @@ describe('parseArgs', () => {
     });
   });
 
-  it('reads --one-by-one of selfcheck, alone and next to a selection', () => {
-    expect(parseArgs(['selfcheck', '--one-by-one'])).toEqual({
+  it('reads --shared of selfcheck, alone and next to a selection', () => {
+    expect(parseArgs(['selfcheck', '--shared'])).toEqual({
       ...base,
       command: 'selfcheck',
-      oneByOne: true,
+      shared: true,
     });
-    expect(parseArgs(['selfcheck', '--shard', '1/2', '--one-by-one'])).toMatchObject({
-      oneByOne: true,
+    expect(parseArgs(['selfcheck', '--shard', '1/2', '--shared'])).toMatchObject({
+      shared: true,
       shard: { index: 1, total: 2 },
       mode: null,
     });
-    expect(parseArgs(['selfcheck', '--one-by-one', '--first'])).toMatchObject({
-      oneByOne: true,
+    expect(parseArgs(['selfcheck', '--shared', '--first'])).toMatchObject({
+      shared: true,
       mode: 'first',
     });
-    expect(() => parseArgs(['selfcheck', '--one-by-one=1'])).toThrow(
-      new UsageError('--one-by-one does not take a value')
+    expect(() => parseArgs(['selfcheck', '--shared=1'])).toThrow(
+      new UsageError('--shared does not take a value')
     );
-    expect(() => parseArgs(['check', '--one-by-one'])).toThrow(
-      new UsageError('unknown argument for check: --one-by-one')
+    expect(() => parseArgs(['check', '--shared'])).toThrow(
+      new UsageError('unknown argument for check: --shared')
     );
-    expect(parseArgs(['mutation', '--one-by-one']).rest).toEqual(['--one-by-one']);
+    expect(parseArgs(['mutation', '--shared']).rest).toEqual(['--shared']);
   });
 
   it('collects every --gate of selfcheck, in both forms and in the order given', () => {

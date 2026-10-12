@@ -159,7 +159,7 @@ export function runSelfcheck(
     mode: 'all' | 'first' | null;
     gates: string[];
     shard: Shard | null;
-    oneByOne?: boolean;
+    shared?: boolean;
   },
   commandOverride: string[],
   io: Io
@@ -219,7 +219,7 @@ export function runSelfcheck(
   // Controls that held in the run they shared (see planControls): gate path → exit code.
   const heldTogether = new Map<string, number | null>();
   const single = targets.filter((gate) => gate.spec !== null && gate.existingSpecs.length === 1);
-  if (selection.oneByOne !== true && single.length >= 3) {
+  if (selection.shared === true && single.length >= 3) {
     // The text of the gate config says something only when the gate command is derived from it.
     const derived = commandOverride.length === 0 && manifest.settings.gateCommand === null;
     const configFile = derived ? args[args.indexOf('--config') + 1] : undefined;
@@ -234,6 +234,9 @@ export function runSelfcheck(
         program,
         version: installedVersion(manifest.dir, program),
         configSource,
+        specs: manifest.gates.flatMap((gate) =>
+          gate.existingSpecs.map((spec) => ({ path: spec, source: readText(manifest.dir, spec) }))
+        ),
       }) ?? shareOneRun(manifest, single, runGate);
     if (typeof shared === 'string' || 'reason' in shared) {
       const reason = typeof shared === 'string' ? shared : shared.reason;

@@ -228,12 +228,16 @@ export default {
     }
     const initialize = provider.initialize.bind(provider);
     provider.initialize = (ctx) => {
-      const config = ctx?.config ?? {};
-      const pool = typeof config.pool === 'string' ? config.pool : 'unknown';
+      // A project can set its own pool and isolation: all of them have to say the same.
+      const projects = Array.isArray(ctx?.projects) ? ctx.projects : [];
+      const configs = [ctx?.config ?? {}, ...projects.map((project) => project?.config ?? {})];
+      const pools = [...new Set(configs.map((config) => (typeof config.pool === 'string' ? config.pool : 'unknown')))];
       run.version = typeof ctx?.version === 'string' ? ctx.version : 'unknown';
-      run.pool = pool;
-      run.isolate = (config.poolOptions?.[pool]?.isolate ?? config.isolate) === true;
-      run.projects = Array.isArray(ctx?.projects) ? ctx.projects.length : 0;
+      run.pool = pools.length === 1 ? pools[0] : 'mixed';
+      run.isolate = configs.every(
+        (config) => (config.poolOptions?.[config.pool]?.isolate ?? config.isolate) === true
+      );
+      run.projects = projects.length;
       save();
       return initialize(ctx);
     };

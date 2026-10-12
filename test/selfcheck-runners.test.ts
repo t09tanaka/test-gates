@@ -8,7 +8,7 @@ afterAll(cleanup);
 
 // `selfcheck` with a real Jest and a real Vitest, in a project that has every way in which the
 // spec of one gate can reach another gate. The run in which the controls of several gates share
-// one run of the gate command has to say exactly what a run per gate says (--one-by-one).
+// one run of the gate command has to say exactly what a run per gate says (the default).
 
 const helper = (name: string) => pathToFileURL(path.join(repoRoot, 'dist', `${name}.js`)).href;
 
@@ -233,7 +233,7 @@ describe.each([
           .filter((line) => /^ {2}✗ |^ {6}hint: |^test-gates selfcheck:/.test(line));
       const src = (name: string) => `src/${name}.${dialect.ext}`;
 
-      const perGate = await testGatesAsync(['selfcheck', '--one-by-one', '--dir', dir]);
+      const perGate = await testGatesAsync(['selfcheck', '--dir', dir]);
       expect(runs()).toBe(GATES.length);
       // What the fixture is built to show, as the run per gate sees it.
       expect(perGate.status).toBe(1);
@@ -252,7 +252,7 @@ describe.each([
         'test-gates selfcheck: FAILED (4 of 14 negative control(s))',
       ]);
 
-      const shared = await testGatesAsync(['selfcheck', '--dir', dir]);
+      const shared = await testGatesAsync(['selfcheck', '--shared', '--dir', dir]);
       // One run that records, one shared run, and a run for each gate something else touches.
       expect(runs()).toBe(2 + dialect.touched.length);
       expect(shared.status).toBe(perGate.status);
@@ -263,15 +263,8 @@ describe.each([
       );
 
       // A part of the gates: the same lines for those gates.
-      const part = await testGatesAsync(['selfcheck', '--shard', '1/2', '--dir', dir]);
-      const partPerGate = await testGatesAsync([
-        'selfcheck',
-        '--shard',
-        '1/2',
-        '--one-by-one',
-        '--dir',
-        dir,
-      ]);
+      const part = await testGatesAsync(['selfcheck', '--shared', '--shard', '1/2', '--dir', dir]);
+      const partPerGate = await testGatesAsync(['selfcheck', '--shard', '1/2', '--dir', dir]);
       expect(part.stdout).toBe(partPerGate.stdout);
       expect(verdicts(part.stderr)).toEqual(verdicts(partPerGate.stderr));
       expect(part.status).toBe(partPerGate.status);
@@ -408,14 +401,14 @@ afterAll(() => {
     async (_name, lateCall, hooks) => {
       const dir = fixture(lateCall);
       const env = { FIXTURE_HOOKS: hooks };
-      const perGate = await testGatesAsync(['selfcheck', '--one-by-one', '--dir', dir], env);
+      const perGate = await testGatesAsync(['selfcheck', '--dir', dir], env);
       expect(perGate.stderr).toContain(NOT_HELD);
       expect(perGate.status).toBe(1);
       expect(runs(dir)).toBe(4);
 
       // The spec of `first` covers `late` after its note was written, so the notes say that
       // only its own spec touches `late`. The runner counted two calls, the notes have one.
-      const shared = await testGatesAsync(['selfcheck', '--dir', dir], env);
+      const shared = await testGatesAsync(['selfcheck', '--shared', '--dir', dir], env);
       expect(shared.stdout).toBe(REFUSED + perGate.stdout);
       expect(shared.stderr).toContain(NOT_HELD);
       expect(shared.status).toBe(1);
@@ -428,7 +421,7 @@ afterAll(() => {
     { timeout: 300_000 },
     async () => {
       const dir = fixture('');
-      const shared = await testGatesAsync(['selfcheck', '--dir', dir]);
+      const shared = await testGatesAsync(['selfcheck', '--shared', '--dir', dir]);
       expect(shared.stdout).not.toContain('a run of the gate command for every gate');
       expect(shared.status).toBe(0);
       expect(runs(dir)).toBe(2);
