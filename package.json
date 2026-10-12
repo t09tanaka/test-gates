@@ -94,12 +94,14 @@
     "format:check": "prettier --check .",
     "pretest": "npm run build",
     "test": "vitest run",
+    "pretest:heavy": "npm run build",
+    "test:heavy": "vitest run --config vitest.heavy.config.ts",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:gates": "node dist/cli.js check && vitest run --config vitest.gates.config.ts",
     "test:gates:selfcheck": "node dist/cli.js selfcheck",
     "test:gates:mutation": "node dist/cli.js mutation",
-    "prepublishOnly": "npm run lint && npm run format:check && npm run typecheck && npm test && npm run test:gates && npm run test:gates:selfcheck"
+    "prepublishOnly": "npm run lint && npm run format:check && npm run typecheck && npm test && npm run test:heavy && npm run test:gates && npm run test:gates:selfcheck"
   },
   "peerDependencies": {
     "@stryker-mutator/core": ">=9",

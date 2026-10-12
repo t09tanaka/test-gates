@@ -11,6 +11,7 @@ const base = {
   mode: null,
   gates: [],
   shard: null,
+  oneByOne: false,
   rest: [],
 };
 
@@ -105,6 +106,30 @@ describe('parseArgs', () => {
       mode: 'first',
       rest: ['npx', 'jest', '-c', 'x.js'],
     });
+  });
+
+  it('reads --one-by-one of selfcheck, alone and next to a selection', () => {
+    expect(parseArgs(['selfcheck', '--one-by-one'])).toEqual({
+      ...base,
+      command: 'selfcheck',
+      oneByOne: true,
+    });
+    expect(parseArgs(['selfcheck', '--shard', '1/2', '--one-by-one'])).toMatchObject({
+      oneByOne: true,
+      shard: { index: 1, total: 2 },
+      mode: null,
+    });
+    expect(parseArgs(['selfcheck', '--one-by-one', '--first'])).toMatchObject({
+      oneByOne: true,
+      mode: 'first',
+    });
+    expect(() => parseArgs(['selfcheck', '--one-by-one=1'])).toThrow(
+      new UsageError('--one-by-one does not take a value')
+    );
+    expect(() => parseArgs(['check', '--one-by-one'])).toThrow(
+      new UsageError('unknown argument for check: --one-by-one')
+    );
+    expect(parseArgs(['mutation', '--one-by-one']).rest).toEqual(['--one-by-one']);
   });
 
   it('collects every --gate of selfcheck, in both forms and in the order given', () => {

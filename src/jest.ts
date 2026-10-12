@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { gateSpecs, loadGates, NO_SPEC_PATTERN } from './load.js';
 import { FULL_COVERAGE, resolveRootDir } from './shared.js';
+import { jestReporterFile, TOUCH_ENV } from './touch.js';
 
 export interface JestGatesOptions {
   /** Directory of test-gates.json: `__dirname`, or `import.meta.url` of the config file. */
@@ -31,6 +32,17 @@ export function createJestGatesConfig(options: JestGatesOptions = {}): Record<st
     coverageReporters: ['text'],
     coverageDirectory: '<rootDir>/coverage/gates',
     ...overrides,
+    // While `test-gates selfcheck` asks for it: write down what each spec executed.
+    ...(process.env[TOUCH_ENV]
+      ? {
+          reporters: [
+            ...(Array.isArray(overrides.reporters)
+              ? (overrides.reporters as unknown[])
+              : ['default']),
+            jestReporterFile(import.meta.url),
+          ],
+        }
+      : {}),
     rootDir,
     // Never an empty array: Jest would fall back to its default pattern and run every test.
     testMatch: (specs.length > 0 ? specs : [NO_SPEC_PATTERN]).map((spec) => `<rootDir>/${spec}`),

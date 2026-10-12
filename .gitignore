@@ -16,3 +16,4 @@ reports/
 # Claude Code
 CLAUDE.md
 .claude/
+.test-gates-touch-*

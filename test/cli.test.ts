@@ -850,6 +850,138 @@ describe('test-gates selfcheck', () => {
     expect(testGates(['selfcheck', '--dir', noCommand]).stderr).toContain('no gate config found');
   });
 
+  describe('with a gate command that notes what each spec touched', () => {
+    // A stand-in that follows the whole protocol of the helpers. It logs what it was asked.
+    // `shy.txt` names a gate it does not report in the shared run; with `red.txt` the full
+    // run fails.
+    const NOTING = [
+      "const fs = require('node:fs');",
+      "const path = require('node:path');",
+      "const { gates } = JSON.parse(fs.readFileSync('test-gates.json', 'utf8'));",
+      "const spec = (gate) => gate.path.replace(/\\.ts$/, '.spec.ts');",
+      'const { TEST_GATES_TOUCH_DIR: touch, TEST_GATES_EXCLUDE_SPECS: all, TEST_GATES_EXCLUDE_SPEC: one } = process.env;',
+      "fs.appendFileSync('runs.log', `${touch ? 'notes' : all ? `all ${all}` : `one ${one}`}\\n`);",
+      "const shy = fs.existsSync('shy.txt') ? fs.readFileSync('shy.txt', 'utf8') : '';",
+      'if (touch) {',
+      '  gates.forEach((gate, index) => {',
+      "    const touched = [path.resolve(gate.path), ...(gate.path === 'src/rate.ts' ? [path.resolve('src/age.ts')] : [])];",
+      '    fs.writeFileSync(path.join(touch, `${index}.json`), JSON.stringify({ spec: spec(gate), touched }));',
+      '  });',
+      "  process.exit(fs.existsSync('red.txt') ? 1 : 0);",
+      '}',
+      'const left = all ? JSON.parse(all) : [one];',
+      'for (const gate of gates) {',
+      '  if (left.includes(spec(gate)) && !(all && gate.path === shy)) {',
+      '    console.error(`ERROR: Coverage for lines (0%) does not meet global threshold (100%) for ${gate.path}`);',
+      '    process.exitCode = 1;',
+      '  }',
+      '}',
+    ].join('\n');
+    const names = ['age', 'rate', 'fee', 'tax', 'toll'];
+    const fiveGates = () =>
+      validProject(
+        {
+          'gate.cjs': NOTING,
+          ...Object.fromEntries(
+            names.flatMap((name) => [
+              [`src/${name}.ts`, 'export const value = 1;\n'],
+              [`src/${name}.spec.ts`, "it('x', () => {});\n"],
+            ])
+          ),
+        },
+        {
+          gates: names.map((name) => ({ path: `src/${name}.ts`, decides: 'd', impact: 'i' })),
+          settings: { gateCommand: ['node', 'gate.cjs'] },
+        }
+      );
+    const OK =
+      names.map((name) => `  ✓ without src/${name}.spec.ts the gate fails (exit 1)\n`).join('') +
+      'test-gates selfcheck: OK (5 negative control(s) failed as they should)\n';
+    const shared =
+      'all ["src/rate.spec.ts","src/fee.spec.ts","src/tax.spec.ts","src/toll.spec.ts"]';
+
+    it('shares one run among the gates only their own spec touched, and prints what a run per gate prints', () => {
+      const dir = fiveGates();
+      expect(testGates(['selfcheck', '--dir', dir])).toEqual({ status: 0, stdout: OK, stderr: '' });
+      // src/age.ts is also touched by the spec of src/rate.ts: a run of its own.
+      expect(runs(dir)).toEqual(['notes', shared, 'one src/age.spec.ts']);
+      expect(fs.readdirSync(dir).filter((name) => name.startsWith('.test-gates-touch'))).toEqual(
+        []
+      );
+
+      fs.rmSync(path.join(dir, 'runs.log'));
+      expect(testGates(['selfcheck', '--one-by-one', '--dir', dir])).toEqual({
+        status: 0,
+        stdout: OK,
+        stderr: '',
+      });
+      expect(runs(dir)).toEqual(names.map((name) => `one src/${name}.spec.ts`));
+    });
+
+    it('removes the directory an interrupted run left behind, once it is old', () => {
+      const dir = fiveGates();
+      write(dir, { '.test-gates-touch-old/x.json': '{}', '.test-gates-touch-new/x.json': '{}' });
+      const longAgo = new Date(Date.now() - 2 * 3_600_000);
+      fs.utimesSync(path.join(dir, '.test-gates-touch-old'), longAgo, longAgo);
+      expect(testGates(['selfcheck', '--dir', dir]).status).toBe(0);
+      expect(fs.readdirSync(dir).filter((name) => name.startsWith('.test-gates-touch'))).toEqual([
+        '.test-gates-touch-new',
+      ]);
+    });
+
+    it('gives a gate the shared run does not confirm a run of its own', () => {
+      const dir = fiveGates();
+      write(dir, { 'shy.txt': 'src/tax.ts' });
+      expect(testGates(['selfcheck', '--dir', dir]).stdout).toBe(OK);
+      expect(runs(dir)).toEqual(['notes', shared, 'one src/age.spec.ts', 'one src/tax.spec.ts']);
+    });
+
+    it('gives every gate its own run when the full gate run fails', () => {
+      const dir = fiveGates();
+      write(dir, { 'red.txt': '' });
+      expect(testGates(['selfcheck', '--dir', dir]).stdout).toBe(OK);
+      expect(runs(dir)).toEqual(['notes', ...names.map((name) => `one src/${name}.spec.ts`)]);
+    });
+
+    it('plans for the selected gates only, with the notes of all', () => {
+      const dir = fiveGates();
+      expect(testGates(['selfcheck', '--shard', '1/1', '--gate', 'x', '--dir', dir]).status).toBe(
+        2
+      );
+      const part = testGates([
+        'selfcheck',
+        '--gate',
+        'src/fee.ts',
+        '--gate',
+        'src/toll.ts',
+        '--gate',
+        'src/age.ts',
+        '--dir',
+        dir,
+      ]);
+      expect(part.stdout).toBe(
+        '  ✓ without src/age.spec.ts the gate fails (exit 1)\n' +
+          '  ✓ without src/fee.spec.ts the gate fails (exit 1)\n' +
+          '  ✓ without src/toll.spec.ts the gate fails (exit 1)\n' +
+          'test-gates selfcheck: OK (3 negative control(s) failed as they should, 2 gate(s) not selected by --gate)\n'
+      );
+      expect(runs(dir)).toEqual([
+        'notes',
+        'all ["src/fee.spec.ts","src/toll.spec.ts"]',
+        'one src/age.spec.ts',
+      ]);
+    });
+
+    it('does not ask for notes for fewer than three gates', () => {
+      const dir = fiveGates();
+      expect(
+        testGates(['selfcheck', '--gate', 'src/fee.ts', '--gate', 'src/toll.ts', '--dir', dir])
+          .status
+      ).toBe(0);
+      expect(runs(dir)).toEqual(['one src/fee.spec.ts', 'one src/toll.spec.ts']);
+    });
+  });
+
   it('fails when the gate stays green without a spec', () => {
     const dir = twoGates(DEAF);
     const result = testGates(['selfcheck', '--dir', dir]);

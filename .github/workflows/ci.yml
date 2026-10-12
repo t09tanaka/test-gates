@@ -34,6 +34,9 @@ jobs:
       - name: test (builds first)
         run: npm test
 
+      - name: heavy tests (a real Stryker, Jest and Vitest)
+        run: npm run test:heavy
+
       - name: test gates (static checks + per-file 100% coverage)
         run: npm run test:gates
 
@@ -60,3 +63,6 @@ jobs:
 
       - name: test (builds first; includes the CLI integration tests)
         run: npm test
+
+      - name: heavy tests (those with Stryker skip themselves)
+        run: npm run test:heavy

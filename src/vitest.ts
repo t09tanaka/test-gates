@@ -1,5 +1,6 @@
 import { gateSpecs, loadGates, NO_SPEC_PATTERN } from './load.js';
 import { FULL_COVERAGE, resolveRootDir } from './shared.js';
+import { TOUCH_ENV, vitestProviderFile } from './touch.js';
 
 export interface VitestGatesOptions {
   /** Directory of test-gates.json: `__dirname`, or `import.meta.url` of the config file. */
@@ -29,6 +30,8 @@ export function createVitestGatesConfig(options: VitestGatesOptions = {}): Recor
   const manifest = loadGates(rootDir);
   const { coverage = {}, ...testOverrides } = test;
   const specs = gateSpecs(manifest);
+  const provider = coverageProvider ?? coverage.provider ?? 'v8';
+  const touchDir = process.env[TOUCH_ENV];
 
   return {
     ...overrides,
@@ -41,11 +44,15 @@ export function createVitestGatesConfig(options: VitestGatesOptions = {}): Recor
       // then fail on the coverage threshold, not on "no test files found".
       passWithNoTests: true,
       coverage: {
-        provider: 'v8',
         reporter: ['text'],
         reportsDirectory: 'coverage/gates',
         ...coverage,
-        ...(coverageProvider === undefined ? {} : { provider: coverageProvider }),
+        provider,
+        // While `test-gates selfcheck` asks for it: write down what each spec executed. Only
+        // the istanbul provider can be wrapped for that (see src/touch.ts).
+        ...(touchDir && provider === 'istanbul'
+          ? { provider: 'custom', customProviderModule: vitestProviderFile(touchDir) }
+          : {}),
         enabled: true,
         include: manifest.gates.map((gate) => gate.path),
         thresholds: { perFile: true, ...FULL_COVERAGE },
