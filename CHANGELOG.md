@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.4
+
+One change of behaviour: `test-gates mutation` no longer lets Stryker reuse old results after a change. The rest is new options of `selfcheck`; without them it runs as before.
+
+### Changed
+
+- `test-gates mutation` lets Stryker reuse the results of the last run only when nothing the run depends on has changed since. Stryker's incremental mode reuses the result of a mutant when the text at its place and a test that killed it are the same; a change on another line of the gate, or in a file the spec imports, could turn a killed mutant into a survivor and the old "Killed" was reused. A record next to the incremental file (`reports/stryker-incremental.json.test-gates.json`) now holds a hash of every file of the subproject and of what it leads to, the versions of the tools and the arguments for Stryker. When anything differs, or there is no record, the run gets `--force` and the first line says why. The first run after the update is therefore one of every mutant. A run after no change is reused as before. See "When the results of the last run are reused" in the README for what is compared and what is not seen.
+
+### Added
+
+- `test-gates selfcheck --gate <path>` (may be given more than once) and `--shard <index>/<total>` run the negative control of a part of the gates: one gate while working on it, or one of several parts for parallel CI jobs. The last line says how many gates were not selected. More parts than gates, a path that is not a gate, and either option after `--` are errors (exit code 2).
+- `test-gates selfcheck --quick` uses one run of the gate command for all the gates that only their own spec touches, as far as a full gate run with the config helpers shows it (Jest 30.5; Vitest 3.2 with the istanbul provider). It is for work in progress and not the final check: it takes for granted that a spec executes the same code whichever other specs run with it. Controls judged in the shared run are marked in the output, the last line asks for a run without the option, and the option is refused when `CI` is set (exit code 2).
+- README: Dart and Flutter projects are pointed to the package for Dart; `lcov --file` is shown as optional.
+
 ## 0.3.3
 
 Documentation only; the commands and the helpers behave as in 0.3.2.
