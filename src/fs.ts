@@ -2,28 +2,43 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 /**
+ * The names in directories that were already read, by the path of the directory; null for one
+ * that cannot be read. For a caller that asks about many paths in a row: the gates of a project
+ * mostly share their directories, and each would otherwise be read again for every path. Not to
+ * be kept beyond that: a file created later is not in it.
+ */
+export type Listing = Map<string, string[] | null>;
+
+/**
  * True when `relativePath` is a file (or, with `kind: 'any'`, a file or directory) under
  * `rootDir` with exactly this spelling.
  * The default macOS and Windows file systems treat `Basket.spec.ts` and `basket.spec.ts` as the
  * same file; Linux (CI) does not. Each segment is therefore compared with the directory listing.
+ *
+ * @param listing Directories read by earlier calls, and filled by this one. Without it every
+ *   directory on the way is read anew.
  */
 export function existsExact(
   rootDir: string,
   relativePath: string,
-  kind: 'file' | 'any' = 'file'
+  kind: 'file' | 'any' = 'file',
+  listing: Listing = new Map()
 ): boolean {
   let current = rootDir;
   for (const segment of relativePath.split('/')) {
     if (segment === '' || segment === '.') {
       continue;
     }
-    let entries: string[];
-    try {
-      entries = fs.readdirSync(current);
-    } catch {
-      return false;
+    let entries = listing.get(current);
+    if (entries === undefined) {
+      try {
+        entries = fs.readdirSync(current);
+      } catch {
+        entries = null;
+      }
+      listing.set(current, entries);
     }
-    if (!entries.includes(segment)) {
+    if (entries === null || !entries.includes(segment)) {
       return false;
     }
     current = path.join(current, segment);
