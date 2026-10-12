@@ -12,6 +12,7 @@ const base = {
   gates: [],
   shard: null,
   quick: false,
+  jobs: null,
   rest: [],
 };
 
@@ -132,6 +133,34 @@ describe('parseArgs', () => {
     expect(parseArgs(['mutation', '--quick']).rest).toEqual(['--quick']);
   });
 
+  it('reads --jobs of selfcheck, in both forms', () => {
+    expect(parseArgs(['selfcheck', '--jobs', '4'])).toEqual({
+      ...base,
+      command: 'selfcheck',
+      jobs: 4,
+    });
+    expect(parseArgs(['selfcheck', '--jobs=12', '--quick'])).toMatchObject({
+      jobs: 12,
+      quick: true,
+    });
+    expect(parseArgs(['selfcheck', '--jobs', '1', '--first']).jobs).toBe(1);
+    expect(parseArgs(['selfcheck', '--jobs', '999']).jobs).toBe(999);
+    expect(parseArgs(['selfcheck', '--jobs', '2', '--jobs', '3']).jobs).toBe(3);
+    expect(parseArgs(['mutation', '--jobs', '4'])).toMatchObject({
+      jobs: null,
+      rest: ['--jobs', '4'],
+    });
+  });
+
+  it.each(['0', '-1', '1000', '01', '1.5', 'four', ' 4', '4 ', '4\n', '４'])(
+    'rejects --jobs %j',
+    (value) => {
+      expect(() => parseArgs(['selfcheck', `--jobs=${value}`])).toThrow(
+        new UsageError(`--jobs needs a number from 1 to 999, got ${value}`)
+      );
+    }
+  );
+
   it('collects every --gate of selfcheck, in both forms and in the order given', () => {
     expect(parseArgs(['selfcheck', '--gate', 'src/b.ts', '--gate=src/a.ts'])).toEqual({
       ...base,
@@ -217,6 +246,12 @@ describe('parseArgs', () => {
       ['selfcheck', '--first', '--', 'jest', '--gate', 'src/a.ts'],
       '--gate after "--" would go to the gate command. Write it before "--"',
     ],
+    [['selfcheck', '--jobs'], '--jobs needs a value'],
+    [['check', '--jobs', '2'], 'unknown argument for check: --jobs'],
+    [
+      ['selfcheck', '--', 'jest', '--jobs=2'],
+      '--jobs after "--" would go to the gate command. Write it before "--"',
+    ],
     [
       ['selfcheck', '--', 'jest', '--quick'],
       '--quick after "--" would go to the gate command. Write it before "--"',
@@ -238,17 +273,43 @@ describe('parseArgs', () => {
     expect(() => parseArgs(argv)).toThrow(new UsageError(message));
   });
 
-  it('still hands --gate and --shard of the mutation command to Stryker, in every position', () => {
+  it('takes --gate of the mutation command for itself, and still hands --shard to Stryker', () => {
     expect(parseArgs(['mutation', '--gate', 'x', '--shard', '1/2', '--gate=y'])).toEqual({
       ...base,
       command: 'mutation',
-      rest: ['--gate', 'x', '--shard', '1/2', '--gate=y'],
+      gates: ['x', 'y'],
+      rest: ['--shard', '1/2'],
     });
-    expect(parseArgs(['mutation', '--', '--shard', '1/2', '--gate']).rest).toEqual([
+    expect(parseArgs(['mutation', '--gate', 'x', '--', '--shard', '1/2']).rest).toEqual([
       '--shard',
       '1/2',
-      '--gate',
     ]);
+  });
+
+  it.each([
+    [['mutation', '--', '--gate', 'x']],
+    [['mutation', '--', '--concurrency', '1', '--gate=x']],
+    [['mutation', '--gate', 'y', '--', '--gate']],
+  ])('rejects --gate of the mutation command after "--": %j', (argv) => {
+    expect(() => parseArgs(argv)).toThrow(
+      new UsageError('--gate after "--" would go to Stryker. Write it before "--"')
+    );
+  });
+
+  it('leaves alone arguments for Stryker that only start like --gate', () => {
+    expect(parseArgs(['mutation', '--', '--gates', '--gateway=1', 'x--gate']).rest).toEqual([
+      '--gates',
+      '--gateway=1',
+      'x--gate',
+    ]);
+    // the gate command of selfcheck is not looked at for the rule of mutation
+    expect(() => parseArgs(['selfcheck', '--', 'jest', '--gate=x'])).toThrow(
+      new UsageError('--gate after "--" would go to the gate command. Write it before "--"')
+    );
+  });
+
+  it('needs a value for --gate of the mutation command', () => {
+    expect(() => parseArgs(['mutation', '--gate'])).toThrow(new UsageError('--gate needs a value'));
   });
 
   it('leaves alone a gate command whose arguments only start like the two options', () => {

@@ -96,6 +96,7 @@
     "test": "vitest run",
     "pretest:heavy": "npm run build",
     "test:heavy": "vitest run --config vitest.heavy.config.ts",
+    "check:quick": "npm run lint && npm run typecheck && npm run format:check && npm test",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:gates": "node dist/cli.js check && vitest run --config vitest.gates.config.ts",

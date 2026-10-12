@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { UsageError } from '../core/args.js';
 import { ManifestError } from '../core/manifest.js';
 import {
   comparableArgs,
@@ -11,6 +12,7 @@ import {
   refuseReuse,
   type Snapshot,
 } from '../core/reuse-guard.js';
+import { gateRunRefused, selectControls } from '../core/selfcheck.js';
 import { findLocalBin } from '../fs.js';
 import { type LoadedManifest, readManifest } from '../load.js';
 import { hashFile, takeSnapshot } from '../snapshot.js';
@@ -71,13 +73,16 @@ export function guardRecordPath(incrementalFile: string): string {
 /**
  * Decides whether this run may reuse the results of the last one (see core/reuse-guard.ts).
  *
+ * @param part Whether the run is one of `--gate`. Such a run takes nothing over and leaves no
+ *   record, so that the next run without `--gate` is one of every mutant.
  * @returns `force`: the reason why every mutant has to be run again, or null. `record`: writes
  *   the record of this run; to be called only after Stryker finished it.
  */
 function guardIncremental(
   manifest: LoadedManifest,
   config: string,
-  strykerArgs: string[]
+  strykerArgs: string[],
+  part: boolean
 ): { force: string | null; record: () => void } {
   const nothing = { force: null, record: () => undefined };
   const loaded = loadStrykerConfig(manifest, config);
@@ -111,6 +116,18 @@ function guardIncremental(
 
   let force: string | null = null;
   const incremental = hashFile(incrementalFile);
+  if (part) {
+    // Stryker would take over the old results of the named gates, which the change that is
+    // being worked on may have made wrong.
+    fs.rmSync(recordFile, { force: true });
+    return {
+      force:
+        incremental !== null && !options.force
+          ? 'with --gate nothing is taken over from an earlier run'
+          : null,
+      record: () => undefined,
+    };
+  }
   if (incremental !== null && !options.force) {
     if (snapshot === null) {
       force = failure;
@@ -151,8 +168,32 @@ function guardIncremental(
  * Runs the project's own Stryker, then judges its JSON report.
  * `strykerArgs` go to Stryker only; they never reach the judge.
  */
-export function runMutation(dir: string, strykerArgs: string[], io: Io): number {
+export function runMutation(
+  dir: string,
+  strykerArgs: string[],
+  io: Io,
+  only: string[] = []
+): number {
+  const part = only.length > 0;
+  if (part) {
+    const refused = gateRunRefused(process.env);
+    if (refused !== null) {
+      throw new UsageError(refused);
+    }
+    if (strykerArgs.some((arg) => /^(?:--mutate|-m)(?:=|$)/.test(arg))) {
+      throw new UsageError('--gate and --mutate cannot be combined: --gate sets --mutate itself');
+    }
+  }
   const manifest = readManifest(dir);
+  const chosen = selectControls({
+    gates: manifest.gates.map((gate) => gate.path),
+    mode: 'all',
+    only,
+    shard: null,
+  });
+  if ('error' in chosen) {
+    throw new UsageError(chosen.error);
+  }
   const config = findStrykerConfig(manifest);
   if (config === null) {
     throw new ManifestError(
@@ -167,17 +208,19 @@ export function runMutation(dir: string, strykerArgs: string[], io: Io): number 
   }
 
   // A report left over from an earlier run must not be judged if this run writes none.
-  fs.rmSync(reportPathOf(manifest, null), { force: true });
+  const reportFile = reportPathOf(manifest, null);
+  fs.rmSync(reportFile, { force: true });
 
-  const guard = guardIncremental(manifest, config, strykerArgs);
+  const guard = guardIncremental(manifest, config, strykerArgs, part);
   if (guard.force !== null) {
     io.out(
       `test-gates mutation: running every mutant again (--force), the results of the last run are not reused: ${guard.force}`
     );
   }
   const guardArgs = guard.force === null ? [] : ['--force'];
+  const partArgs = part ? ['--mutate', chosen.selected.join(',')] : [];
 
-  const result = spawnSync(stryker, ['run', config, ...strykerArgs, ...guardArgs], {
+  const result = spawnSync(stryker, ['run', config, ...strykerArgs, ...partArgs, ...guardArgs], {
     cwd: manifest.dir,
     stdio: 'inherit',
     shell: process.platform === 'win32',
@@ -193,5 +236,11 @@ export function runMutation(dir: string, strykerArgs: string[], io: Io): number 
     return 1;
   }
   guard.record();
-  return runMutationResult(dir, null, io);
+  const status = runMutationResult(dir, null, io, part ? chosen.selected : []);
+  if (part) {
+    // Not for `mutation-result`: it would judge every gate from this report, the others by
+    // results of an earlier run.
+    fs.rmSync(reportFile, { force: true });
+  }
+  return status;
 }
