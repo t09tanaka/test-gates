@@ -121,11 +121,13 @@ describe('refuseReuse', () => {
     expect(ask(record(), snapshot({ args: [] }))).toBe(reason);
     expect(ask(record(), snapshot({ args: ['--concurrency 2'] }))).toBe(reason);
     expect(ask(record(), snapshot({ args: ['--concurrency', '2', ''] }))).toBe(reason);
+    expect(
+      ask(record({ snapshot: snapshot({ args: ['a', 'b'] }) }), snapshot({ args: ['a\nb'] }))
+    ).toBe(reason);
   });
 
   it('refuses when a file changed, appeared or disappeared, and names it', () => {
-    const reason = (names: string) =>
-      `changed since the last run, and neither a gate nor its spec: ${names}`;
+    const reason = (names: string) => `changed since the last run: ${names}`;
     const files = snapshot().files;
     expect(ask(record(), snapshot({ files: { ...files, 'src/rates.ts': 'b2' } }))).toBe(
       reason('src/rates.ts')

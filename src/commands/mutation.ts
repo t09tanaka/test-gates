@@ -44,12 +44,23 @@ function loadStrykerConfig(manifest: LoadedManifest, config: string): unknown {
   const result = spawnSync(process.execPath, ['--input-type=module', '--eval', script], {
     cwd: manifest.dir,
     encoding: 'utf8',
+    timeout: 60_000,
   });
   const printed = result.stdout?.split(CONFIG_MARK)[1];
   if (result.status !== 0 || printed === undefined) {
     return undefined;
   }
   return JSON.parse(printed) as unknown;
+}
+
+/** When the file was last written, as text; null when there is no such file. */
+function modifiedAt(file: string): string | null {
+  try {
+    const stat = fs.statSync(file, { bigint: true });
+    return `${stat.mtimeNs} ${stat.ino}`;
+  } catch {
+    return null;
+  }
 }
 
 /** Where the record of a run is kept: next to the incremental file it belongs to. */
@@ -74,7 +85,9 @@ function guardIncremental(
   if (loaded !== undefined && !options.incremental) {
     return nothing; // Stryker neither reads nor writes an incremental file
   }
-  const incrementalFile = path.resolve(manifest.dir, options.incrementalFile);
+  // The real path: the files of the snapshot are listed by theirs.
+  const base = fs.realpathSync(manifest.dir);
+  const incrementalFile = path.resolve(base, options.incrementalFile);
   const recordFile = guardRecordPath(incrementalFile);
 
   let snapshot: Snapshot | null = null;
@@ -83,12 +96,11 @@ function guardIncremental(
     try {
       snapshot = takeSnapshot({
         dir: manifest.dir,
-        own: manifest.gates.flatMap((gate) => [gate.path, ...gate.existingSpecs]),
         written: [
           incrementalFile,
           recordFile,
-          path.resolve(manifest.dir, options.tempDirName),
-          path.dirname(path.resolve(manifest.dir, manifest.settings.strykerReportFile)),
+          path.resolve(base, options.tempDirName),
+          path.resolve(base, manifest.settings.strykerReportFile),
         ],
         args: comparableArgs(strykerArgs),
       });
@@ -114,14 +126,22 @@ function guardIncremental(
   }
   // A run that is interrupted or fails must not leave a record that says "nothing changed".
   fs.rmSync(recordFile, { force: true });
+  const before = modifiedAt(incrementalFile);
 
   return {
     force,
     record: () => {
+      // Only for an incremental file this run wrote. Stryker can end without writing one
+      // (a dry run, no tests): what is on disk then still belongs to an earlier state.
       const written = hashFile(incrementalFile);
-      if (snapshot !== null && written !== null) {
-        const record: GuardRecord = { format: RECORD_FORMAT, incremental: written, snapshot };
+      if (snapshot === null || written === null || modifiedAt(incrementalFile) === before) {
+        return;
+      }
+      const record: GuardRecord = { format: RECORD_FORMAT, incremental: written, snapshot };
+      try {
         fs.writeFileSync(recordFile, `${JSON.stringify(record)}\n`);
+      } catch {
+        // without a record the next run is a full one
       }
     },
   };

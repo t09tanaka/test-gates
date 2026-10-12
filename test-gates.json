@@ -52,8 +52,8 @@
     },
     {
       "path": "src/core/reuse-guard.ts",
-      "decides": "Whether a mutation run may reuse the results of the last one: only when the record of that run shows that nothing but gates and specs has changed since",
-      "impact": "After a change that Stryker does not look at, an old Killed is reused for a mutant that now survives, and the run passes"
+      "decides": "Whether a mutation run may reuse the results of the last one: only when the record of that run shows that nothing the run depends on has changed since",
+      "impact": "After a change that Stryker's incremental mode does not take into account, an old Killed is reused for a mutant that now survives, and the run passes"
     },
     {
       "path": "src/core/vitest-coverage.ts",

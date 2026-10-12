@@ -29,7 +29,7 @@ function report(dir: string, file: string): Record<string, { status: string }[]>
 
 describe.skipIf(!strykerRuns)('test-gates mutation with the Stryker incremental file', () => {
   it(
-    'judges a fully reused run, shows the stale static survivor, and ignores a removed gate',
+    'judges a fully reused run, runs every mutant again after a spec changed, and ignores a removed gate',
     { timeout: 240_000 },
     async () => {
       const dir = project({
@@ -74,12 +74,16 @@ describe.skipIf(!strykerRuns)('test-gates mutation with the Stryker incremental 
       expect(report(dir, 'reports/mutation/mutation.json')['src/kinds.ts']).toHaveLength(4);
       expect(report(dir, 'reports/mutation/mutation.json')['src/age.ts']).toHaveLength(5);
 
-      // 3. A test that kills the survivor is added. The mutant is static, and the incremental
-      //    run reuses its old "Survived": a false failure, never a false pass.
+      // 3. A test that kills the survivor is added. The mutant is static, and Stryker alone
+      //    reuses its old "Survived". The spec changed, so the run is one of every mutant.
       write(dir, { 'src/kinds.spec.ts': SPEC_HEAD + KNOWS_A + KNOWS_B });
       const third = await run();
-      expect(third.status).toBe(1);
-      expect(third.stderr).toContain(SURVIVOR);
+      expect(third.stdout).toContain(
+        'the results of the last run are not reused: changed since the last run: src/kinds.spec.ts'
+      );
+      expect(third.stdout).toContain('0 of 9 mutant result(s) are reused');
+      expect(third.stdout).toContain(PASSED);
+      expect(third.status).toBe(0);
 
       // 4. --force retests everything and the run passes.
       const forced = await run('--force');
@@ -112,7 +116,7 @@ describe.skipIf(!strykerRuns).each(['vitest', 'jest'] as const)(
       'test-gates mutation: running every mutant again (--force), the results of the last run are not reused: ';
     const ext = runner === 'vitest' ? 'ts' : 'js';
     const sources: {
-      gate: string;
+      gate: (shift: string) => string;
       helper: (assertion: string) => string;
       specHead: string;
       config: Record<string, string>;
@@ -120,7 +124,9 @@ describe.skipIf(!strykerRuns).each(['vitest', 'jest'] as const)(
     } =
       runner === 'vitest'
         ? {
-            gate: "export const canRefund = (state: string, days: number) => state === 'paid' && days <= 14;\n",
+            gate: (shift: string) =>
+              `const since = (days: number) => days${shift};\n` +
+              "export const canRefund = (state: string, days: number) => state === 'paid' && since(days) <= 14;\n",
             helper: (assertion: string) =>
               "import { expect } from 'vitest';\n" +
               `export const expectTrue = (actual: boolean) => expect(actual).${assertion};\n`,
@@ -134,7 +140,9 @@ describe.skipIf(!strykerRuns).each(['vitest', 'jest'] as const)(
             stryker: "testRunner: 'vitest', vitest: { configFile: 'vitest.gates.config.ts' }",
           }
         : {
-            gate: "exports.canRefund = (state, days) => state === 'paid' && days <= 14;\n",
+            gate: (shift: string) =>
+              `const since = (days) => days${shift};\n` +
+              "exports.canRefund = (state, days) => state === 'paid' && since(days) <= 14;\n",
             helper: (assertion: string) =>
               `exports.expectTrue = (actual) => expect(actual).${assertion};\n`,
             specHead:
@@ -156,7 +164,7 @@ describe.skipIf(!strykerRuns).each(['vitest', 'jest'] as const)(
       '});\n';
 
     it(
-      'runs every mutant again and finds the survivors; reuses after a change of a gate or a spec',
+      'runs every mutant again and finds the survivors, also after a change of only the gate',
       { timeout: 480_000 },
       async () => {
         const dir = project({
@@ -166,7 +174,7 @@ describe.skipIf(!strykerRuns).each(['vitest', 'jest'] as const)(
             ...(runner === 'vitest' ? { type: 'module' } : {}),
           },
           'test-gates.json': { gates: [gate(`src/refund.${ext}`)], candidates: [] },
-          [`src/refund.${ext}`]: sources.gate,
+          [`src/refund.${ext}`]: sources.gate(''),
           [`src/refund.spec.${ext}`]: SPEC,
           [`src/expect-true.${ext}`]: sources.helper('toBe(true)'),
           ...sources.config,
@@ -199,13 +207,13 @@ describe.skipIf(!strykerRuns).each(['vitest', 'jest'] as const)(
         write(dir, { [`src/expect-true.${ext}`]: sources.helper('toBeDefined()') });
         const weakened = await run();
         expect(weakened.stdout).toContain(
-          `${NOTE}changed since the last run, and neither a gate nor its spec: src/expect-true.${ext}`
+          `${NOTE}changed since the last run: src/expect-true.${ext}`
         );
         expect(reused(weakened.stdout)).toEqual([0, total]);
         expect(weakened.stderr).toMatch(
           /test-gates mutation: \d+ surviving mutant\(s\) not in the allow list/
         );
-        expect(weakened.stderr).toContain(`  - src/refund.${ext}:1:`);
+        expect(weakened.stderr).toContain(`  - src/refund.${ext}:2:`);
         expect(weakened.status).toBe(1);
 
         // 4. Run again without a change: the survivors are still reported, from the reused results.
@@ -220,22 +228,25 @@ describe.skipIf(!strykerRuns).each(['vitest', 'jest'] as const)(
         expect(restored.stdout).toContain(NOTE);
         expect(restored.status).toBe(0);
 
-        // 6. Only the spec changes, then only the gate: Stryker compares those itself, and the
-        //    results it can keep are reused as before.
+        // 6. Only the gate changes, on another line than the comparison: a day now counts from
+        //    half a day earlier. The tests still pass, but `<= 14` can no longer be told from
+        //    `< 14`. Stryker alone reuses the old "Killed" of that mutant, its text being the same.
+        write(dir, { [`src/refund.${ext}`]: sources.gate(' - 0.5') });
+        const shifted = await run();
+        expect(shifted.stdout).toContain(`${NOTE}changed since the last run: src/refund.${ext}`);
+        expect(shifted.stderr).toContain(`  - src/refund.${ext}:2:`);
+        expect(shifted.stderr).toContain('since(days) <= 14 → since(days) < 14 (Survived)');
+        expect(shifted.status).toBe(1);
+
+        // 7. Only the spec changes: a full run as well.
         write(dir, {
-          [`src/refund.spec.${ext}`]: `${SPEC}it('is a function', () => { expect(typeof canRefund).toBe('function'); });\n`,
+          [`src/refund.${ext}`]: sources.gate(''),
+          [`src/refund.spec.${ext}`]: `${SPEC}// reviewed\n`,
         });
         const specOnly = await run();
-        expect(specOnly.stdout).not.toContain(NOTE);
-        // (How many results Stryker keeps after a change of a spec is its own business: with
-        // Jest all but the mutants the new test covers, with Vitest none of this gate.)
-        expect(reused(specOnly.stdout)).not.toBeNull();
+        expect(specOnly.stdout).toContain(NOTE);
+        expect(reused(specOnly.stdout)).toEqual([0, total]);
         expect(specOnly.status).toBe(0);
-        write(dir, { [`src/refund.${ext}`]: `${sources.gate}// the rule of 14 days\n` });
-        const gateOnly = await run();
-        expect(gateOnly.stdout).not.toContain(NOTE);
-        expect(reused(gateOnly.stdout)).toEqual([total, total]);
-        expect(gateOnly.status).toBe(0);
       }
     );
   }

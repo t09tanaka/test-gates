@@ -1,14 +1,15 @@
 /**
- * Stryker's incremental mode reuses the result of a mutant when neither the mutated file nor
- * the test files changed. It does not see anything else: a file that a spec imports, a config,
- * a dependency, the tools. After such a change an old "Killed" would be reused for a mutant
- * that now survives. This module decides whether the results of the last run may be reused:
- * only when everything Stryker does not look at is what it was when they were written.
+ * Stryker's incremental mode reuses the result of a mutant when the text at the place of the
+ * mutant and a test that killed it are unchanged. That is not enough: a change on another line
+ * of the same file, in another file the gate or the spec imports, in a config, a dependency or
+ * a tool can turn a mutant that was killed into one that survives, and the old "Killed" would
+ * be reused. This module decides whether the results of the last run may be reused: only when
+ * everything the run depends on is what it was when they were written.
  */
 
 export const RECORD_FORMAT = 1;
 
-/** Everything a run depends on, apart from the gates and their specs. */
+/** Everything a run depends on. */
 export interface Snapshot {
   /** How the files were listed: through git, or by walking the directories. */
   mode: 'git' | 'walk';
@@ -79,7 +80,7 @@ function differingKeys(before: Record<string, string>, after: Record<string, str
  * @param input.record The parsed content of the record file; undefined when there is none or
  *   it cannot be read.
  * @param input.incremental Hash of the incremental file as it is now.
- * @param input.snapshot The state of everything but the gates and their specs, as it is now.
+ * @param input.snapshot The state of everything the run depends on, as it is now.
  * @returns null when the results may be reused, otherwise why every mutant has to be run again.
  */
 export function refuseReuse(input: {
@@ -109,12 +110,12 @@ export function refuseReuse(input: {
     );
     return `the tools changed since the last run: ${listed(changes)}`;
   }
-  if (before.args.join('\n') !== now.args.join('\n')) {
+  if (JSON.stringify(before.args) !== JSON.stringify(now.args)) {
     return 'the arguments for Stryker are not those of the last run';
   }
   const files = differingKeys(before.files, now.files);
   if (files.length > 0) {
-    return `changed since the last run, and neither a gate nor its spec: ${listed(files)}`;
+    return `changed since the last run: ${listed(files)}`;
   }
   return null;
 }
