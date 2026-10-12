@@ -12,6 +12,7 @@ const base = {
   gates: [],
   shard: null,
   quick: false,
+  jobs: null,
   rest: [],
 };
 
@@ -132,6 +133,34 @@ describe('parseArgs', () => {
     expect(parseArgs(['mutation', '--quick']).rest).toEqual(['--quick']);
   });
 
+  it('reads --jobs of selfcheck, in both forms', () => {
+    expect(parseArgs(['selfcheck', '--jobs', '4'])).toEqual({
+      ...base,
+      command: 'selfcheck',
+      jobs: 4,
+    });
+    expect(parseArgs(['selfcheck', '--jobs=12', '--quick'])).toMatchObject({
+      jobs: 12,
+      quick: true,
+    });
+    expect(parseArgs(['selfcheck', '--jobs', '1', '--first']).jobs).toBe(1);
+    expect(parseArgs(['selfcheck', '--jobs', '999']).jobs).toBe(999);
+    expect(parseArgs(['selfcheck', '--jobs', '2', '--jobs', '3']).jobs).toBe(3);
+    expect(parseArgs(['mutation', '--jobs', '4'])).toMatchObject({
+      jobs: null,
+      rest: ['--jobs', '4'],
+    });
+  });
+
+  it.each(['0', '-1', '1000', '01', '1.5', 'four', ' 4', '4 ', '4\n', '４'])(
+    'rejects --jobs %j',
+    (value) => {
+      expect(() => parseArgs(['selfcheck', `--jobs=${value}`])).toThrow(
+        new UsageError(`--jobs needs a number from 1 to 999, got ${value}`)
+      );
+    }
+  );
+
   it('collects every --gate of selfcheck, in both forms and in the order given', () => {
     expect(parseArgs(['selfcheck', '--gate', 'src/b.ts', '--gate=src/a.ts'])).toEqual({
       ...base,
@@ -216,6 +245,12 @@ describe('parseArgs', () => {
     [
       ['selfcheck', '--first', '--', 'jest', '--gate', 'src/a.ts'],
       '--gate after "--" would go to the gate command. Write it before "--"',
+    ],
+    [['selfcheck', '--jobs'], '--jobs needs a value'],
+    [['check', '--jobs', '2'], 'unknown argument for check: --jobs'],
+    [
+      ['selfcheck', '--', 'jest', '--jobs=2'],
+      '--jobs after "--" would go to the gate command. Write it before "--"',
     ],
     [
       ['selfcheck', '--', 'jest', '--quick'],

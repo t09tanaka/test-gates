@@ -27,6 +27,8 @@ Options:
   --all | --first             selfcheck: every gate in turn (default) or only the first
   --gate <path>               selfcheck: only this gate (may be given more than once)
   --shard <index>/<total>     selfcheck: one of <total> parts of the gates, for parallel CI jobs
+  --jobs <n>                  selfcheck: run <n> negative controls at the same time. One that does
+                              not hold cleanly there is run again on its own
   --quick                     selfcheck: one run for the gates only their own spec touches.
                               Not the final check: it assumes that no spec depends on which
                               other specs run. Refused when CI is set
@@ -42,7 +44,7 @@ const io: Io = {
   err: (line) => process.stderr.write(`${line}\n`),
 };
 
-function main(argv: string[]): number {
+function main(argv: string[]): number | Promise<number> {
   const args = parseArgs(argv);
   if (args.version) {
     const { version } = createRequire(import.meta.url)('../package.json') as { version: string };
@@ -63,7 +65,13 @@ function main(argv: string[]): number {
     case 'selfcheck':
       return runSelfcheck(
         args.dir,
-        { mode: args.mode, gates: args.gates, shard: args.shard, quick: args.quick },
+        {
+          mode: args.mode,
+          gates: args.gates,
+          shard: args.shard,
+          quick: args.quick,
+          jobs: args.jobs,
+        },
         args.rest,
         io
       );
@@ -75,7 +83,7 @@ function main(argv: string[]): number {
 }
 
 try {
-  process.exitCode = main(process.argv.slice(2));
+  process.exitCode = await main(process.argv.slice(2));
 } catch (error) {
   if (error instanceof UsageError) {
     io.err(`test-gates: ${error.message}\n`);

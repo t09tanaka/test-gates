@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { gateSpecs, loadGates, NO_SPEC_PATTERN } from './load.js';
+import { OUTPUT_ENV } from './core/selfcheck.js';
 import { FULL_COVERAGE, resolveRootDir } from './shared.js';
 import { TOUCH_ENV, vitestProviderFile } from './touch.js';
 
@@ -48,6 +49,9 @@ export function createVitestGatesConfig(options: VitestGatesOptions = {}): Recor
         reporter: ['text'],
         reportsDirectory: 'coverage/gates',
         ...coverage,
+        // A directory of its own for a run that `test-gates selfcheck --jobs` starts next to
+        // others: Vitest keeps the coverage of each spec file there until the run ends.
+        ...(process.env[OUTPUT_ENV] ? { reportsDirectory: process.env[OUTPUT_ENV] } : {}),
         provider,
         // While `test-gates selfcheck` asks for it: write down what each spec executed. Only
         // the istanbul provider can be wrapped for that (see src/touch.ts).

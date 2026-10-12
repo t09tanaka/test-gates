@@ -276,6 +276,28 @@ describe.each([
       expect(withoutMarks(part.stdout)).toBe(partPerGate.stdout);
       expect(verdicts(withoutMarks(part.stderr))).toEqual(verdicts(partPerGate.stderr));
       expect(part.status).toBe(partPerGate.status);
+
+      // Several controls at the same time (the gate command has to be the runner itself for
+      // that): the lines of one at a time, whatever had to be run again.
+      const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'test-gates.json'), 'utf8'));
+      fs.writeFileSync(
+        path.join(dir, 'test-gates.json'),
+        JSON.stringify({ ...manifest, settings: {} })
+      );
+      const atOnce = await testGatesAsync(['selfcheck', '--jobs', '4', '--dir', dir]);
+      const again =
+        /^test-gates selfcheck: \d+ of \d+ negative control\(s\) did not hold cleanly[^\n]*\n/;
+      expect(atOnce.stdout).not.toContain('one negative control at a time');
+      expect(atOnce.stdout.replace(again, '')).toBe(perGate.stdout);
+      expect(verdicts(atOnce.stderr)).toEqual(verdicts(perGate.stderr));
+      expect(atOnce.status).toBe(perGate.status);
+      // Only the controls that do not hold (and none that does) needed a run of their own.
+      expect(again.exec(atOnce.stdout)?.[0]).toContain(
+        `test-gates selfcheck: ${NOT_HELD.length} of ${GATES.length} negative control(s)`
+      );
+      expect(fs.readdirSync(dir).filter((name) => name.startsWith('.test-gates-touch'))).toEqual(
+        []
+      );
     }
   );
 });

@@ -1,12 +1,15 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { type Shard, UsageError } from '../core/args.js';
 import { ManifestError } from '../core/manifest.js';
 import { findImporters } from '../core/import-policy.js';
 import {
+  cleanHold,
   EXCLUDE_ALL_ENV,
   EXCLUDE_ENV,
+  jobsRefused,
+  OUTPUT_ENV,
   judgeSelfcheck,
   planControls,
   quickCaveat,
@@ -151,21 +154,105 @@ function installedVersion(start: string, name: string): string | null {
 }
 
 /**
+ * Text of the gate config the gate command names with `--config` (or `-c`); null when it
+ * names none or the file cannot be read: the config is then not known.
+ */
+function gateConfigSource(manifest: LoadedManifest, args: string[]): string | null {
+  const joined = args.find((arg) => arg.startsWith('--config='));
+  const position = args.findIndex((arg) => arg === '--config' || arg === '-c');
+  const file =
+    joined?.slice('--config='.length) ?? (position === -1 ? undefined : args[position + 1]);
+  if (file === undefined) {
+    return null;
+  }
+  try {
+    return readText(manifest.dir, file);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Runs the negative controls of `gates`, `jobs` of them at the same time, each with a
+ * directory of its own for what the coverage tool writes (OUTPUT_ENV).
+ *
+ * @returns What each run ended with. A run that could not be started has status null.
+ */
+async function runAtOnce(
+  manifest: LoadedManifest,
+  gates: LoadedManifest['gates'],
+  jobs: number,
+  executable: string,
+  args: string[]
+): Promise<
+  Map<
+    LoadedManifest['gates'][number],
+    { status: number | null; signal: string | null; output: string }
+  >
+> {
+  const results = new Map<
+    LoadedManifest['gates'][number],
+    { status: number | null; signal: string | null; output: string }
+  >();
+  let outputDir: string;
+  try {
+    outputDir = fs.mkdtempSync(path.join(manifest.dir, TOUCH_PREFIX));
+  } catch {
+    return results; // a project that cannot be written to: every control on its own
+  }
+  const queue = [...gates.entries()];
+  const worker = async (): Promise<void> => {
+    for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
+      const [position, gate] = next;
+      results.set(
+        gate,
+        await new Promise((resolve) => {
+          const child = spawn(executable, args, {
+            cwd: manifest.dir,
+            env: {
+              ...process.env,
+              [EXCLUDE_ENV]: gate.spec as string,
+              [EXCLUDE_ALL_ENV]: '',
+              [TOUCH_ENV]: '',
+              [OUTPUT_ENV]: path.join(outputDir, `job-${position}`),
+            },
+            shell: process.platform === 'win32',
+            stdio: ['ignore', 'pipe', 'pipe'],
+          });
+          let output = '';
+          child.stdout.on('data', (chunk: Buffer) => (output += chunk.toString()));
+          child.stderr.on('data', (chunk: Buffer) => (output += chunk.toString()));
+          child.on('error', () => resolve({ status: null, signal: null, output }));
+          child.on('close', (status, signal) => resolve({ status, signal, output }));
+        })
+      );
+    }
+  };
+  try {
+    await Promise.all(Array.from({ length: Math.min(jobs, gates.length) }, worker));
+  } finally {
+    fs.rmSync(outputDir, { recursive: true, force: true });
+  }
+  return results;
+}
+
+/**
  * Negative control. Runs the gate with the spec of one gate left out and requires it to fail
  * on the coverage threshold of that gate. A gate that stays green without its spec measures
  * nothing.
  */
-export function runSelfcheck(
+export async function runSelfcheck(
   dir: string,
   selection: {
     mode: 'all' | 'first' | null;
     gates: string[];
     shard: Shard | null;
     quick?: boolean;
+    jobs?: number | null;
   },
   commandOverride: string[],
   io: Io
-): number {
+): Promise<number> {
   const refused = selection.quick === true ? quickRefused(process.env) : null;
   if (refused !== null) {
     throw new UsageError(refused);
@@ -204,6 +291,7 @@ export function runSelfcheck(
       cwd: manifest.dir,
       env: {
         ...process.env,
+        [OUTPUT_ENV]: '',
         [EXCLUDE_ENV]: env.exclude ?? '',
         [EXCLUDE_ALL_ENV]: env.excludeAll === undefined ? '' : JSON.stringify(env.excludeAll),
         [TOUCH_ENV]: env.touchDir ?? '',
@@ -226,15 +314,7 @@ export function runSelfcheck(
   const heldTogether = new Map<string, number | null>();
   const single = targets.filter((gate) => gate.spec !== null && gate.existingSpecs.length === 1);
   if (selection.quick === true && single.length >= 3) {
-    // The text of the gate config says something only when the gate command is derived from it.
-    const derived = commandOverride.length === 0 && manifest.settings.gateCommand === null;
-    const configFile = derived ? args[args.indexOf('--config') + 1] : undefined;
-    let configSource: string | null = null;
-    try {
-      configSource = configFile === undefined ? null : readText(manifest.dir, configFile);
-    } catch {
-      // not readable: nothing is known beforehand
-    }
+    const configSource = gateConfigSource(manifest, args);
     const shared =
       sharedRunPrecheck({
         program,
@@ -256,6 +336,42 @@ export function runSelfcheck(
     }
   }
 
+  // Controls that held, cleanly, in a run next to others (see cleanHold): gate path → exit code.
+  const heldAtOnce = new Map<string, number | null>();
+  const waiting = single.filter((gate) => !heldTogether.has(gate.path));
+  const jobs = selection.jobs ?? 1;
+  if (jobs > 1 && waiting.length > 1) {
+    const refusal = jobsRefused({
+      program,
+      configSource: gateConfigSource(manifest, args),
+      specs: manifest.gates.flatMap((gate) =>
+        gate.existingSpecs.map((spec) => ({ path: spec, source: readText(manifest.dir, spec) }))
+      ),
+      failurePattern: manifest.settings.selfcheckFailurePattern,
+    });
+    if (refusal !== null) {
+      io.out(`test-gates selfcheck: one negative control at a time (${refusal})`);
+    } else {
+      const results = await runAtOnce(manifest, waiting, jobs, executable, args);
+      for (const [gate, result] of results) {
+        const clean = cleanHold({
+          ...result,
+          gatePath: gate.path,
+          others: manifest.gates.map((other) => other.path).filter((other) => other !== gate.path),
+        });
+        if (clean) {
+          heldAtOnce.set(gate.path, result.status);
+        }
+      }
+      const again = waiting.length - heldAtOnce.size;
+      if (again > 0) {
+        io.out(
+          `test-gates selfcheck: ${again} of ${waiting.length} negative control(s) did not hold cleanly next to others and run again on their own`
+        );
+      }
+    }
+  }
+
   let failed = 0;
   for (const gate of targets) {
     if (gate.spec === null || gate.existingSpecs.length !== 1) {
@@ -269,6 +385,12 @@ export function runSelfcheck(
       );
       continue;
     }
+    if (heldAtOnce.has(gate.path)) {
+      io.out(`  ✓ without ${gate.spec} the gate fails (exit ${heldAtOnce.get(gate.path)})`);
+      continue;
+    }
+    // On its own, with nothing else running: also every control that did not hold cleanly
+    // next to others. This result counts.
     const result = runGate({ exclude: gate.spec });
     const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
     const reason = judge(result, gate.path);

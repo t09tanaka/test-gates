@@ -860,7 +860,12 @@ describe('test-gates selfcheck', () => {
       "const { gates } = JSON.parse(fs.readFileSync('test-gates.json', 'utf8'));",
       "const spec = (gate) => gate.path.replace(/\\.ts$/, '.spec.ts');",
       'const { TEST_GATES_TOUCH_DIR: touch, TEST_GATES_EXCLUDE_SPECS: all, TEST_GATES_EXCLUDE_SPEC: one } = process.env;',
-      "fs.appendFileSync('runs.log', `${touch ? 'notes' : all ? `all ${all}` : `one ${one}`}\\n`);",
+      'const at = process.env.TEST_GATES_OUTPUT_DIR;',
+      "fs.appendFileSync('runs.log', `${touch ? 'notes' : all ? `all ${all}` : `one ${one}`}${at ? ' at once' : ''}\\n`);",
+      // A run next to others that also reports a failed test, for the gate named in noisy.txt.
+      "if (at && fs.existsSync('noisy.txt') && one === fs.readFileSync('noisy.txt', 'utf8')) console.log(' FAIL  src/toll.spec.ts');",
+      // Every run next to others keeps to the directory it was given.
+      "if (at) { fs.mkdirSync(at, { recursive: true }); fs.writeFileSync(path.join(at, 'coverage.tmp'), one); }",
       "const shy = fs.existsSync('shy.txt') ? fs.readFileSync('shy.txt', 'utf8') : '';",
       'if (touch) {',
       "  const text = (name) => (fs.existsSync(name) ? fs.readFileSync(name, 'utf8') : '');",
@@ -884,7 +889,8 @@ describe('test-gates selfcheck', () => {
       '}',
       'const left = all ? JSON.parse(all) : [one];',
       'for (const gate of gates) {',
-      '  if (left.includes(spec(gate)) && !(all && gate.path === shy)) {',
+      "  const shyAlone = fs.existsSync('shy-alone.txt') ? fs.readFileSync('shy-alone.txt', 'utf8') : '';",
+      '  if (left.includes(spec(gate)) && !(all && gate.path === shy) && gate.path !== shyAlone) {',
       '    console.error(`ERROR: Coverage for lines (0%) does not meet global threshold (100%) for ${gate.path}`);',
       '    process.exitCode = 1;',
       '  }',
@@ -1061,6 +1067,133 @@ describe('test-gates selfcheck', () => {
         )
       );
       expect(runs(dir)).toEqual(names.map((name) => `one src/${name}.spec.ts`));
+    });
+
+    describe('with --jobs', () => {
+      /** The stand-in as the `vitest` of the project, with a gate config that names the helper. */
+      const asVitest = () => {
+        const dir = fiveGates();
+        write(dir, {
+          'vitest.gates.config.ts':
+            "export default createVitestGatesConfig({ coverageProvider: 'istanbul' });\n",
+          'node_modules/.bin/vitest': `#!/usr/bin/env node\n${NOTING}\n`,
+          'node_modules/vitest/package.json': { version: '3.2.7' },
+          'test-gates.json': {
+            gates: names.map((name) => ({ path: `src/${name}.ts`, decides: 'd', impact: 'i' })),
+            candidates: [],
+          },
+        });
+        fs.chmodSync(path.join(dir, 'node_modules/.bin/vitest'), 0o755);
+        return dir;
+      };
+      const atOnce = names.map((name) => `one src/${name}.spec.ts at once`).sort();
+      const alone = names.map((name) => `one src/${name}.spec.ts`);
+
+      it('runs the controls at the same time, each with a directory of its own, and prints what one at a time prints', () => {
+        const dir = asVitest();
+        expect(testGates(['selfcheck', '--jobs', '3', '--dir', dir])).toEqual({
+          status: 0,
+          stdout: OK,
+          stderr: '',
+        });
+        expect(runs(dir).sort()).toEqual(atOnce);
+        expect(fs.readdirSync(dir).filter((name) => name.startsWith('.test-gates-touch'))).toEqual(
+          []
+        );
+      });
+
+      it('runs a control again on its own when its run next to others says more than its threshold', () => {
+        const dir = asVitest();
+        write(dir, { 'noisy.txt': 'src/fee.spec.ts' });
+        expect(testGates(['selfcheck', '--jobs=5', '--dir', dir])).toEqual({
+          status: 0,
+          stdout:
+            'test-gates selfcheck: 1 of 5 negative control(s) did not hold cleanly next to others and run again on their own\n' +
+            OK,
+          stderr: '',
+        });
+        const log = runs(dir);
+        expect(log.slice(0, 5).sort()).toEqual(atOnce);
+        expect(log.slice(5)).toEqual(['one src/fee.spec.ts']);
+      });
+
+      it('takes a control that does not hold from its own run, never from the run next to others', () => {
+        const dir = asVitest();
+        // The stand-in reports no threshold for this gate in any run.
+        write(dir, { 'shy-alone.txt': 'src/tax.ts' });
+        const result = testGates(['selfcheck', '--jobs', '2', '--dir', dir]);
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain(
+          '  ✗ src/tax.ts: the gate passed although the spec of src/tax.ts was left out.'
+        );
+        expect(result.stderr).toContain(
+          'test-gates selfcheck: FAILED (1 of 5 negative control(s))'
+        );
+        expect(runs(dir).slice(5)).toEqual(['one src/tax.spec.ts']);
+      });
+
+      it('runs one at a time with --jobs 1, and without the option', () => {
+        const dir = asVitest();
+        expect(testGates(['selfcheck', '--jobs', '1', '--dir', dir]).stdout).toBe(OK);
+        expect(testGates(['selfcheck', '--dir', dir]).stdout).toBe(OK);
+        expect(runs(dir)).toEqual([...alone, ...alone]);
+      });
+
+      it.each([
+        [
+          'a gate command of the project',
+          (dir: string) =>
+            write(dir, {
+              'test-gates.json': {
+                gates: names.map((name) => ({ path: `src/${name}.ts`, decides: 'd', impact: 'i' })),
+                candidates: [],
+                settings: { gateCommand: ['node', 'gate.cjs'] },
+              },
+            }),
+          'it is not known whether runs of this gate command at the same time keep their files apart (it is not jest or vitest with --config naming a gate config that uses the helpers of this package)',
+        ],
+        [
+          'a gate config without the helper',
+          (dir: string) => write(dir, { 'vitest.gates.config.ts': 'export default {};\n' }),
+          'it is not known whether runs of this gate command at the same time keep their files apart (it is not jest or vitest with --config naming a gate config that uses createVitestGatesConfig)',
+        ],
+        [
+          'a spec that reads files',
+          (dir: string) =>
+            write(dir, { 'src/fee.spec.ts': "import fs from 'node:fs';\nit('x', () => {});\n" }),
+          'src/fee.spec.ts reads the environment or files, and may meet what another run is doing',
+        ],
+      ])('runs one at a time for %s, and says why', (_name, change, reason) => {
+        const dir = asVitest();
+        change(dir);
+        expect(testGates(['selfcheck', '--jobs', '4', '--dir', dir]).stdout).toBe(
+          `test-gates selfcheck: one negative control at a time (${reason})\n${OK}`
+        );
+        expect(runs(dir)).toEqual(alone);
+      });
+
+      it('applies to the gates that are selected, and to what --quick leaves', () => {
+        const dir = asVitest();
+        expect(testGates(['selfcheck', '--jobs', '4', '--shard', '1/2', '--dir', dir]).status).toBe(
+          0
+        );
+        expect(runs(dir).sort()).toEqual(
+          ['age', 'fee', 'toll'].map((name) => `one src/${name}.spec.ts at once`).sort()
+        );
+        fs.rmSync(path.join(dir, 'runs.log'));
+        // One gate, or --first: nothing to run at the same time.
+        expect(
+          testGates(['selfcheck', '--jobs', '4', '--gate', 'src/fee.ts', '--dir', dir]).status
+        ).toBe(0);
+        expect(testGates(['selfcheck', '--jobs', '4', '--first', '--dir', dir]).status).toBe(0);
+        expect(runs(dir)).toEqual(['one src/fee.spec.ts', 'one src/age.spec.ts']);
+        fs.rmSync(path.join(dir, 'runs.log'));
+        // --quick judges four in its shared run; one control is left, which runs on its own.
+        expect(testGates(['selfcheck', '--jobs', '4', '--quick', '--dir', dir]).stdout).toBe(
+          quickOk(['rate', 'fee', 'tax', 'toll'])
+        );
+        expect(runs(dir)).toEqual(['notes', shared, 'one src/age.spec.ts']);
+      });
     });
 
     it('does not start the run for notes when it is known beforehand to be for nothing', () => {

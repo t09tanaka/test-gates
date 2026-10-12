@@ -6,6 +6,9 @@ import {
   judgeSelfcheck,
   accountedFor,
   minorOf,
+  cleanHold,
+  jobsRefused,
+  OUTPUT_ENV,
   planControls,
   quickCaveat,
   quickRefused,
@@ -834,5 +837,171 @@ describe('planControls', () => {
       alone: ['src/x.ts'],
       reason: null,
     });
+  });
+});
+
+describe('cleanHold', () => {
+  const GATE_PATH = 'src/fee.ts';
+  const others = ['src/tax.ts', 'lib/src/fee.ts'];
+  const VITEST_LINE =
+    'ERROR: Coverage for lines (0%) does not meet global threshold (100%) for src/fee.ts';
+  const JEST_LINE =
+    'Jest: "/work/app/src/fee.ts" coverage threshold for statements (100%) not met: 0%';
+  const QUIET = ' Test Files  4 passed (4)\n      Tests  20 passed (20)\n';
+  const clean = (changes: Partial<Parameters<typeof cleanHold>[0]> = {}) =>
+    cleanHold({
+      status: 1,
+      signal: null,
+      output: `${QUIET}${VITEST_LINE}\n`,
+      gatePath: GATE_PATH,
+      others,
+      ...changes,
+    });
+
+  it('names the variable for the output directory', () => {
+    expect(OUTPUT_ENV).toBe('TEST_GATES_OUTPUT_DIR');
+  });
+
+  it('takes a control that held and whose run says nothing else', () => {
+    expect(clean()).toBe(true);
+    expect(clean({ output: `PASS src/tax.spec.ts\n${JEST_LINE}\nRan all test suites.\n` })).toBe(
+      true
+    );
+    expect(clean({ status: 2 })).toBe(true);
+    // every metric of the same gate
+    expect(clean({ output: `${VITEST_LINE}\n${VITEST_LINE.replace('lines', 'branches')}\n` })).toBe(
+      true
+    );
+  });
+
+  it('does not take a control that did not hold', () => {
+    expect(clean({ status: 0 })).toBe(false);
+    expect(clean({ status: null })).toBe(false);
+    expect(clean({ output: QUIET })).toBe(false);
+    expect(clean({ output: `${QUIET}${VITEST_LINE.replace('src/fee.ts', 'src/tax.ts')}\n` })).toBe(
+      false
+    );
+  });
+
+  it('does not take a run that ended by a signal', () => {
+    expect(clean({ signal: 'SIGKILL' })).toBe(false);
+    expect(clean({ signal: 'SIGTERM', status: 1 })).toBe(false);
+  });
+
+  it('does not take a run that reports the threshold of another gate as well', () => {
+    expect(
+      clean({ output: `${VITEST_LINE}\n${VITEST_LINE.replace('src/fee.ts', 'src/tax.ts')}\n` })
+    ).toBe(false);
+    // a line that names this gate only as a part of the path of another
+    expect(
+      clean({ output: `${VITEST_LINE}\n${VITEST_LINE.replace('src/fee.ts', 'lib/src/fee.ts')}\n` })
+    ).toBe(false);
+    // a threshold line that names no gate
+    expect(
+      clean({
+        output: `${VITEST_LINE}\nERROR: Coverage for lines (90%) does not meet global threshold (100%)\n`,
+      })
+    ).toBe(false);
+  });
+
+  it.each([
+    ' FAIL  src/tax.spec.ts',
+    'FAILED tests: 1',
+    'Tests:       1 failed, 19 passed, 20 total',
+    ' Test Files  1 failed | 3 passed (4)',
+    'failure in worker',
+    '2 failures',
+    'Error: Test timed out in 5000ms.',
+    'thrown: "Exceeded timeout of 5000 ms for a test.',
+    'Test timed out',
+    'Timeout - Async callback was not invoked',
+    'Unhandled Rejection',
+    'unhandled error',
+    'Uncaught exception',
+    'uncaught',
+    'TypeError: x is not a function',
+    'Errors  1 error',
+    '2 errors',
+    'ERROR  worker exited',
+    'error TS2304',
+    'A worker process was terminated by SIGKILL',
+    'the process was killed',
+    ' ✗ a test',
+    ' × a test',
+    ' ✕ a test',
+    ' ✖ a test',
+  ])('does not take a run that also says %j', (line) => {
+    expect(clean({ output: `${QUIET}${line}\n${VITEST_LINE}\n` })).toBe(false);
+    expect(clean({ output: `${VITEST_LINE}\n${line}` })).toBe(false);
+  });
+
+  it.each([
+    'PASS src/failsafe.spec.ts',
+    ' ✓ src/terror.spec.ts (5 tests)',
+    'no errorsome words: failings, timeouts2, SIG, unkilled',
+    'File      | % Stmts | % Branch | % Funcs | % Lines | Uncovered Line #s',
+  ])('takes a run with a line that only looks like trouble: %j', (line) => {
+    expect(clean({ output: `${line}\n${VITEST_LINE}\n` })).toBe(true);
+  });
+});
+
+describe('jobsRefused', () => {
+  const vitest = "export default createVitestGatesConfig({ coverageProvider: 'istanbul' });";
+  const jest = 'module.exports = createJestGatesConfig({ rootDir: __dirname });';
+  const ask = (changes: Partial<Parameters<typeof jobsRefused>[0]> = {}) =>
+    jobsRefused({
+      program: 'vitest',
+      configSource: vitest,
+      specs: [{ path: 'src/a.spec.ts', source: "it('x', () => {});" }],
+      failurePattern: null,
+      ...changes,
+    });
+  const UNKNOWN =
+    'it is not known whether runs of this gate command at the same time keep their files apart ';
+
+  it('lets the controls of a gate config built with the helper run at the same time', () => {
+    expect(ask()).toBeNull();
+    expect(ask({ program: 'jest', configSource: jest })).toBeNull();
+    expect(ask({ failurePattern: '' })).toBeNull();
+  });
+
+  it('refuses a gate command of which the files are not known', () => {
+    expect(ask({ program: 'node' })).toBe(
+      `${UNKNOWN}(it is not jest or vitest with --config naming a gate config that uses the helpers of this package)`
+    );
+    expect(ask({ configSource: null })).toBe(
+      `${UNKNOWN}(it is not jest or vitest with --config naming a gate config that uses createVitestGatesConfig)`
+    );
+    expect(ask({ configSource: jest })).toBe(
+      `${UNKNOWN}(it is not jest or vitest with --config naming a gate config that uses createVitestGatesConfig)`
+    );
+    expect(ask({ program: 'jest', configSource: vitest })).toBe(
+      `${UNKNOWN}(it is not jest or vitest with --config naming a gate config that uses createJestGatesConfig)`
+    );
+    expect(ask({ program: 'jest', configSource: null })).toContain('createJestGatesConfig');
+  });
+
+  it('refuses when a spec reads the environment or files', () => {
+    expect(
+      ask({
+        specs: [
+          { path: 'src/a.spec.ts', source: "it('x', () => {});" },
+          { path: 'src/b.spec.ts', source: "import fs from 'node:fs';" },
+        ],
+      })
+    ).toBe('src/b.spec.ts reads the environment or files, and may meet what another run is doing');
+  });
+
+  it('refuses with a failure pattern of the project, before anything else', () => {
+    const reason =
+      'with settings.selfcheck.failurePattern, a run that was disturbed cannot be told from one that was not';
+    expect(ask({ failurePattern: 'threshold.*{gate}' })).toBe(reason);
+    expect(ask({ failurePattern: 'x', program: 'node' })).toBe(reason);
+  });
+
+  it('names the gate command before a spec', () => {
+    expect(
+      ask({ program: 'node', specs: [{ path: 'src/b.spec.ts', source: 'process.env.X' }] })
+    ).toContain(UNKNOWN);
   });
 });
