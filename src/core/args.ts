@@ -14,6 +14,8 @@ export interface ParsedArgs {
   mode: 'all' | 'first' | null;
   /** `--gate` (selfcheck), once per gate: only these gates. Empty: no selection. */
   gates: string[];
+  /** `--one-by-one` (selfcheck): a run of the gate command for every gate, none shared. */
+  oneByOne: boolean;
   /** `--shard <index>/<total>` (selfcheck): one of `total` parts of the gates, `index` from 1. */
   shard: Shard | null;
   /**
@@ -51,7 +53,7 @@ const OPTIONS_BY_COMMAND: Record<Command, string[]> = {
   check: ['--dir'],
   mutation: ['--dir'],
   'mutation-result': ['--dir', '--report'],
-  selfcheck: ['--dir', '--all', '--first', '--gate', '--shard'],
+  selfcheck: ['--dir', '--all', '--first', '--gate', '--shard', '--one-by-one'],
   lcov: ['--dir', '--file'],
 };
 
@@ -108,6 +110,10 @@ function consume(
     if (equals !== -1) {
       throw new UsageError(`${name} does not take a value`);
     }
+    if (name === '--one-by-one') {
+      parsed.oneByOne = true;
+      return next;
+    }
     const mode = name === '--all' ? 'all' : 'first';
     if (parsed.mode !== null && parsed.mode !== mode) {
       throw new UsageError('--all and --first cannot be combined');
@@ -143,6 +149,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     mode: null,
     gates: [],
     shard: null,
+    oneByOne: false,
     rest: [],
   };
 

@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { EXCLUDE_ENV, judgeSelfcheck, selectControls } from './selfcheck';
+import {
+  EXCLUDE_ALL_ENV,
+  EXCLUDE_ENV,
+  excludedSpecs,
+  judgeSelfcheck,
+  planControls,
+  selectControls,
+} from './selfcheck';
 
 const GATE = 'src/common/shipping-fee.ts';
 
@@ -184,5 +191,164 @@ describe('selectControls', () => {
     expect(
       selectControls({ gates, mode: 'all', only: [], shard: { index: 1, total: 6 } })
     ).toHaveProperty('error');
+  });
+});
+
+describe('excludedSpecs', () => {
+  it('names the variable for several specs', () => {
+    expect(EXCLUDE_ALL_ENV).toBe('TEST_GATES_EXCLUDE_SPECS');
+  });
+
+  it('leaves nothing out when neither variable is set, or both are empty', () => {
+    expect(excludedSpecs({})).toEqual([]);
+    expect(excludedSpecs({ TEST_GATES_EXCLUDE_SPEC: '', TEST_GATES_EXCLUDE_SPECS: '' })).toEqual(
+      []
+    );
+  });
+
+  it('reads the one spec, the list, and both together', () => {
+    expect(excludedSpecs({ TEST_GATES_EXCLUDE_SPEC: 'src/a.spec.ts' })).toEqual(['src/a.spec.ts']);
+    expect(
+      excludedSpecs({ TEST_GATES_EXCLUDE_SPECS: '["src/a.spec.ts","src/b.spec.ts"]' })
+    ).toEqual(['src/a.spec.ts', 'src/b.spec.ts']);
+    expect(
+      excludedSpecs({
+        TEST_GATES_EXCLUDE_SPEC: 'src/c.spec.ts',
+        TEST_GATES_EXCLUDE_SPECS: '["src/a.spec.ts"]',
+      })
+    ).toEqual(['src/c.spec.ts', 'src/a.spec.ts']);
+    expect(excludedSpecs({ TEST_GATES_EXCLUDE_SPECS: '[]' })).toEqual([]);
+  });
+
+  it.each([
+    '{',
+    '"src/a.spec.ts"',
+    '{"0":"src/a.spec.ts"}',
+    '["src/a.spec.ts",1]',
+    'null',
+    '[null]',
+  ])('refuses a list written as %s', (value) => {
+    expect(() => excludedSpecs({ TEST_GATES_EXCLUDE_SPECS: value })).toThrow(
+      new Error('test-gates: TEST_GATES_EXCLUDE_SPECS must be a JSON list of spec paths')
+    );
+  });
+});
+
+describe('planControls', () => {
+  const gate = (name: string) => ({
+    path: `src/${name}.ts`,
+    file: `/work/src/${name}.ts`,
+    specFile: `/work/src/${name}.spec.ts`,
+  });
+  const all = [gate('a'), gate('b'), gate('c'), gate('d')];
+  const targets = all.map((entry) => entry.path);
+  const own = (name: string, ...others: string[]) => ({
+    spec: `/work/src/${name}.spec.ts`,
+    touched: [`/work/src/${name}.ts`, ...others.map((other) => `/work/src/${other}.ts`)],
+  });
+  const records = [own('a'), own('b'), own('c'), own('d')];
+  const plan = (changes: Partial<Parameters<typeof planControls>[0]> = {}) =>
+    planControls({ all, targets, records, failurePattern: null, ...changes });
+  const everyoneAlone = { together: [], alone: targets };
+
+  it('lets every gate that only its own spec touches share one run', () => {
+    expect(plan()).toEqual({ together: targets, alone: [] });
+    // A file that is not a gate (a setup file that is measured by mistake) does not matter.
+    expect(
+      plan({
+        records: [
+          { spec: '/work/src/a.spec.ts', touched: ['/work/src/a.ts', '/work/x.ts'] },
+          ...records.slice(1),
+        ],
+      })
+    ).toEqual({ together: targets, alone: [] });
+  });
+
+  it('keeps the order of the targets, and plans only for them', () => {
+    expect(plan({ targets: ['src/d.ts', 'src/b.ts'] })).toEqual({
+      together: ['src/d.ts', 'src/b.ts'],
+      alone: [],
+    });
+  });
+
+  it('gives a gate its own run when the spec of another gate touches it', () => {
+    expect(plan({ records: [own('a'), own('b', 'a'), own('c'), own('d')] })).toEqual({
+      together: ['src/b.ts', 'src/c.ts', 'src/d.ts'],
+      alone: ['src/a.ts'],
+    });
+    // Two specs that each touch a part of it.
+    expect(plan({ records: [own('a'), own('b', 'a'), own('c', 'a'), own('d')] }).alone).toEqual([
+      'src/a.ts',
+    ]);
+  });
+
+  it('gives a gate its own run when its own spec is not seen to touch it', () => {
+    expect(
+      plan({
+        records: [{ spec: '/work/src/a.spec.ts', touched: [] }, own('b'), own('c'), own('d')],
+      })
+    ).toEqual({ together: ['src/b.ts', 'src/c.ts', 'src/d.ts'], alone: ['src/a.ts'] });
+    // Touched by exactly one spec, but not its own.
+    expect(
+      plan({
+        records: [{ spec: '/work/src/a.spec.ts', touched: [] }, own('b', 'a'), own('c'), own('d')],
+      }).alone
+    ).toEqual(['src/a.ts']);
+  });
+
+  it('gives every gate its own run when the record of a spec is missing', () => {
+    expect(plan({ records: records.slice(1) })).toEqual(everyoneAlone);
+    expect(plan({ records: [] })).toEqual(everyoneAlone);
+    // Also when the spec without a record is that of a gate that is not a target.
+    expect(plan({ targets: ['src/a.ts', 'src/b.ts'], records: records.slice(0, 3) })).toEqual({
+      together: [],
+      alone: ['src/a.ts', 'src/b.ts'],
+    });
+  });
+
+  it('gives every gate its own run when fewer than two could share one', () => {
+    expect(
+      plan({ records: [own('a'), own('b', 'a', 'c', 'd'), own('c', 'a', 'b', 'd'), own('d')] })
+    ).toEqual(everyoneAlone);
+    expect(plan({ targets: ['src/a.ts'] })).toEqual({ together: [], alone: ['src/a.ts'] });
+    expect(plan({ targets: ['src/a.ts', 'src/b.ts'] })).toEqual({
+      together: ['src/a.ts', 'src/b.ts'],
+      alone: [],
+    });
+  });
+
+  it('gives every gate its own run for a failure pattern that does not name the gate', () => {
+    expect(plan({ failurePattern: 'threshold' })).toEqual(everyoneAlone);
+    expect(plan({ failurePattern: 'threshold.*{gate}' })).toEqual({ together: targets, alone: [] });
+    expect(plan({ failurePattern: '' })).toEqual(everyoneAlone);
+  });
+
+  it('gives a gate its own run when its path is part of the path of another gate', () => {
+    const nested = [
+      ...all,
+      { path: 'lib/src/a.ts', file: '/work/lib/src/a.ts', specFile: '/work/lib/src/a.spec.ts' },
+    ];
+    const nestedRecords = [
+      ...records,
+      { spec: '/work/lib/src/a.spec.ts', touched: ['/work/lib/src/a.ts'] },
+    ];
+    expect(
+      planControls({
+        all: nested,
+        targets: nested.map((entry) => entry.path),
+        records: nestedRecords,
+        failurePattern: null,
+      })
+    ).toEqual({
+      together: ['src/b.ts', 'src/c.ts', 'src/d.ts', 'lib/src/a.ts'],
+      alone: ['src/a.ts'],
+    });
+  });
+
+  it('gives a target that is not a gate its own run', () => {
+    expect(plan({ targets: ['src/a.ts', 'src/b.ts', 'src/x.ts'] })).toEqual({
+      together: ['src/a.ts', 'src/b.ts'],
+      alone: ['src/x.ts'],
+    });
   });
 });

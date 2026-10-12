@@ -4,9 +4,16 @@ import path from 'node:path';
 import { type Shard, UsageError } from '../core/args.js';
 import { ManifestError } from '../core/manifest.js';
 import { findImporters } from '../core/import-policy.js';
-import { EXCLUDE_ENV, judgeSelfcheck, selectControls } from '../core/selfcheck.js';
+import {
+  EXCLUDE_ALL_ENV,
+  EXCLUDE_ENV,
+  judgeSelfcheck,
+  planControls,
+  selectControls,
+} from '../core/selfcheck.js';
 import { existsExact, findLocalBin, readText } from '../fs.js';
 import { readManifest, type LoadedManifest } from '../load.js';
+import { readTouchRecords, TOUCH_ENV } from '../touch.js';
 import type { Io } from './output.js';
 
 const JEST_CONFIGS = ['js', 'cjs', 'mjs', 'ts', 'cts', 'mts'].map(
@@ -40,6 +47,58 @@ export function resolveGateCommand(manifest: LoadedManifest): string[] {
   );
 }
 
+function realPath(file: string): string {
+  try {
+    return fs.realpathSync(file);
+  } catch {
+    return file;
+  }
+}
+
+/**
+ * The one run that stands in for the runs of all gates no other spec touches.
+ *
+ * First a full gate run in which each spec writes down what it executed (the helpers do that
+ * when asked through TOUCH_ENV; a gate config that does not use them, or the v8 provider of
+ * Vitest, writes nothing, and every gate then gets its own run as before). Then one run without
+ * the specs of all gates that only their own spec touched.
+ *
+ * @returns The gates that shared the run and its result, or null when no run was shared.
+ */
+function shareOneRun<Result>(
+  manifest: LoadedManifest,
+  targets: LoadedManifest['gates'],
+  runGate: (env: { excludeAll?: string[]; touchDir?: string }) => Result
+): { gates: LoadedManifest['gates']; result: Result } | null {
+  // In the subproject: Vite does not load the setup file from anywhere else (see src/touch.ts).
+  const touchDir = fs.mkdtempSync(path.join(manifest.dir, '.test-gates-touch-'));
+  let plan: ReturnType<typeof planControls>;
+  try {
+    runGate({ touchDir });
+    const base = realPath(manifest.dir);
+    plan = planControls({
+      all: manifest.gates.map((gate) => ({
+        path: gate.path,
+        file: path.join(base, gate.path),
+        specFile: path.join(base, gate.spec ?? ''),
+      })),
+      targets: targets.map((gate) => gate.path),
+      records: readTouchRecords(touchDir).map((record) => ({
+        spec: realPath(record.spec),
+        touched: record.touched.map(realPath),
+      })),
+      failurePattern: manifest.settings.selfcheckFailurePattern,
+    });
+  } finally {
+    fs.rmSync(touchDir, { recursive: true, force: true });
+  }
+  if (plan.together.length === 0) {
+    return null;
+  }
+  const gates = targets.filter((gate) => plan.together.includes(gate.path));
+  return { gates, result: runGate({ excludeAll: gates.map((gate) => gate.spec as string) }) };
+}
+
 /**
  * Negative control. Runs the gate with the spec of one gate left out and requires it to fail
  * on the coverage threshold of that gate. A gate that stays green without its spec measures
@@ -47,7 +106,12 @@ export function resolveGateCommand(manifest: LoadedManifest): string[] {
  */
 export function runSelfcheck(
   dir: string,
-  selection: { mode: 'all' | 'first' | null; gates: string[]; shard: Shard | null },
+  selection: {
+    mode: 'all' | 'first' | null;
+    gates: string[];
+    shard: Shard | null;
+    oneByOne?: boolean;
+  },
   commandOverride: string[],
   io: Io
 ): number {
@@ -79,6 +143,44 @@ export function runSelfcheck(
   const [program, ...args] = command as [string, ...string[]];
   const executable = findLocalBin(manifest.dir, program) ?? program;
 
+  // The three variables are always set, so that one inherited from the caller cannot leak in.
+  const runGate = (env: { exclude?: string; excludeAll?: string[]; touchDir?: string }) =>
+    spawnSync(executable, args, {
+      cwd: manifest.dir,
+      env: {
+        ...process.env,
+        [EXCLUDE_ENV]: env.exclude ?? '',
+        [EXCLUDE_ALL_ENV]: env.excludeAll === undefined ? '' : JSON.stringify(env.excludeAll),
+        [TOUCH_ENV]: env.touchDir ?? '',
+      },
+      encoding: 'utf8',
+      maxBuffer: 256 * 1024 * 1024,
+      shell: process.platform === 'win32',
+    });
+  const judge = (result: ReturnType<typeof runGate>, gatePath: string) =>
+    result.error
+      ? `cannot start "${command.join(' ')}" (${result.error.message})`
+      : judgeSelfcheck({
+          status: result.status,
+          output: `${result.stdout ?? ''}${result.stderr ?? ''}`,
+          gatePath,
+          failurePattern: manifest.settings.selfcheckFailurePattern,
+        });
+
+  // Controls that held in the run they shared (see planControls): gate path → exit code.
+  const heldTogether = new Map<string, number | null>();
+  const single = targets.filter((gate) => gate.spec !== null && gate.existingSpecs.length === 1);
+  if (selection.oneByOne !== true && single.length >= 3) {
+    const shared = shareOneRun(manifest, single, runGate);
+    if (shared !== null) {
+      for (const gate of shared.gates) {
+        if (judge(shared.result, gate.path) === null) {
+          heldTogether.set(gate.path, shared.result.status);
+        }
+      }
+    }
+  }
+
   let failed = 0;
   for (const gate of targets) {
     if (gate.spec === null || gate.existingSpecs.length !== 1) {
@@ -86,22 +188,13 @@ export function runSelfcheck(
       failed += 1;
       continue;
     }
-    const result = spawnSync(executable, args, {
-      cwd: manifest.dir,
-      env: { ...process.env, [EXCLUDE_ENV]: gate.spec },
-      encoding: 'utf8',
-      maxBuffer: 256 * 1024 * 1024,
-      shell: process.platform === 'win32',
-    });
+    if (heldTogether.has(gate.path)) {
+      io.out(`  ✓ without ${gate.spec} the gate fails (exit ${heldTogether.get(gate.path)})`);
+      continue;
+    }
+    const result = runGate({ exclude: gate.spec });
     const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
-    const reason = result.error
-      ? `cannot start "${command.join(' ')}" (${result.error.message})`
-      : judgeSelfcheck({
-          status: result.status,
-          output,
-          gatePath: gate.path,
-          failurePattern: manifest.settings.selfcheckFailurePattern,
-        });
+    const reason = judge(result, gate.path);
     if (reason === null) {
       io.out(`  ✓ without ${gate.spec} the gate fails (exit ${result.status})`);
     } else {

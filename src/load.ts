@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { MANIFEST_FILE, ManifestError, parseManifest } from './core/manifest.js';
 import { resolveSettings, SettingsError } from './core/settings.js';
-import { EXCLUDE_ENV } from './core/selfcheck.js';
+import { excludedSpecs } from './core/selfcheck.js';
 import { specCandidatesFor } from './core/spec-path.js';
 import type { Candidate, Gate, ResolvedSettings, Violation } from './core/types.js';
 import { existsExact } from './fs.js';
@@ -98,10 +98,10 @@ export function gateSpecs(
   manifest: LoadedManifest,
   env: Record<string, string | undefined> = process.env
 ): string[] {
-  const excluded = env[EXCLUDE_ENV];
+  const excluded = excludedSpecs(env);
   return manifest.gates
     .map((gate) => gate.spec)
-    .filter((spec): spec is string => spec !== null && spec !== excluded);
+    .filter((spec): spec is string => spec !== null && !excluded.includes(spec));
 }
 
 /**
