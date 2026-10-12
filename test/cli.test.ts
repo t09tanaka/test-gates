@@ -860,12 +860,16 @@ describe('test-gates selfcheck', () => {
       "const { gates } = JSON.parse(fs.readFileSync('test-gates.json', 'utf8'));",
       "const spec = (gate) => gate.path.replace(/\\.ts$/, '.spec.ts');",
       'const { TEST_GATES_TOUCH_DIR: touch, TEST_GATES_EXCLUDE_SPECS: all, TEST_GATES_EXCLUDE_SPEC: one } = process.env;',
-      'const at = process.env.TEST_GATES_OUTPUT_DIR;',
+      // A run next to others is told to leave the cache of the runner alone.
+      "const at = process.argv.includes('--no-cache');",
       "fs.appendFileSync('runs.log', `${touch ? 'notes' : all ? `all ${all}` : `one ${one}`}${at ? ' at once' : ''}\\n`);",
-      // A run next to others that also reports a failed test, for the gate named in noisy.txt.
-      "if (at && fs.existsSync('noisy.txt') && one === fs.readFileSync('noisy.txt', 'utf8')) console.log(' FAIL  src/toll.spec.ts');",
-      // Every run next to others keeps to the directory it was given.
-      "if (at) { fs.mkdirSync(at, { recursive: true }); fs.writeFileSync(path.join(at, 'coverage.tmp'), one); }",
+      "if (at) fs.appendFileSync('at-once.log', `${process.argv.slice(2).join(' ')}\\n`);",
+      "const named = (file) => fs.existsSync(file) && one === fs.readFileSync(file, 'utf8');",
+      // For the gate named in noisy.txt, a run next to others also reports a failed test; for
+      // the one in skipped.txt a skipped test; for the one in quiet.txt it does not sum up.
+      "if (at && named('noisy.txt')) console.log(' FAIL  src/toll.spec.ts');",
+      'const ran = gates.length - 1;',
+      "if (!touch && !all && !(at && named('quiet.txt'))) console.log(` Test Files  ${ran} passed (${ran})\\n      Tests  ${ran} passed${at && named('skipped.txt') ? ' | 1 skipped' : ''} (${ran})`);",
       "const shy = fs.existsSync('shy.txt') ? fs.readFileSync('shy.txt', 'utf8') : '';",
       'if (touch) {',
       "  const text = (name) => (fs.existsSync(name) ? fs.readFileSync(name, 'utf8') : '');",
@@ -1070,26 +1074,36 @@ describe('test-gates selfcheck', () => {
     });
 
     describe('with --jobs', () => {
+      const manifest = (settings: object = {}) => ({
+        gates: names.map((name) => ({ path: `src/${name}.ts`, decides: 'd', impact: 'i' })),
+        candidates: [],
+        settings,
+      });
       /** The stand-in as the `vitest` of the project, with a gate config that names the helper. */
-      const asVitest = () => {
+      const asVitest = (files: Record<string, string | object> = {}) => {
         const dir = fiveGates();
         write(dir, {
           'vitest.gates.config.ts':
             "export default createVitestGatesConfig({ coverageProvider: 'istanbul' });\n",
           'node_modules/.bin/vitest': `#!/usr/bin/env node\n${NOTING}\n`,
           'node_modules/vitest/package.json': { version: '3.2.7' },
-          'test-gates.json': {
-            gates: names.map((name) => ({ path: `src/${name}.ts`, decides: 'd', impact: 'i' })),
-            candidates: [],
-          },
+          'test-gates.json': manifest(),
+          ...files,
         });
         fs.chmodSync(path.join(dir, 'node_modules/.bin/vitest'), 0o755);
         return dir;
       };
       const atOnce = names.map((name) => `one src/${name}.spec.ts at once`).sort();
       const alone = names.map((name) => `one src/${name}.spec.ts`);
+      const AGAIN = (count: number) =>
+        `test-gates selfcheck: ${count} of 5 negative control(s) did not hold cleanly next to others and run again on their own\n`;
+      const ONE_AT_A_TIME = (reason: string) =>
+        `test-gates selfcheck: one negative control at a time (${reason})\n`;
+      const COMMAND = (stray: string) =>
+        `the gate command is not known to keep runs at the same time apart: only jest or "vitest run" with --config and options for the number of workers is (found: ${stray})`;
+      const MEETS = ', and may meet what another run is doing';
 
-      it('runs the controls at the same time, each with a directory of its own, and prints what one at a time prints', () => {
+      it('runs the controls at the same time, each line of runs in a directory of its own, and prints what one at a time prints', () => {
         const dir = asVitest();
         expect(testGates(['selfcheck', '--jobs', '3', '--dir', dir])).toEqual({
           status: 0,
@@ -1097,19 +1111,33 @@ describe('test-gates selfcheck', () => {
           stderr: '',
         });
         expect(runs(dir).sort()).toEqual(atOnce);
-        expect(fs.readdirSync(dir).filter((name) => name.startsWith('.test-gates-touch'))).toEqual(
-          []
-        );
+        const commands = fs.readFileSync(path.join(dir, 'at-once.log'), 'utf8').trim().split('\n');
+        const places = commands.map((command) => {
+          const words = command.split(' ');
+          // What the gate command is, then the two options of a run next to others.
+          expect(words.slice(0, 3)).toEqual(['run', '--config', 'vitest.gates.config.ts']);
+          expect(words[3]).toMatch(/^--coverage\.reportsDirectory=.+\/line-[012]\/coverage$/);
+          expect(words.slice(4)).toEqual(['--no-cache']);
+          return (words[3] as string).slice('--coverage.reportsDirectory='.length);
+        });
+        expect(new Set(places).size).toBe(3);
+        for (const place of places) {
+          // Outside of the project, and gone when the command ends.
+          expect(place.startsWith(dir)).toBe(false);
+          expect(fs.existsSync(path.dirname(path.dirname(place)))).toBe(false);
+        }
+        expect(fs.readdirSync(dir).filter((name) => name.startsWith('.test-gates'))).toEqual([]);
       });
 
-      it('runs a control again on its own when its run next to others says more than its threshold', () => {
-        const dir = asVitest();
-        write(dir, { 'noisy.txt': 'src/fee.spec.ts' });
+      it.each([
+        ['says more than its threshold', 'noisy.txt'],
+        ['does not sum up the run', 'quiet.txt'],
+        ['skipped a test', 'skipped.txt'],
+      ])('runs a control again on its own when its run next to others %s', (_name, file) => {
+        const dir = asVitest({ [file]: 'src/fee.spec.ts' });
         expect(testGates(['selfcheck', '--jobs=5', '--dir', dir])).toEqual({
           status: 0,
-          stdout:
-            'test-gates selfcheck: 1 of 5 negative control(s) did not hold cleanly next to others and run again on their own\n' +
-            OK,
+          stdout: AGAIN(1) + OK,
           stderr: '',
         });
         const log = runs(dir);
@@ -1118,11 +1146,11 @@ describe('test-gates selfcheck', () => {
       });
 
       it('takes a control that does not hold from its own run, never from the run next to others', () => {
-        const dir = asVitest();
         // The stand-in reports no threshold for this gate in any run.
-        write(dir, { 'shy-alone.txt': 'src/tax.ts' });
+        const dir = asVitest({ 'shy-alone.txt': 'src/tax.ts' });
         const result = testGates(['selfcheck', '--jobs', '2', '--dir', dir]);
         expect(result.status).toBe(1);
+        expect(result.stdout).toContain(AGAIN(1));
         expect(result.stderr).toContain(
           '  ✗ src/tax.ts: the gate passed although the spec of src/tax.ts was left out.'
         );
@@ -1139,36 +1167,229 @@ describe('test-gates selfcheck', () => {
         expect(runs(dir)).toEqual([...alone, ...alone]);
       });
 
-      it.each([
+      const SPEC = "it('x', () => {});\n";
+      it.each<[string, Record<string, string | object>, string]>([
         [
           'a gate command of the project',
-          (dir: string) =>
-            write(dir, {
-              'test-gates.json': {
-                gates: names.map((name) => ({ path: `src/${name}.ts`, decides: 'd', impact: 'i' })),
-                candidates: [],
-                settings: { gateCommand: ['node', 'gate.cjs'] },
-              },
+          { 'test-gates.json': manifest({ gateCommand: ['node', 'gate.cjs'] }) },
+          COMMAND('node'),
+        ],
+        [
+          'a gate command that says where the coverage goes',
+          {
+            'test-gates.json': manifest({
+              gateCommand: [
+                'vitest',
+                'run',
+                '--config',
+                'vitest.gates.config.ts',
+                '--coverage.reportsDirectory=out',
+              ],
             }),
-          'it is not known whether runs of this gate command at the same time keep their files apart (it is not jest or vitest with --config naming a gate config that uses the helpers of this package)',
+          },
+          COMMAND('--coverage.reportsDirectory=out'),
+        ],
+        [
+          'a failure pattern of the project',
+          { 'test-gates.json': manifest({ selfcheck: { failurePattern: 'threshold.*{gate}' } }) },
+          'with settings.selfcheck.failurePattern, a run that was disturbed cannot be told from one that was not',
         ],
         [
           'a gate config without the helper',
-          (dir: string) => write(dir, { 'vitest.gates.config.ts': 'export default {};\n' }),
-          'it is not known whether runs of this gate command at the same time keep their files apart (it is not jest or vitest with --config naming a gate config that uses createVitestGatesConfig)',
+          { 'vitest.gates.config.ts': 'export default {};\n' },
+          'the gate config does not use createVitestGatesConfig',
         ],
         [
           'a spec that reads files',
-          (dir: string) =>
-            write(dir, { 'src/fee.spec.ts': "import fs from 'node:fs';\nit('x', () => {});\n" }),
-          'src/fee.spec.ts reads the environment or files, and may meet what another run is doing',
+          { 'src/fee.spec.ts': `import fs from 'node:fs';\n${SPEC}` },
+          `src/fee.spec.ts imports node:fs${MEETS}`,
         ],
-      ])('runs one at a time for %s, and says why', (_name, change, reason) => {
-        const dir = asVitest();
-        change(dir);
+        [
+          'a spec that waits',
+          {
+            'src/fee.spec.ts':
+              "it('x', async () => {\n  await new Promise((done) => setTimeout(done, 5));\n});\n",
+          },
+          `src/fee.spec.ts uses setTimeout${MEETS}`,
+        ],
+        [
+          // The first counterexample: a lock on a file, taken by a helper of the spec.
+          'a file that a spec imports and that reads files',
+          {
+            'src/fee.spec.ts': `import { acquire } from './support/lock';\n${SPEC}`,
+            'src/support/lock.ts':
+              "import fs from 'node:fs';\nexport const acquire = () => fs.existsSync('lock');\n",
+          },
+          `src/support/lock.ts imports node:fs${MEETS}`,
+        ],
+        [
+          'a file two imports away, written with the extension of the compiled file',
+          {
+            'src/fee.spec.ts': `import './support/index.js';\n${SPEC}`,
+            'src/support/index.ts': "export * from './port';\n",
+            'src/support/port.ts':
+              "import net from 'net';\nexport const server = net.createServer();\n",
+          },
+          `src/support/port.ts imports net${MEETS}`,
+        ],
+        [
+          'a directory that a spec imports',
+          {
+            'src/fee.spec.ts': `import './support';\n${SPEC}`,
+            'src/support/index.ts': 'export const at = Date.now();\n',
+          },
+          `src/support/index.ts uses Date.now${MEETS}`,
+        ],
+        [
+          'a file that a spec reaches through an alias',
+          {
+            'test-gates.json': manifest({ importAliases: [{ prefix: '@/', target: 'src/' }] }),
+            'src/fee.spec.ts': `import '@/support/clock';\n${SPEC}`,
+            'src/support/clock.ts': 'export const at = performance.now();\n',
+          },
+          `src/support/clock.ts uses performance.now${MEETS}`,
+        ],
+        [
+          'a file that a spec only names to the runner',
+          {
+            'src/fee.spec.ts': `vi.mock('./rates');\n${SPEC}`,
+            'src/rates.ts': "import os from 'node:os';\nexport const cores = os.cpus().length;\n",
+          },
+          `src/rates.ts imports node:os${MEETS}`,
+        ],
+        [
+          'a gate that reads the clock',
+          {
+            'src/tax.ts': 'export const value = Date.now();\n',
+            'src/tax.spec.ts': `import './tax';\n${SPEC}`,
+          },
+          `src/tax.ts uses Date.now${MEETS}`,
+        ],
+        [
+          'a setup file that the gate config names',
+          {
+            'vitest.gates.config.ts':
+              "export default createVitestGatesConfig({ test: { setupFiles: ['./test/setup.ts'] } });\n",
+            'test/setup.ts': "import fs from 'fs';\nfs.writeFileSync('started', '');\n",
+          },
+          `test/setup.ts imports fs${MEETS}`,
+        ],
+        [
+          'a setup file that the gate config names from the root, without its extension',
+          {
+            'vitest.gates.config.ts':
+              "export default createVitestGatesConfig({ test: { setupFiles: ['<rootDir>/test/setup'] } });\n",
+            'test/setup.js': 'globalThis.started = true;\n',
+          },
+          `test/setup.js uses globalThis${MEETS}`,
+        ],
+        [
+          'a setup file named in a file the gate config imports',
+          {
+            'vitest.gates.config.ts':
+              "import { shared } from './vitest.shared';\nexport default createVitestGatesConfig(shared);\n",
+            'vitest.shared.ts':
+              "export const shared = { test: { setupFiles: ['./test/setup.ts'] } };\n",
+            'test/setup.ts':
+              "import { spawnSync } from 'node:child_process';\nspawnSync('true');\n",
+          },
+          `test/setup.ts imports node:child_process${MEETS}`,
+        ],
+        [
+          'an import that leads to no file',
+          { 'src/fee.spec.ts': `import './support/gone';\n${SPEC}` },
+          './support/gone (imported by src/fee.spec.ts) cannot be followed, so what the gate run loads is not known',
+        ],
+        [
+          'an import that is neither a file nor an installed package',
+          { 'src/fee.spec.ts': `import '~/support/rates';\n${SPEC}` },
+          '~/support/rates (imported by src/fee.spec.ts) cannot be followed, so what the gate run loads is not known',
+        ],
+        [
+          'a package that is not the runner',
+          {
+            'src/fee.spec.ts': `import { lock } from 'some-lock';\n${SPEC}`,
+            'node_modules/some-lock/package.json': { name: 'some-lock', version: '1.0.0' },
+          },
+          `src/fee.spec.ts imports the package some-lock, which is not looked into${MEETS}`,
+        ],
+        [
+          'a module whose name is computed',
+          { 'src/fee.spec.ts': `const rates = require(name);\n${SPEC}` },
+          `src/fee.spec.ts loads a module whose name is computed${MEETS}`,
+        ],
+      ])('runs one at a time for %s, and says why', (_name, files, reason) => {
+        const dir = asVitest(files);
         expect(testGates(['selfcheck', '--jobs', '4', '--dir', dir]).stdout).toBe(
-          `test-gates selfcheck: one negative control at a time (${reason})\n${OK}`
+          ONE_AT_A_TIME(reason) + OK
         );
+        expect(runs(dir)).toEqual(alone);
+      });
+
+      it.each<[string, Record<string, string | object>]>([
+        [
+          'specs that import the runner, their gate, a file that only computes and a type',
+          {
+            'src/fee.spec.ts':
+              "import { expect, it } from 'vitest';\nimport path from 'node:path';\nimport type { Rate } from './gone';\nimport { value } from './fee';\nimport { twice } from './support/math';\nimport rates from './rates.json';\nit('x', () => {});\n",
+            'src/support/math.ts': 'export const twice = (value: number) => value * 2;\n',
+            'src/rates.json': {},
+          },
+        ],
+        [
+          'a gate command with options for the number of workers',
+          {
+            'test-gates.json': manifest({
+              gateCommand: ['vitest', 'run', '--config=vitest.gates.config.ts', '--maxWorkers=1'],
+            }),
+          },
+        ],
+        [
+          'a package the project lets its gates import',
+          {
+            'test-gates.json': manifest({ imports: { mode: 'allowlist', allow: ['decimal.js'] } }),
+            'src/fee.spec.ts': `import Decimal from 'decimal.js';\n${SPEC}`,
+            'node_modules/decimal.js/package.json': { name: 'decimal.js', version: '1.0.0' },
+          },
+        ],
+        [
+          'a setup file that only computes',
+          {
+            'vitest.gates.config.ts':
+              "export default createVitestGatesConfig({ test: { setupFiles: ['test/setup.ts'], reporters: ['default'] } });\n",
+            'test/setup.ts': 'export const ready = true;\n',
+          },
+        ],
+      ])('runs at the same time with %s', (_name, files) => {
+        const dir = asVitest(files);
+        expect(testGates(['selfcheck', '--jobs', '4', '--dir', dir]).stdout).toBe(OK);
+        expect(runs(dir).sort()).toEqual(atOnce);
+      });
+
+      it('does not trust the packages of settings.imports.allow while the mode is blocklist', () => {
+        const dir = asVitest({
+          'test-gates.json': manifest({ imports: { allow: ['decimal.js'] } }),
+          'src/fee.spec.ts': `import Decimal from 'decimal.js';\n${SPEC}`,
+          'node_modules/decimal.js/package.json': { name: 'decimal.js', version: '1.0.0' },
+        });
+        expect(testGates(['selfcheck', '--jobs', '4', '--dir', dir]).stdout).toBe(
+          ONE_AT_A_TIME(
+            `src/fee.spec.ts imports the package decimal.js, which is not looked into${MEETS}`
+          ) + OK
+        );
+      });
+
+      it('takes the gate command after "--" for what it is', () => {
+        const dir = asVitest();
+        const command = ['vitest', 'run', '--config', 'vitest.gates.config.ts'];
+        expect(testGates(['selfcheck', '--jobs', '4', '--dir', dir, '--', ...command]).stdout).toBe(
+          OK
+        );
+        expect(runs(dir).sort()).toEqual(atOnce);
+        fs.rmSync(path.join(dir, 'runs.log'));
+        expect(
+          testGates(['selfcheck', '--jobs', '4', '--dir', dir, '--', ...command, '--silent']).stdout
+        ).toBe(ONE_AT_A_TIME(COMMAND('--silent')) + OK);
         expect(runs(dir)).toEqual(alone);
       });
 
@@ -1179,6 +1400,23 @@ describe('test-gates selfcheck', () => {
         );
         expect(runs(dir).sort()).toEqual(
           ['age', 'fee', 'toll'].map((name) => `one src/${name}.spec.ts at once`).sort()
+        );
+        fs.rmSync(path.join(dir, 'runs.log'));
+        expect(
+          testGates([
+            'selfcheck',
+            '--jobs',
+            '4',
+            '--gate',
+            'src/fee.ts',
+            '--gate',
+            'src/tax.ts',
+            '--dir',
+            dir,
+          ]).status
+        ).toBe(0);
+        expect(runs(dir).sort()).toEqual(
+          ['fee', 'tax'].map((name) => `one src/${name}.spec.ts at once`)
         );
         fs.rmSync(path.join(dir, 'runs.log'));
         // One gate, or --first: nothing to run at the same time.
@@ -1193,6 +1431,16 @@ describe('test-gates selfcheck', () => {
           quickOk(['rate', 'fee', 'tax', 'toll'])
         );
         expect(runs(dir)).toEqual(['notes', shared, 'one src/age.spec.ts']);
+        fs.rmSync(path.join(dir, 'runs.log'));
+        // With one gate that another spec covers in the shared run, --quick leaves two.
+        write(dir, { 'shy.txt': 'src/tax.ts' });
+        expect(testGates(['selfcheck', '--jobs', '4', '--quick', '--dir', dir]).stdout).toBe(
+          quickOk(['rate', 'fee', 'toll'])
+        );
+        expect(runs(dir).slice(0, 2)).toEqual(['notes', shared]);
+        expect(runs(dir).slice(2).sort()).toEqual(
+          ['age', 'tax'].map((name) => `one src/${name}.spec.ts at once`)
+        );
       });
     });
 

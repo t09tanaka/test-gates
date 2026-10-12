@@ -10,13 +10,6 @@ export const EXCLUDE_ENV = 'TEST_GATES_EXCLUDE_SPEC';
 export const EXCLUDE_ALL_ENV = 'TEST_GATES_EXCLUDE_SPECS';
 
 /**
- * Environment variable through which `test-gates selfcheck --jobs` gives each gate run a
- * directory of its own for what the coverage tool writes, so that runs at the same time do not
- * read each other's files.
- */
-export const OUTPUT_ENV = 'TEST_GATES_OUTPUT_DIR';
-
-/**
  * The specs a gate run has to leave out, from both variables.
  * @throws when EXCLUDE_ALL_ENV is not a JSON list of strings: a run that leaves out the wrong
  *   specs must not look like a negative control.
@@ -226,8 +219,8 @@ export function quickCaveat(shared: number): string {
  *
  * @param input.program The first word of the gate command.
  * @param input.version Version of that runner as installed; null when it is not found.
- * @param input.configSource Text of the gate config the gate command names with `--config`;
- *   null when it names none.
+ * @param input.configSource Text of the gate config, when the gate command is the one derived
+ *   from it; null for a gate command of the project's own.
  * @param input.specs The specs of all gates, with their text.
  */
 export function sharedRunPrecheck(input: {
@@ -454,73 +447,4 @@ export function planControls(input: {
     return everyoneAlone('fewer than two gates are touched by their own spec only');
   }
   return { together, alone: targets.filter((target) => !together.includes(target)), reason: null };
-}
-
-// What a gate run prints when something went wrong besides a threshold: a failed or timed-out
-// test, an error, a process that was killed. The words of Jest and Vitest, and marks of others.
-const TROUBLE =
-  /\bFAIL(?:ED|URE)?\b|\bfail(?:ed|ure|ures)?\b|Error\b|\berrors?\b|\bERROR\b|\btimed out\b|\b[Tt]imeout\b|\b[Uu]nhandled\b|\b[Uu]ncaught\b|\bSIG[A-Z]{3,}\b|\bkilled\b|[✗×✕✖]/;
-
-/**
- * Decides whether a negative control that ran at the same time as others can be taken as it
- * is. Under load a test can time out or a process can be lost, and such a run can look like a
- * control that held. So more is asked than of a run on its own: the control held (judgeSelfcheck),
- * the process ended by itself, every threshold the run reports is that of this gate and of no
- * other, and nothing else in the output speaks of a failure. Anything less, and the control is
- * run again on its own, and that result counts.
- *
- * @param input.others Paths of the other gates.
- */
-export function cleanHold(input: {
-  status: number | null;
-  signal: string | null;
-  output: string;
-  gatePath: string;
-  others: string[];
-}): boolean {
-  const { status, signal, output, gatePath, others } = input;
-  if (signal !== null || judgeSelfcheck({ status, output, gatePath }) !== null) {
-    return false;
-  }
-  return output
-    .split('\n')
-    .every((line) =>
-      THRESHOLD_MESSAGE.test(line)
-        ? line.includes(gatePath) && !others.some((other) => line.includes(other))
-        : !TROUBLE.test(line)
-    );
-}
-
-/**
- * Why the negative controls are not run at the same time although `--jobs` asks for it, or
- * null when they can be.
- *
- * Runs at the same time must not write to the same files. For the coverage output the config
- * helpers see to that (OUTPUT_ENV); of a gate command or a gate config that is not built with
- * them, it is not known. A spec that reads or writes files, starts processes or looks at the
- * environment may meet what another run is doing.
- *
- * @param input.configSource Text of the gate config the gate command names with `--config`;
- *   null when it names none.
- * @param input.specs The specs of all gates, with their text.
- */
-export function jobsRefused(input: {
-  program: string;
-  configSource: string | null;
-  specs: { path: string; source: string }[];
-  failurePattern: string | null;
-}): string | null {
-  if (input.failurePattern) {
-    return 'with settings.selfcheck.failurePattern, a run that was disturbed cannot be told from one that was not';
-  }
-  const runner = ['jest', 'vitest'].find((name) => name === input.program);
-  const helper = runner === 'jest' ? 'createJestGatesConfig' : 'createVitestGatesConfig';
-  if (runner === undefined || input.configSource === null || !input.configSource.includes(helper)) {
-    return `it is not known whether runs of this gate command at the same time keep their files apart (it is not jest or vitest with --config naming a gate config that uses ${runner === undefined ? 'the helpers of this package' : helper})`;
-  }
-  const reaching = input.specs.find((spec) => SURROUNDINGS.test(spec.source));
-  if (reaching !== undefined) {
-    return `${reaching.path} reads the environment or files, and may meet what another run is doing`;
-  }
-  return null;
 }

@@ -1,6 +1,5 @@
 import path from 'node:path';
 import { gateSpecs, loadGates, NO_SPEC_PATTERN } from './load.js';
-import { OUTPUT_ENV } from './core/selfcheck.js';
 import { FULL_COVERAGE, resolveRootDir } from './shared.js';
 import { jestReporterFile, TOUCH_ENV } from './touch.js';
 
@@ -33,8 +32,6 @@ export function createJestGatesConfig(options: JestGatesOptions = {}): Record<st
     coverageReporters: ['text'],
     coverageDirectory: '<rootDir>/coverage/gates',
     ...overrides,
-    // A directory of its own for a run that `test-gates selfcheck --jobs` starts next to others.
-    ...(process.env[OUTPUT_ENV] ? { coverageDirectory: process.env[OUTPUT_ENV] } : {}),
     // While `test-gates selfcheck` asks for it: write down what each spec executed.
     ...(process.env[TOUCH_ENV]
       ? {

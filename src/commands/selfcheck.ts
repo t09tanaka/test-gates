@@ -1,15 +1,14 @@
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { type Shard, UsageError } from '../core/args.js';
 import { ManifestError } from '../core/manifest.js';
 import { findImporters } from '../core/import-policy.js';
+import { cleanHold, jobFlags, jobsRefused, knownCommand, type Runner } from '../core/jobs.js';
 import {
-  cleanHold,
   EXCLUDE_ALL_ENV,
   EXCLUDE_ENV,
-  jobsRefused,
-  OUTPUT_ENV,
   judgeSelfcheck,
   planControls,
   quickCaveat,
@@ -20,6 +19,7 @@ import {
 import { existsExact, findLocalBin, readText } from '../fs.js';
 import { readManifest, type LoadedManifest } from '../load.js';
 import { readNotes, TOUCH_ENV } from '../touch.js';
+import { loadedFiles } from './loaded-files.js';
 import type { Io } from './output.js';
 
 const JEST_CONFIGS = ['js', 'cjs', 'mjs', 'ts', 'cts', 'mts'].map(
@@ -153,16 +153,22 @@ function installedVersion(start: string, name: string): string | null {
   }
 }
 
+/** The gate config the gate command names with `--config` (or `-c`); null when it names none. */
+function gateConfigFile(args: string[]): string | null {
+  const joined = args.find((arg) => arg.startsWith('--config='));
+  const position = args.findIndex((arg) => arg === '--config' || arg === '-c');
+  return (
+    joined?.slice('--config='.length) ?? (position === -1 ? null : (args[position + 1] ?? null))
+  );
+}
+
 /**
  * Text of the gate config the gate command names with `--config` (or `-c`); null when it
  * names none or the file cannot be read: the config is then not known.
  */
 function gateConfigSource(manifest: LoadedManifest, args: string[]): string | null {
-  const joined = args.find((arg) => arg.startsWith('--config='));
-  const position = args.findIndex((arg) => arg === '--config' || arg === '-c');
-  const file =
-    joined?.slice('--config='.length) ?? (position === -1 ? undefined : args[position + 1]);
-  if (file === undefined) {
+  const file = gateConfigFile(args);
+  if (file === null) {
     return null;
   }
   try {
@@ -172,66 +178,78 @@ function gateConfigSource(manifest: LoadedManifest, args: string[]): string | nu
   }
 }
 
+const JOBS_PREFIX = 'test-gates-jobs-';
+
+interface Ended {
+  status: number | null;
+  signal: string | null;
+  stdout: string;
+  stderr: string;
+}
+
 /**
- * Runs the negative controls of `gates`, `jobs` of them at the same time, each with a
- * directory of its own for what the coverage tool writes (OUTPUT_ENV).
+ * Runs the negative controls of `gates`, `jobs` of them at the same time. Each of the `jobs`
+ * lines of runs has a directory of its own for what the coverage tool and the runner's cache
+ * write (jobFlags), outside of the project.
  *
- * @returns What each run ended with. A run that could not be started has status null.
+ * @returns What each run ended with. A run that could not be started has status null. Empty
+ *   when no directory could be made: every control then runs on its own.
  */
 async function runAtOnce(
   manifest: LoadedManifest,
   gates: LoadedManifest['gates'],
   jobs: number,
+  runner: Runner,
   executable: string,
   args: string[]
-): Promise<
-  Map<
-    LoadedManifest['gates'][number],
-    { status: number | null; signal: string | null; output: string }
-  >
-> {
-  const results = new Map<
-    LoadedManifest['gates'][number],
-    { status: number | null; signal: string | null; output: string }
-  >();
-  let outputDir: string;
+): Promise<Map<LoadedManifest['gates'][number], Ended>> {
+  const results = new Map<LoadedManifest['gates'][number], Ended>();
+  let root: string;
   try {
-    outputDir = fs.mkdtempSync(path.join(manifest.dir, TOUCH_PREFIX));
+    // A run that was interrupted (Ctrl-C ends this process at once) left its directory behind.
+    // An hour is far beyond any gate run, so nothing that is still in use is removed.
+    for (const name of fs.readdirSync(os.tmpdir())) {
+      const left = path.join(os.tmpdir(), name);
+      if (name.startsWith(JOBS_PREFIX) && Date.now() - fs.statSync(left).mtimeMs > 3_600_000) {
+        fs.rmSync(left, { recursive: true, force: true });
+      }
+    }
+    root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), JOBS_PREFIX)));
   } catch {
-    return results; // a project that cannot be written to: every control on its own
+    return results;
   }
-  const queue = [...gates.entries()];
-  const worker = async (): Promise<void> => {
-    for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
-      const [position, gate] = next;
+  const queue = [...gates];
+  const line = async (dir: string): Promise<void> => {
+    for (let gate = queue.shift(); gate !== undefined; gate = queue.shift()) {
+      const spec = gate.spec as string;
       results.set(
         gate,
         await new Promise((resolve) => {
-          const child = spawn(executable, args, {
+          const child = spawn(executable, [...args, ...jobFlags(runner, dir)], {
             cwd: manifest.dir,
-            env: {
-              ...process.env,
-              [EXCLUDE_ENV]: gate.spec as string,
-              [EXCLUDE_ALL_ENV]: '',
-              [TOUCH_ENV]: '',
-              [OUTPUT_ENV]: path.join(outputDir, `job-${position}`),
-            },
+            env: { ...process.env, [EXCLUDE_ENV]: spec, [EXCLUDE_ALL_ENV]: '', [TOUCH_ENV]: '' },
             shell: process.platform === 'win32',
-            stdio: ['ignore', 'pipe', 'pipe'],
           });
-          let output = '';
-          child.stdout.on('data', (chunk: Buffer) => (output += chunk.toString()));
-          child.stderr.on('data', (chunk: Buffer) => (output += chunk.toString()));
-          child.on('error', () => resolve({ status: null, signal: null, output }));
-          child.on('close', (status, signal) => resolve({ status, signal, output }));
+          let stdout = '';
+          let stderr = '';
+          child.stdout.on('data', (chunk: Buffer) => (stdout += chunk.toString()));
+          child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString()));
+          child.stdin.on('error', () => undefined);
+          child.stdin.end();
+          child.on('error', () => resolve({ status: null, signal: null, stdout, stderr }));
+          child.on('close', (status, signal) => resolve({ status, signal, stdout, stderr }));
         })
       );
     }
   };
   try {
-    await Promise.all(Array.from({ length: Math.min(jobs, gates.length) }, worker));
+    await Promise.all(
+      Array.from({ length: Math.min(jobs, gates.length) }, (_unused, index) =>
+        line(path.join(root, `line-${index}`))
+      )
+    );
   } finally {
-    fs.rmSync(outputDir, { recursive: true, force: true });
+    fs.rmSync(root, { recursive: true, force: true });
   }
   return results;
 }
@@ -291,7 +309,6 @@ export async function runSelfcheck(
       cwd: manifest.dir,
       env: {
         ...process.env,
-        [OUTPUT_ENV]: '',
         [EXCLUDE_ENV]: env.exclude ?? '',
         [EXCLUDE_ALL_ENV]: env.excludeAll === undefined ? '' : JSON.stringify(env.excludeAll),
         [TOUCH_ENV]: env.touchDir ?? '',
@@ -341,23 +358,45 @@ export async function runSelfcheck(
   const waiting = single.filter((gate) => !heldTogether.has(gate.path));
   const jobs = selection.jobs ?? 1;
   if (jobs > 1 && waiting.length > 1) {
-    const refusal = jobsRefused({
-      program,
-      configSource: gateConfigSource(manifest, args),
-      specs: manifest.gates.flatMap((gate) =>
-        gate.existingSpecs.map((spec) => ({ path: spec, source: readText(manifest.dir, spec) }))
-      ),
-      failurePattern: manifest.settings.selfcheckFailurePattern,
-    });
-    if (refusal !== null) {
+    const known = knownCommand(program, args);
+    const configFile = gateConfigFile(args);
+    const ask = (loaded: ReturnType<typeof loadedFiles>) =>
+      jobsRefused({
+        failurePattern: manifest.settings.selfcheckFailurePattern,
+        command: known,
+        configSource: gateConfigSource(manifest, args),
+        ...loaded,
+        trusted:
+          manifest.settings.importMode === 'allowlist'
+            ? manifest.settings.importAllow.flatMap((rule) =>
+                rule.module === undefined ? [] : [rule.module]
+              )
+            : [],
+      });
+    // The files are read only when nothing else stands against it.
+    const refusal =
+      ask({ files: [], lost: null }) ?? ask(loadedFiles(manifest, configFile as string));
+    if (refusal !== null || !('runner' in known)) {
       io.out(`test-gates selfcheck: one negative control at a time (${refusal})`);
     } else {
-      const results = await runAtOnce(manifest, waiting, jobs, executable, args);
+      const specs = new Set(manifest.gates.map((gate) => gate.spec)).size - 1;
+      const names = [
+        manifest.dir,
+        realPath(manifest.dir),
+        ...manifest.gates.flatMap((gate) => [gate.path, gate.spec as string]),
+      ].sort((left, right) => right.length - left.length);
+      const results = await runAtOnce(manifest, waiting, jobs, known.runner, executable, args);
       for (const [gate, result] of results) {
+        const output = `${result.stdout}${result.stderr}`;
         const clean = cleanHold({
-          ...result,
+          held: judgeSelfcheck({ status: result.status, output, gatePath: gate.path }) === null,
+          signal: result.signal,
+          output,
+          runner: known.runner,
+          specs,
           gatePath: gate.path,
           others: manifest.gates.map((other) => other.path).filter((other) => other !== gate.path),
+          names,
         });
         if (clean) {
           heldAtOnce.set(gate.path, result.status);
