@@ -35,13 +35,17 @@ export function cleanup(): void {
 }
 
 /**
- * The environment for a run of the CLI in a test. `selfcheck --quick` is refused in CI, and
- * the tests run there too: for a run with that option, the CI of the machine is taken out.
+ * The environment for a run of the CLI in a test. `selfcheck --quick` and `mutation --gate` are
+ * refused in CI, and the tests run there too: for a run with one of them, the CI of the machine
+ * is taken out.
  * Every other run inherits it; a test that is about CI passes it itself.
  */
 function environment(args: string[], extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   const inherited = { ...process.env };
-  if (args.includes('--quick')) {
+  if (
+    args.includes('--quick') ||
+    (args[0] === 'mutation' && args.some((arg) => /^--gate(=|$)/.test(arg)))
+  ) {
     delete inherited.CI;
   }
   return { ...inherited, ...extra };

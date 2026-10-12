@@ -192,6 +192,13 @@ export function unverifiedVersion(
 const SURROUNDINGS =
   /\bprocess\s*\.\s*env\b|\bimport\.meta\.env\b|['"`](?:node:)?(?:fs|fs\/promises|child_process|worker_threads|net|http|https)['"`]/;
 
+/** Whether the environment says that the run is one of CI. */
+function inCi(env: Record<string, string | undefined>): boolean {
+  // Providers write it as true, 1, True, TRUE or their own name: anything but empty, false or 0.
+  const ci = (env.CI ?? '').trim().toLowerCase();
+  return ci !== '' && ci !== 'false' && ci !== '0';
+}
+
 /**
  * `--quick` is for work in progress. Where the run is the gate itself, in CI, it is refused:
  * a control it reports as holding is not the final word.
@@ -199,11 +206,27 @@ const SURROUNDINGS =
  * @returns Why `--quick` is refused in this environment, or null.
  */
 export function quickRefused(env: Record<string, string | undefined>): string | null {
-  // Providers write it as true, 1, True, TRUE or their own name: anything but empty, false or 0.
-  const ci = (env.CI ?? '').trim().toLowerCase();
-  return ci === '' || ci === 'false' || ci === '0'
-    ? null
-    : '--quick is refused in CI (the variable CI is set): what it reports as holding is not the final check. Run selfcheck without it, with --shard to split it over jobs';
+  return inCi(env)
+    ? '--quick is refused in CI (the variable CI is set): what it reports as holding is not the final check. Run selfcheck without it, with --shard to split it over jobs'
+    : null;
+}
+
+/**
+ * `mutation --gate` runs the mutants of the named gates only, and is for work in progress too.
+ * A change in one gate, in its spec or in a file they import can turn a mutant of another gate
+ * into a survivor, and the mutants of that other gate are not run. In CI it is refused.
+ *
+ * @returns Why `mutation --gate` is refused in this environment, or null.
+ */
+export function gateRunRefused(env: Record<string, string | undefined>): string | null {
+  return inCi(env)
+    ? '--gate is refused in CI (the variable CI is set): a mutation run of a part of the gates is not the final check. Run mutation without it'
+    : null;
+}
+
+/** What is said in the last line of a mutation run of the gates named with `--gate`. */
+export function gateRunCaveat(judged: number, all: number): string {
+  return `. Only ${judged} of ${all} gate(s) were run and judged (--gate), and a change in one gate can make a mutant of another survive: run without --gate for the final check`;
 }
 
 /** What is said in the last line when controls were judged in the run that --quick shares. */

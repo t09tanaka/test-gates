@@ -6,6 +6,7 @@ import {
   judgeMutationReport,
   type MutationReport,
 } from '../core/mutation-result.js';
+import { gateRunCaveat } from '../core/selfcheck.js';
 import { readManifest, type LoadedManifest } from '../load.js';
 import { type Io, printViolations } from './output.js';
 
@@ -13,8 +14,21 @@ export function reportPathOf(manifest: LoadedManifest, override: string | null):
   return path.resolve(manifest.dir, override ?? manifest.settings.strykerReportFile);
 }
 
-export function runMutationResult(dir: string, reportOverride: string | null, io: Io): number {
+/**
+ * @param only The gates of `mutation --gate`: only they are judged. The report of such a run
+ *   can hold old results of the other gates (Stryker takes them over from its incremental
+ *   file), which say nothing about the code as it is now.
+ */
+export function runMutationResult(
+  dir: string,
+  reportOverride: string | null,
+  io: Io,
+  only: string[] = []
+): number {
   const manifest = readManifest(dir);
+  const gates =
+    only.length === 0 ? manifest.gates : manifest.gates.filter((gate) => only.includes(gate.path));
+  const caveat = only.length === 0 ? '' : gateRunCaveat(gates.length, manifest.gates.length);
   const reportPath = reportPathOf(manifest, reportOverride);
   const shown = path.relative(manifest.dir, reportPath) || reportPath;
 
@@ -34,7 +48,7 @@ export function runMutationResult(dir: string, reportOverride: string | null, io
   }
 
   const verdict = judgeMutationReport({
-    gates: manifest.gates,
+    gates,
     report,
     maxTimeouts: manifest.settings.maxTimeouts,
     readSource: (gatePath) => {
@@ -48,7 +62,7 @@ export function runMutationResult(dir: string, reportOverride: string | null, io
   const summary = formatSummary(verdict.summary);
 
   if (verdict.violations.length === 0 && verdict.survivors.length === 0) {
-    io.out(`test-gates mutation: OK (${summary})`);
+    io.out(`test-gates mutation: OK (${summary})${caveat}`);
     return 0;
   }
 
@@ -101,6 +115,6 @@ export function runMutationResult(dir: string, reportOverride: string | null, io
   if (verdict.violations.length > 0) {
     printViolations(io, 'mutation', verdict.violations);
   }
-  io.err(`test-gates mutation: FAILED (${summary})`);
+  io.err(`test-gates mutation: FAILED (${summary})${caveat}`);
   return 1;
 }

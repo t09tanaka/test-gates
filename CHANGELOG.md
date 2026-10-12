@@ -4,10 +4,12 @@
 
 ### Added
 
+- `test-gates mutation --gate <path>` runs and judges the mutants of the named gates only, for the time a gate is being worked on. It is not the final check: a change in one gate can make a mutant of another gate survive. The last line says so, the run takes nothing over from an earlier one and leaves neither a record nor a JSON report behind, and the option is refused when `CI` is set.
 - `test-gates selfcheck --jobs <n>` runs `<n>` negative controls at the same time. The default stays 1. A control is taken from a run next to others only when the runner sums that run up as undisturbed (every other spec file passed, every test passed, none skipped, no threshold but that of its gate, no line that speaks of a failure); any other control is run again on its own, and that run counts, so a control that does not hold is always reported from a run of its own. The controls are started at the same time only when the gate command is `jest` or `vitest run` with `--config` and options for the number of workers, the gate config uses the helper, and no file a gate run loads (specs, scripts the gate config names, and the project files those import) is seen to use the environment, the clock, the network, a built-in module of Node.js or a package the project does not vouch for; otherwise the first line says why and the run is one control at a time. Each line of runs writes its coverage and the cache of the runner to a directory of its own outside of the project. See the README for what the search by text cannot see, which is why it is an option.
 
 ### Changed
 
+- `test-gates mutation` takes `--gate` for itself. Before, it was handed to Stryker like every unknown argument (Stryker has no such option).
 - `test-gates check`, `lcov` and the config helpers read each directory once while they look for the gates and their specs, instead of once for every gate and every place its spec may be in. What they report is unchanged.
 
 ## 0.3.3

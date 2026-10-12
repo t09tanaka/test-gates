@@ -3,10 +3,12 @@ import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import {
   cleanup,
+  GATE_SOURCE,
   gateEntry,
   project,
   report,
   repoRoot,
+  SPEC_SOURCE,
   testGates,
   validProject,
   write,
@@ -687,6 +689,152 @@ describe('test-gates mutation', () => {
     });
     expect(testGates(['mutation', '--dir', dir]).status).toBe(0);
     expect(strykerArgs(dir)).toEqual(['run', 'conf/stryker.mjs']);
+  });
+
+  describe('with --gate', () => {
+    // Two gates, and a report that holds results for both: fresh ones for the gate that was
+    // run, and for the other what Stryker takes over from its incremental file.
+    const both = (age: string, fee: string) => {
+      const files = (status: string) =>
+        (report(status, status) as { files: Record<string, object> }).files;
+      return {
+        ...report(age, age),
+        files: { ...files(age), 'src/fee.ts': files(fee)['src/age.ts'] },
+      };
+    };
+    const twoGates = (age: string, fee: string) =>
+      withStryker(
+        `fs.mkdirSync('reports/mutation', { recursive: true });\nfs.writeFileSync('reports/mutation/mutation.json', ${JSON.stringify(JSON.stringify(both(age, fee)))});`,
+        {
+          'src/fee.ts': GATE_SOURCE,
+          'src/fee.spec.ts': SPEC_SOURCE,
+          'test-gates.json': {
+            gates: [gateEntry, { ...gateEntry, path: 'src/fee.ts' }],
+            candidates: [],
+          },
+        }
+      );
+    const CAVEAT = (judged: number) =>
+      `. Only ${judged} of 2 gate(s) were run and judged (--gate), and a change in one gate can make a mutant of another survive: run without --gate for the final check\n`;
+    const REPORT = 'reports/mutation/mutation.json';
+
+    it('hands the gate to Stryker as --mutate, judges only that gate and says that this is not the final check', () => {
+      const dir = twoGates('Killed', 'Survived');
+      const result = testGates(['mutation', '--gate', 'src/age.ts', '--dir', dir]);
+      expect(result).toEqual({
+        status: 0,
+        stdout: `test-gates mutation: OK (mutants 2 / detected 2 (timeout 0) / allowed equivalent 0 / not evaluable 0 / unallowed survivors 0)${CAVEAT(1)}`,
+        stderr: '',
+      });
+      expect(strykerArgs(dir)).toEqual([
+        'run',
+        'stryker.gates.config.mjs',
+        '--mutate',
+        'src/age.ts',
+      ]);
+      // The same report, judged for every gate, fails.
+      expect(testGates(['mutation', '--dir', dir]).status).toBe(1);
+    });
+
+    it('fails for a survivor of the gate that was run, with the same last words', () => {
+      const dir = twoGates('Survived', 'Killed');
+      const result = testGates(['mutation', '--gate=src/age.ts', '--dir', dir]);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('2 surviving mutant(s) not in the allow list');
+      expect(result.stderr).toContain(`unallowed survivors 2)${CAVEAT(1)}`);
+    });
+
+    it('takes several gates, in the order of test-gates.json, with the arguments for Stryker before them', () => {
+      const dir = twoGates('Killed', 'Killed');
+      const result = testGates([
+        'mutation',
+        '--gate',
+        'src/fee.ts',
+        '--gate',
+        'src/age.ts',
+        '--concurrency',
+        '1',
+        '--dir',
+        dir,
+      ]);
+      expect(result.stdout).toBe(
+        `test-gates mutation: OK (mutants 4 / detected 4 (timeout 0) / allowed equivalent 0 / not evaluable 0 / unallowed survivors 0)${CAVEAT(2)}`
+      );
+      expect(strykerArgs(dir)).toEqual([
+        'run',
+        'stryker.gates.config.mjs',
+        '--concurrency',
+        '1',
+        '--mutate',
+        'src/age.ts,src/fee.ts',
+      ]);
+    });
+
+    it('removes the JSON report after it is judged, so that mutation-result cannot take it for a full one', () => {
+      const dir = twoGates('Killed', 'Killed');
+      expect(testGates(['mutation', '--gate', 'src/age.ts', '--dir', dir]).status).toBe(0);
+      expect(fs.existsSync(path.join(dir, REPORT))).toBe(false);
+      expect(testGates(['mutation-result', '--dir', dir]).stderr).toContain(
+        'cannot read the Stryker JSON report'
+      );
+      // A run without --gate leaves its report.
+      expect(testGates(['mutation', '--dir', dir]).status).toBe(0);
+      expect(fs.existsSync(path.join(dir, REPORT))).toBe(true);
+    });
+
+    it.each(['true', '1'])('is refused when CI is %s, before Stryker runs', (ci) => {
+      const dir = twoGates('Killed', 'Killed');
+      const result = testGates(['mutation', '--gate', 'src/age.ts', '--dir', dir], {
+        env: { CI: ci },
+      });
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain(
+        'test-gates: --gate is refused in CI (the variable CI is set): a mutation run of a part of the gates is not the final check. Run mutation without it'
+      );
+      expect(fs.existsSync(path.join(dir, 'stryker-args.json'))).toBe(false);
+      // Without the option the run is not refused there.
+      expect(testGates(['mutation', '--dir', dir], { env: { CI: ci } }).status).toBe(0);
+    });
+
+    it.each([
+      [
+        ['--gate', 'src/tax.ts'],
+        '--gate src/tax.ts: not a gate of test-gates.json (write the path as it is written there)',
+      ],
+      [
+        ['--gate', 'src/age.ts', '--mutate', 'src/fee.ts'],
+        '--gate and --mutate cannot be combined: --gate sets --mutate itself',
+      ],
+      [
+        ['--gate', 'src/age.ts', '--mutate=src/fee.ts'],
+        '--gate and --mutate cannot be combined: --gate sets --mutate itself',
+      ],
+      [
+        ['--gate', 'src/age.ts', '-m', 'src/fee.ts'],
+        '--gate and --mutate cannot be combined: --gate sets --mutate itself',
+      ],
+      [
+        ['--', '--gate', 'src/age.ts'],
+        '--gate after "--" would go to Stryker. Write it before "--"',
+      ],
+    ])('exits 2 for %j', (args, message) => {
+      const dir = twoGates('Killed', 'Killed');
+      const result = testGates(['mutation', '--dir', dir, ...args], { env: { CI: '' } });
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain(`test-gates: ${message}`);
+      expect(fs.existsSync(path.join(dir, 'stryker-args.json'))).toBe(false);
+    });
+
+    it('leaves --mutate to Stryker in a run without --gate', () => {
+      const dir = twoGates('Killed', 'Killed');
+      expect(testGates(['mutation', '--mutate', 'src/age.ts', '--dir', dir]).status).toBe(0);
+      expect(strykerArgs(dir)).toEqual([
+        'run',
+        'stryker.gates.config.mjs',
+        '--mutate',
+        'src/age.ts',
+      ]);
+    });
   });
 
   it('exits 2 when there is no Stryker config', () => {

@@ -25,7 +25,9 @@ Options:
   --dir <subproject>          Directory that holds test-gates.json (default: .)
   --report <path>             mutation-result: report to judge (default: settings.stryker.reportFile)
   --all | --first             selfcheck: every gate in turn (default) or only the first
-  --gate <path>               selfcheck: only this gate (may be given more than once)
+  --gate <path>               selfcheck: only this gate (may be given more than once).
+                              mutation: only the mutants of this gate, while working on it.
+                              Not the final check, and refused when CI is set
   --shard <index>/<total>     selfcheck: one of <total> parts of the gates, for parallel CI jobs
   --jobs <n>                  selfcheck: run <n> negative controls at the same time. One that does
                               not hold cleanly there is run again on its own
@@ -59,7 +61,7 @@ function main(argv: string[]): number | Promise<number> {
     case 'check':
       return runCheck(args.dir, io);
     case 'mutation':
-      return runMutation(args.dir, args.rest, io);
+      return runMutation(args.dir, args.rest, io, args.gates);
     case 'mutation-result':
       return runMutationResult(args.dir, args.report, io);
     case 'selfcheck':

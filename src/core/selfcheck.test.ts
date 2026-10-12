@@ -7,6 +7,8 @@ import {
   accountedFor,
   minorOf,
   planControls,
+  gateRunCaveat,
+  gateRunRefused,
   quickCaveat,
   quickRefused,
   selectControls,
@@ -834,5 +836,28 @@ describe('planControls', () => {
       alone: ['src/x.ts'],
       reason: null,
     });
+  });
+});
+
+describe('mutation --gate', () => {
+  it.each(['true', '1', 'TRUE', 'woodpecker', ' true '])('is refused when CI is %j', (value) => {
+    expect(gateRunRefused({ CI: value })).toBe(
+      '--gate is refused in CI (the variable CI is set): a mutation run of a part of the gates is not the final check. Run mutation without it'
+    );
+  });
+
+  it.each([undefined, '', '  ', 'false', 'FALSE', '0', ' 0 '])(
+    'is allowed when CI is %j',
+    (value) => {
+      expect(gateRunRefused({ CI: value })).toBeNull();
+      expect(gateRunRefused({ OTHER: 'true' })).toBeNull();
+    }
+  );
+
+  it('says in the last line that the run is not the final check', () => {
+    expect(gateRunCaveat(1, 9)).toBe(
+      '. Only 1 of 9 gate(s) were run and judged (--gate), and a change in one gate can make a mutant of another survive: run without --gate for the final check'
+    );
+    expect(gateRunCaveat(2, 2)).toContain('. Only 2 of 2 gate(s) were run and judged');
   });
 });
