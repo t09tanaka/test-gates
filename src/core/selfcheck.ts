@@ -199,16 +199,18 @@ const SURROUNDINGS =
  * @returns Why `--quick` is refused in this environment, or null.
  */
 export function quickRefused(env: Record<string, string | undefined>): string | null {
-  return env.CI === 'true' || env.CI === '1'
-    ? '--quick is refused in CI (the variable CI is set): what it reports as holding is not the final check. Run selfcheck without it, with --shard to split it over jobs'
-    : null;
+  // Providers write it as true, 1, True, TRUE or their own name: anything but empty, false or 0.
+  const ci = (env.CI ?? '').trim().toLowerCase();
+  return ci === '' || ci === 'false' || ci === '0'
+    ? null
+    : '--quick is refused in CI (the variable CI is set): what it reports as holding is not the final check. Run selfcheck without it, with --shard to split it over jobs';
 }
 
 /** What is said in the last line when controls were judged in the run that --quick shares. */
 export function quickCaveat(shared: number): string {
   return shared === 0
     ? ''
-    : `. ${shared} of them were judged in one shared run (--quick), which a spec that depends on other specs can make differ from a run per gate: run without --quick for the final check`;
+    : `. Of the controls that held, ${shared} came from one shared run (--quick), which a spec that depends on other specs can make differ from a run per gate: run without --quick for the final check`;
 }
 
 /**

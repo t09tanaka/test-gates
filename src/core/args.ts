@@ -178,7 +178,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
   }
   // `npm run selfcheck -- --shard 2/4` on a script that already ends in `-- <gate command>`
   // would hand the option to the test runner, which has a --shard of its own.
-  const misplaced = parsed.rest.find((arg) => /^--(gate|shard)(=|$)/.test(arg));
+  const misplaced = parsed.rest.find((arg) => /^--(gate|shard|quick)(=|$)/.test(arg));
   if (parsed.command === 'selfcheck' && misplaced !== undefined) {
     throw new UsageError(
       `${misplaced.split('=')[0]} after "--" would go to the gate command. Write it before "--"`

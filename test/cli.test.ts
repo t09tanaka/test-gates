@@ -920,7 +920,7 @@ describe('test-gates selfcheck', () => {
             `  ✓ without src/${name}.spec.ts the gate fails (exit 1${together.includes(name) ? ', in the shared run' : ''})\n`
         )
         .join('') +
-      `test-gates selfcheck: OK (${checked.length} negative control(s) failed as they should${tail}). ${together.length} of them were judged in one shared run (--quick), which a spec that depends on other specs can make differ from a run per gate: run without --quick for the final check\n`;
+      `test-gates selfcheck: OK (${checked.length} negative control(s) failed as they should${tail}). Of the controls that held, ${together.length} came from one shared run (--quick), which a spec that depends on other specs can make differ from a run per gate: run without --quick for the final check\n`;
 
     it('shares one run among the gates only their own spec touched, and says which controls it judged there', () => {
       const dir = fiveGates();
@@ -955,21 +955,42 @@ describe('test-gates selfcheck', () => {
       ]);
     });
 
-    it.each(['true', '1'])('refuses --quick when CI is %s, before anything runs', (value) => {
-      const dir = fiveGates();
-      const result = testGates(['selfcheck', '--quick', '--dir', dir], { env: { CI: value } });
-      expect(result.status).toBe(2);
-      expect(result.stderr).toContain(
-        'test-gates: --quick is refused in CI (the variable CI is set): what it reports as holding is not the final check.'
-      );
-      expect(fs.existsSync(path.join(dir, 'runs.log'))).toBe(false);
-      // Without --quick, CI changes nothing.
-      expect(testGates(['selfcheck', '--dir', dir], { env: { CI: value } }).stdout).toBe(OK);
-      // Another value of CI is not CI.
-      expect(
-        testGates(['selfcheck', '--quick', '--dir', dir], { env: { CI: 'false' } }).status
-      ).toBe(0);
-    });
+    it.each(['true', '1', 'TRUE'])(
+      'refuses --quick when CI is %s, before anything runs',
+      (value) => {
+        const dir = fiveGates();
+        const result = testGates(['selfcheck', '--quick', '--dir', dir], { env: { CI: value } });
+        expect(result.status).toBe(2);
+        expect(result.stderr).toContain(
+          'test-gates: --quick is refused in CI (the variable CI is set): what it reports as holding is not the final check.'
+        );
+        expect(fs.existsSync(path.join(dir, 'runs.log'))).toBe(false);
+        // Without --quick, CI changes nothing.
+        expect(testGates(['selfcheck', '--dir', dir], { env: { CI: value } })).toEqual({
+          status: 0,
+          stdout: OK,
+          stderr: '',
+        });
+        // CI=false is not CI.
+        expect(
+          testGates(['selfcheck', '--quick', '--dir', dir], { env: { CI: 'false' } }).status
+        ).toBe(0);
+        // Behind the gate command the option would go to the runner.
+        const misplaced = testGates([
+          'selfcheck',
+          '--dir',
+          dir,
+          '--',
+          'node',
+          'gate.cjs',
+          '--quick',
+        ]);
+        expect(misplaced.status).toBe(2);
+        expect(misplaced.stderr).toContain(
+          'test-gates: --quick after "--" would go to the gate command.'
+        );
+      }
+    );
 
     it('gives a gate the shared run does not confirm a run of its own', () => {
       const dir = fiveGates();

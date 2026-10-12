@@ -218,6 +218,10 @@ describe('parseArgs', () => {
       '--gate after "--" would go to the gate command. Write it before "--"',
     ],
     [
+      ['selfcheck', '--', 'jest', '--quick'],
+      '--quick after "--" would go to the gate command. Write it before "--"',
+    ],
+    [
       ['selfcheck', '--', 'jest', '--gate=src/a.ts'],
       '--gate after "--" would go to the gate command. Write it before "--"',
     ],

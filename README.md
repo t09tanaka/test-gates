@@ -294,7 +294,7 @@ The run also fails when
 On failure every unallowed survivor is listed as `file:line:column / mutator / original → replacement / occurrence`, followed by a JSON fragment that can be pasted into `equivalentMutants`. The last line gives the real numbers, never a percentage. For the gates of this repository:
 
 ```
-test-gates mutation: OK (mutants 1693 / detected 1693 (timeout 2) / allowed equivalent 0 / not evaluable 0 / unallowed survivors 0)
+test-gates mutation: OK (mutants 1702 / detected 1702 (timeout 2) / allowed equivalent 0 / not evaluable 0 / unallowed survivors 0)
 ```
 
 #### Timeouts
@@ -351,7 +351,7 @@ The spec to leave out is passed in the environment variable `TEST_GATES_EXCLUDE_
 
 **It is an option, not the default, because it takes one thing for granted: that a spec executes the same code whichever other specs run with it.** A spec that covers another gate only while that gate's spec is away is not caught by any note of a full run; the run per gate catches it, because it really leaves that one spec out. Specs of pure modules do not behave that way, and the ones that could (they read `process.env`, also the variables of `selfcheck` itself, or files, a child process, the network) are recognised by their text and switch the shared run off. That is a search by text in the spec files only, not in what they import, and it cannot be made complete. Two hunts for counterexamples found projects in which `--quick` reports every control as holding and the plain run does not, with nothing in the text of a spec: a helper that keeps state in the process (it changes a setting of a Node.js core module once; with Jest that state is shared by the spec files of one worker, so whether a later spec has to do it again, and thereby executes another gate, depends on which spec ran before it, and with the default number of workers even on Jest's cache of run times), and a helper that keeps a cache on disk which one spec fills and another reads. In each of them a spec covers a gate only while that gate's spec is away. No way of taking notes from one full run can see that.
 
-So a control that `--quick` reports as holding is not the last word; one that it reports as not holding is, because that one was run on its own. The output says so: such a line ends in `(exit 1, in the shared run)`, and the last line names how many there were and asks for a run without `--quick`. **With `CI=true` or `CI=1` in the environment, `--quick` is refused** (exit code 2): where the run is the gate itself, it has to be the full one.
+So a control that `--quick` reports as holding is not the last word; one that it reports as not holding is, because that one was run on its own. The output says so: such a line ends in `, in the shared run)`, and the last line names how many there were and asks for a run without `--quick`. **With `CI` set in the environment (to anything but an empty value, `false` or `0`), `--quick` is refused** (exit code 2): where the run is the gate itself, it has to be the full one. GitHub Actions, GitLab CI and most hosted services set `CI`; Jenkins, Azure Pipelines, TeamCity and AWS CodeBuild do not, so there the job has to export `CI=true` itself, or simply not use the option.
 
 | Where                                                   | Run                                                                                   |
 | ------------------------------------------------------- | ------------------------------------------------------------------------------------- |

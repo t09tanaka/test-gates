@@ -10,7 +10,7 @@ afterAll(cleanup);
 const withoutMarks = (stdout: string) =>
   stdout
     .replace(/, in the shared run\)/g, ')')
-    .replace(/\. \d+ of them were judged in one shared run \(--quick\)[^\n]*/, '');
+    .replace(/\. Of the controls that held, \d+ came from one shared run \(--quick\)[^\n]*/, '');
 
 // `selfcheck` with a real Jest and a real Vitest, in a project that has every way in which the
 // spec of one gate can reach another gate. The run in which the controls of several gates share

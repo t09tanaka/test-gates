@@ -413,13 +413,16 @@ describe('the runs the shared run is verified with', () => {
 });
 
 describe('--quick', () => {
-  it.each(['true', '1'])('is refused when CI is %s', (value) => {
-    expect(quickRefused({ CI: value })).toBe(
-      '--quick is refused in CI (the variable CI is set): what it reports as holding is not the final check. Run selfcheck without it, with --shard to split it over jobs'
-    );
-  });
+  it.each(['true', '1', 'TRUE', 'True', 'yes', 'woodpecker', ' true ', '2'])(
+    'is refused when CI is %j',
+    (value) => {
+      expect(quickRefused({ CI: value })).toBe(
+        '--quick is refused in CI (the variable CI is set): what it reports as holding is not the final check. Run selfcheck without it, with --shard to split it over jobs'
+      );
+    }
+  );
 
-  it.each([undefined, '', 'false', '0', 'TRUE', 'yes', '11', 'true '])(
+  it.each([undefined, '', '  ', 'false', 'FALSE', 'False', '0', ' 0 '])(
     'is allowed when CI is %j',
     (value) => {
       expect(quickRefused({ CI: value })).toBeNull();
@@ -430,9 +433,9 @@ describe('--quick', () => {
   it('says in the last line that a shared run is not the final check, when one was used', () => {
     expect(quickCaveat(0)).toBe('');
     expect(quickCaveat(3)).toBe(
-      '. 3 of them were judged in one shared run (--quick), which a spec that depends on other specs can make differ from a run per gate: run without --quick for the final check'
+      '. Of the controls that held, 3 came from one shared run (--quick), which a spec that depends on other specs can make differ from a run per gate: run without --quick for the final check'
     );
-    expect(quickCaveat(1)).toContain('. 1 of them were judged');
+    expect(quickCaveat(1)).toContain('. Of the controls that held, 1 came from');
   });
 });
 
