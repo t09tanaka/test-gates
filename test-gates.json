@@ -51,6 +51,11 @@
       "impact": "A gate imports an SDK or a service file unnoticed and stops being a pure module"
     },
     {
+      "path": "src/core/reuse-guard.ts",
+      "decides": "Whether a mutation run may reuse the results of the last one: only when the record of that run shows that nothing but gates and specs has changed since",
+      "impact": "After a change that Stryker does not look at, an old Killed is reused for a mutant that now survives, and the run passes"
+    },
+    {
       "path": "src/core/vitest-coverage.ts",
       "decides": "Whether a Vitest setup can report 100% branches with the skipped side of an if untested",
       "impact": "A project keeps a coverage floor that has a hole in it without being told"

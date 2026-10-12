@@ -231,6 +231,35 @@ Static checks, before the gate run. Reports every violation as `file:line: reaso
 
 Runs `stryker run <config>` from the project's own `node_modules`, then judges the JSON report (see `mutation-result`). Unknown arguments, and everything after `--`, are handed to Stryker. If Stryker itself fails, the exit code is 1 and nothing is judged. A report from an earlier run is deleted first, so a run that writes none cannot pass on old results.
 
+#### When the results of the last run are reused
+
+In Stryker's incremental mode (the helper turns it on) a run reuses the result of a mutant when two things did not change: the mutated file (the gate) and the test files (its spec). Stryker does not look at anything else. Measured with Stryker 10, with Jest and with Vitest, in a project of three gates written for this: an assertion was moved into a file that the spec imports and weakened there. The incremental run reused all 111 results and passed; `--force` found three survivors.
+
+`test-gates mutation` therefore keeps a record next to the incremental file (`reports/stryker-incremental.json.test-gates.json`) of everything else the run depended on, and compares it before the next run. When something differs, or there is no record, it adds `--force` and says why:
+
+```
+test-gates mutation: running every mutant again (--force), the results of the last run are not reused: changed since the last run, and neither a gate nor its spec: src/expect-true.ts
+```
+
+What is compared:
+
+- Every file of the subproject except the gates and their specs: other sources, helpers of the specs, configs, `test-gates.json`, the lock file.
+- The files directly in the directories above the subproject, up to the root of the repository: the lock file and the shared configs of a monorepo.
+- Packages of the same repository that are linked into `node_modules`, and directories outside the subproject that a file points at with a relative path (`../../shared/money/round`). When a path cannot be followed (`<rootDir>/../shared`, or a path to a directory that contains the subproject), every file of the repository is compared.
+- What is installed (`node_modules/.package-lock.json`, or what yarn and pnpm write in its place), the versions of Node.js, of this package, of Stryker and of the test runners, and the arguments handed to Stryker.
+- The incremental file itself: it has to be the one the recorded run wrote.
+
+With git, "every file" is what git tracks plus the untracked files it does not ignore. Without git, or when git ignores the subproject, every file is read except `node_modules`, `.git` and what the run writes itself. The record is removed before each run and written only after Stryker finished one, so a run that failed or was interrupted is followed by a full one. A run that is given `--force` is not changed. When Stryker does not run in incremental mode, nothing is recorded or compared.
+
+The comparison reads and hashes those files before each run: 0.37 s more for a project of 5,200 files written for this measurement.
+
+What it does not see, and what therefore still needs `-- --force` by hand, or CI, where the run should always be a full one:
+
+- files git ignores (build output that a spec or a config loads, `.env`),
+- environment variables, the clock, the network,
+- files outside the repository (a path to one that exists turns reuse off altogether, with the file named in the message), and files reached only through a path that is put together while the tests run,
+- what Stryker itself decides for a gate or a spec that did change, see [the stale "Survived"](#cost-and-how-to-use-strykers-incremental-mode).
+
 ### `test-gates mutation-result [--report <path>]`
 
 Judges an existing Stryker JSON report without running Stryker.
@@ -256,7 +285,7 @@ The run also fails when
 On failure every unallowed survivor is listed as `file:line:column / mutator / original → replacement / occurrence`, followed by a JSON fragment that can be pasted into `equivalentMutants`. The last line gives the real numbers, never a percentage. For the gates of this repository:
 
 ```
-test-gates mutation: OK (mutants 1145 / detected 1145 (timeout 2) / allowed equivalent 0 / not evaluable 0 / unallowed survivors 0)
+test-gates mutation: OK (mutants 1328 / detected 1328 (timeout 2) / allowed equivalent 0 / not evaluable 0 / unallowed survivors 0)
 ```
 
 #### Timeouts
@@ -526,7 +555,7 @@ Why these choices:
 - Jest measures with istanbul (`babel`), because the v8 provider does not count the untaken side of an `if` without `else`.
 - Jest fails on a `coverageThreshold` path key that matches no file, so a typo in `test-gates.json` cannot pass. Vitest does the opposite: a glob or path key in `thresholds` that matches nothing passes. The Vitest helper therefore narrows `coverage.include` to the gates and uses `perFile`.
 - Stryker never fails on its own score (`break: null`). The verdict comes from `test-gates mutation`, which knows the allow list.
-- The Stryker helper also sets defaults that can be overridden: `coverageAnalysis: 'perTest'`, `incremental` with its file under `reports/`, and `maxTestRunnerReuse: 50` (see [Timeouts](#timeouts)).
+- The Stryker helper also sets defaults that can be overridden: `coverageAnalysis: 'perTest'`, `incremental` with its file under `reports/` (guarded by `test-gates mutation`, see [When the results of the last run are reused](#when-the-results-of-the-last-run-are-reused)), and `maxTestRunnerReuse: 50` (see [Timeouts](#timeouts)).
 
 `loadGates(dir)` returns the validated manifest: `gates` (each with its resolved `spec`), `candidates` and the resolved `settings`. It throws when the manifest has any problem.
 
@@ -573,7 +602,7 @@ Mutation testing is the expensive step. Numbers for this repository's own gates:
 
 The time grows with the number of mutants and depends heavily on cores and on `concurrency`. Twenty gates of this size on a slow machine are well past ten minutes for a full run. The setup that has held up in practice:
 
-- **pre-push: incremental.** `test-gates mutation` as is. Stryker's incremental file (`reports/stryker-incremental.json`, not committed) makes the second and later runs take seconds; the first run after a clone is a full one.
+- **pre-push: incremental.** `test-gates mutation` as is. Stryker's incremental file (`reports/stryker-incremental.json`, not committed) makes the second and later runs take seconds; the first run after a clone is a full one, and so is the first run after a change to anything but a gate or its spec (see [When the results of the last run are reused](#when-the-results-of-the-last-run-are-reused)).
 - **CI: full.** `npm run test:gates:mutation -- --force`. CI has no incremental file to start from anyway, and the full run is the one that counts.
 - If even CI is too slow, split by subproject (each has its own `test-gates.json`) before you think about sampling.
 
@@ -592,10 +621,10 @@ In this project, whose gates are small, the negative control costs more than the
 
 How the incremental file and this tool interact (covered by `test/incremental.test.ts`, which runs a real Stryker):
 
-- `test-gates mutation` deletes the JSON **report** before each run. It does not touch the incremental file; they are different files.
+- `test-gates mutation` deletes the JSON **report** before each run. It does not touch the incremental file; they are different files. It decides whether Stryker may read it: see [When the results of the last run are reused](#when-the-results-of-the-last-run-are-reused).
 - A run in which every result is reused still writes a complete JSON report, and the verdict is the same as that of the run it reuses.
-- **A stale "Survived" can be reused.** After adding a test that kills a _static_ mutant (code that runs when the module is loaded, such as a module-level constant), the incremental run kept reporting the mutant as survived; `--force` reported it killed. The error is on the safe side, a failure that is not real, never a pass that is not real. When a survivor makes no sense after you fixed the test, run once with `-- --force`.
-- **After removing a gate, its old results stay in the incremental file** and come back in the report. They are ignored: only the gates of `test-gates.json` are judged. Delete the incremental file (or run with `--force`) when you change the list of gates, so that it does not carry files that are no longer mutated.
+- **A stale "Survived" can be reused.** After adding a test that kills a _static_ mutant (code that runs when the module is loaded, such as a module-level constant), the incremental run kept reporting the mutant as survived; `--force` reported it killed. In this case the error is on the safe side: a failure that is not real. When a survivor makes no sense after you fixed the test, run once with `-- --force`.
+- **After removing a gate, its old results stay in the incremental file** and come back in the report. They are ignored: only the gates of `test-gates.json` are judged. (A change of `test-gates.json` makes the next run a full one, and the old results still come back.) Delete the incremental file when you change the list of gates, so that it does not carry files that are no longer mutated.
 
 ## Limitations and things measured
 
