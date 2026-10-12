@@ -9,6 +9,7 @@
 ### Changed
 
 - `test-gates mutation` takes `--gate` for itself. Before, it was handed to Stryker like every unknown argument (Stryker has no such option).
+- `test-gates check`, `lcov` and the config helpers read each directory once while they look for the gates and their specs, instead of once for every gate and every place its spec may be in. What they report is unchanged.
 
 ## 0.3.3
 
