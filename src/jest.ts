@@ -41,6 +41,14 @@ export function createJestGatesConfig(options: JestGatesOptions = {}): Record<st
               : ['default']),
             jestReporterFile(import.meta.url),
           ],
+          // The runner's own total, to check the notes against.
+          coverageReporters: [
+            ...(Array.isArray(overrides.coverageReporters)
+              ? (overrides.coverageReporters as unknown[])
+              : ['text']),
+            'json',
+          ],
+          coverageDirectory: path.join(process.env[TOUCH_ENV], 'coverage'),
         }
       : {}),
     rootDir,

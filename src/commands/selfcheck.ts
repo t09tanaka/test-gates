@@ -10,10 +10,11 @@ import {
   judgeSelfcheck,
   planControls,
   selectControls,
+  sharedRunPrecheck,
 } from '../core/selfcheck.js';
 import { existsExact, findLocalBin, readText } from '../fs.js';
 import { readManifest, type LoadedManifest } from '../load.js';
-import { readTouchRecords, TOUCH_ENV } from '../touch.js';
+import { readNotes, TOUCH_ENV } from '../touch.js';
 import type { Io } from './output.js';
 
 const JEST_CONFIGS = ['js', 'cjs', 'mjs', 'ts', 'cts', 'mts'].map(
@@ -71,7 +72,7 @@ function shareOneRun<Result extends { status: number | null }>(
   manifest: LoadedManifest,
   targets: LoadedManifest['gates'],
   runGate: (env: { excludeAll?: string[]; touchDir?: string }) => Result
-): { gates: LoadedManifest['gates']; result: Result } | null {
+): { gates: LoadedManifest['gates']; result: Result } | { reason: string } {
   let touchDir: string;
   try {
     // A run that was interrupted (Ctrl-C ends this process at once) left its directory behind.
@@ -86,40 +87,65 @@ function shareOneRun<Result extends { status: number | null }>(
     // src/touch.ts).
     touchDir = fs.mkdtempSync(path.join(manifest.dir, TOUCH_PREFIX));
   } catch {
-    return null; // a project that cannot be written to: a run per gate
+    return { reason: 'the subproject cannot be written to' };
   }
-  let plan: ReturnType<typeof planControls> | null = null;
+  let plan: ReturnType<typeof planControls>;
   try {
     const recorded = runGate({ touchDir });
     // A gate run that fails as it is (a failing test, a gate below 100%) is no ground to plan
     // on: Vitest, for one, prints no thresholds after a failed test, and leaving out the
     // failing spec with the others would bring them back.
-    if (recorded.status === 0) {
-      const base = realPath(manifest.dir);
-      plan = planControls({
-        all: manifest.gates.map((gate) => ({
-          path: gate.path,
-          file: path.join(base, gate.path),
-          specFile: path.join(base, gate.spec ?? ''),
-        })),
-        targets: targets.map((gate) => gate.path),
-        // Vitest names the spec relative to the subproject.
-        records: readTouchRecords(touchDir).map((record) => ({
-          spec: realPath(path.resolve(base, record.spec)),
-          touched: record.touched.map((file) => realPath(path.resolve(base, file))),
-        })),
-        failurePattern: manifest.settings.selfcheckFailurePattern,
-      });
+    if (recorded.status !== 0) {
+      return { reason: 'the gate run with every spec does not pass' };
     }
+    const base = realPath(manifest.dir);
+    // Vitest names the files relative to the subproject.
+    const absolute = (file: string) => realPath(path.resolve(base, file));
+    const rekeyed = <Value>(files: Record<string, Value>) =>
+      Object.fromEntries(Object.entries(files).map(([file, value]) => [absolute(file), value]));
+    const left = readNotes(touchDir);
+    plan = planControls({
+      all: manifest.gates.map((gate) => ({
+        path: gate.path,
+        file: path.join(base, gate.path),
+        specFile: path.join(base, gate.spec ?? ''),
+      })),
+      targets: targets.map((gate) => gate.path),
+      run: left.run,
+      notes:
+        left.notes?.map((note) => ({ spec: absolute(note.spec), files: rekeyed(note.files) })) ??
+        null,
+      totals: left.totals === null ? null : rekeyed(left.totals),
+      failurePattern: manifest.settings.selfcheckFailurePattern,
+    });
   } finally {
     fs.rmSync(touchDir, { recursive: true, force: true });
   }
-  if (plan === null || plan.together.length === 0) {
-    return null;
+  if (plan.reason !== null) {
+    return { reason: plan.reason };
   }
   const together = plan.together;
   const gates = targets.filter((gate) => together.includes(gate.path));
   return { gates, result: runGate({ excludeAll: gates.map((gate) => gate.spec as string) }) };
+}
+
+/** Version of an installed package, looked up from `start` upwards; null when it is not found. */
+function installedVersion(start: string, name: string): string | null {
+  let current = path.resolve(start);
+  for (;;) {
+    try {
+      const manifest = JSON.parse(
+        fs.readFileSync(path.join(current, 'node_modules', name, 'package.json'), 'utf8')
+      ) as { version?: unknown };
+      return typeof manifest.version === 'string' ? manifest.version : null;
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) {
+        return null;
+      }
+      current = parent;
+    }
+  }
 }
 
 /**
@@ -194,8 +220,25 @@ export function runSelfcheck(
   const heldTogether = new Map<string, number | null>();
   const single = targets.filter((gate) => gate.spec !== null && gate.existingSpecs.length === 1);
   if (selection.oneByOne !== true && single.length >= 3) {
-    const shared = shareOneRun(manifest, single, runGate);
-    if (shared !== null) {
+    // The text of the gate config says something only when the gate command is derived from it.
+    const derived = commandOverride.length === 0 && manifest.settings.gateCommand === null;
+    const configFile = derived ? args[args.indexOf('--config') + 1] : undefined;
+    let configSource: string | null = null;
+    try {
+      configSource = configFile === undefined ? null : readText(manifest.dir, configFile);
+    } catch {
+      // not readable: nothing is known beforehand
+    }
+    const shared =
+      sharedRunPrecheck({
+        program,
+        version: installedVersion(manifest.dir, program),
+        configSource,
+      }) ?? shareOneRun(manifest, single, runGate);
+    if (typeof shared === 'string' || 'reason' in shared) {
+      const reason = typeof shared === 'string' ? shared : shared.reason;
+      io.out(`test-gates selfcheck: a run of the gate command for every gate (${reason})`);
+    } else {
       for (const gate of shared.gates) {
         if (judge(shared.result, gate.path) === null) {
           heldTogether.set(gate.path, shared.result.status);
