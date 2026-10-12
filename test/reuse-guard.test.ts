@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import {
   cleanup,
   GATE_SOURCE,
@@ -14,6 +14,9 @@ import {
 } from './helpers';
 
 afterAll(cleanup);
+// Every test here starts several processes and waits for each. Without a pause between the
+// tests the worker never gets to its messages, and Vitest gives up on it after a minute.
+afterEach(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
 
 // A stand-in for node_modules/.bin/stryker. It records its arguments and, like Stryker in
 // incremental mode, writes a report and an incremental file. With a file named `stryker-fails`
