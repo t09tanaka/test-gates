@@ -14,8 +14,8 @@ export interface ParsedArgs {
   mode: 'all' | 'first' | null;
   /** `--gate` (selfcheck), once per gate: only these gates. Empty: no selection. */
   gates: string[];
-  /** `--shared` (selfcheck): gates that only their own spec touches share one run. */
-  shared: boolean;
+  /** `--quick` (selfcheck): gates that only their own spec touches share one run. */
+  quick: boolean;
   /** `--shard <index>/<total>` (selfcheck): one of `total` parts of the gates, `index` from 1. */
   shard: Shard | null;
   /**
@@ -53,7 +53,7 @@ const OPTIONS_BY_COMMAND: Record<Command, string[]> = {
   check: ['--dir'],
   mutation: ['--dir'],
   'mutation-result': ['--dir', '--report'],
-  selfcheck: ['--dir', '--all', '--first', '--gate', '--shard', '--shared'],
+  selfcheck: ['--dir', '--all', '--first', '--gate', '--shard', '--quick'],
   lcov: ['--dir', '--file'],
 };
 
@@ -110,8 +110,8 @@ function consume(
     if (equals !== -1) {
       throw new UsageError(`${name} does not take a value`);
     }
-    if (name === '--shared') {
-      parsed.shared = true;
+    if (name === '--quick') {
+      parsed.quick = true;
       return next;
     }
     const mode = name === '--all' ? 'all' : 'first';
@@ -149,7 +149,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     mode: null,
     gates: [],
     shard: null,
-    shared: false,
+    quick: false,
     rest: [],
   };
 
@@ -178,7 +178,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
   }
   // `npm run selfcheck -- --shard 2/4` on a script that already ends in `-- <gate command>`
   // would hand the option to the test runner, which has a --shard of its own.
-  const misplaced = parsed.rest.find((arg) => /^--(gate|shard)(=|$)/.test(arg));
+  const misplaced = parsed.rest.find((arg) => /^--(gate|shard|quick)(=|$)/.test(arg));
   if (parsed.command === 'selfcheck' && misplaced !== undefined) {
     throw new UsageError(
       `${misplaced.split('=')[0]} after "--" would go to the gate command. Write it before "--"`

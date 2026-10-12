@@ -6,6 +6,12 @@ import { cleanup, project, repoRoot, testGatesAsync } from './helpers';
 
 afterAll(cleanup);
 
+/** The output of --quick without the marks of the shared run: what a run per gate prints. */
+const withoutMarks = (stdout: string) =>
+  stdout
+    .replace(/, in the shared run\)/g, ')')
+    .replace(/\. Of the controls that held, \d+ came from one shared run \(--quick\)[^\n]*/, '');
+
 // `selfcheck` with a real Jest and a real Vitest, in a project that has every way in which the
 // spec of one gate can reach another gate. The run in which the controls of several gates share
 // one run of the gate command has to say exactly what a run per gate says (the default).
@@ -252,21 +258,23 @@ describe.each([
         'test-gates selfcheck: FAILED (4 of 14 negative control(s))',
       ]);
 
-      const shared = await testGatesAsync(['selfcheck', '--shared', '--dir', dir]);
+      const shared = await testGatesAsync(['selfcheck', '--quick', '--dir', dir]);
       // One run that records, one shared run, and a run for each gate something else touches.
       expect(runs()).toBe(2 + dialect.touched.length);
       expect(shared.status).toBe(perGate.status);
-      expect(shared.stdout).toBe(perGate.stdout);
-      expect(verdicts(shared.stderr)).toEqual(verdicts(perGate.stderr));
+      // The same lines, apart from what marks a control as judged in the shared run.
+      expect(withoutMarks(shared.stdout)).toBe(perGate.stdout);
+      expect(shared.stdout).toContain(', in the shared run)');
+      expect(verdicts(withoutMarks(shared.stderr))).toEqual(verdicts(perGate.stderr));
       expect(fs.readdirSync(dir).filter((name) => name.startsWith('.test-gates-touch'))).toEqual(
         []
       );
 
       // A part of the gates: the same lines for those gates.
-      const part = await testGatesAsync(['selfcheck', '--shared', '--shard', '1/2', '--dir', dir]);
+      const part = await testGatesAsync(['selfcheck', '--quick', '--shard', '1/2', '--dir', dir]);
       const partPerGate = await testGatesAsync(['selfcheck', '--shard', '1/2', '--dir', dir]);
-      expect(part.stdout).toBe(partPerGate.stdout);
-      expect(verdicts(part.stderr)).toEqual(verdicts(partPerGate.stderr));
+      expect(withoutMarks(part.stdout)).toBe(partPerGate.stdout);
+      expect(verdicts(withoutMarks(part.stderr))).toEqual(verdicts(partPerGate.stderr));
       expect(part.status).toBe(partPerGate.status);
     }
   );
@@ -408,7 +416,7 @@ afterAll(() => {
 
       // The spec of `first` covers `late` after its note was written, so the notes say that
       // only its own spec touches `late`. The runner counted two calls, the notes have one.
-      const shared = await testGatesAsync(['selfcheck', '--shared', '--dir', dir], env);
+      const shared = await testGatesAsync(['selfcheck', '--quick', '--dir', dir], env);
       expect(shared.stdout).toBe(REFUSED + perGate.stdout);
       expect(shared.stderr).toContain(NOT_HELD);
       expect(shared.status).toBe(1);
@@ -421,7 +429,7 @@ afterAll(() => {
     { timeout: 300_000 },
     async () => {
       const dir = fixture('');
-      const shared = await testGatesAsync(['selfcheck', '--shared', '--dir', dir]);
+      const shared = await testGatesAsync(['selfcheck', '--quick', '--dir', dir]);
       expect(shared.stdout).not.toContain('a run of the gate command for every gate');
       expect(shared.status).toBe(0);
       expect(runs(dir)).toBe(2);

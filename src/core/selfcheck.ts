@@ -193,6 +193,27 @@ const SURROUNDINGS =
   /\bprocess\s*\.\s*env\b|\bimport\.meta\.env\b|['"`](?:node:)?(?:fs|fs\/promises|child_process|worker_threads|net|http|https)['"`]/;
 
 /**
+ * `--quick` is for work in progress. Where the run is the gate itself, in CI, it is refused:
+ * a control it reports as holding is not the final word.
+ *
+ * @returns Why `--quick` is refused in this environment, or null.
+ */
+export function quickRefused(env: Record<string, string | undefined>): string | null {
+  // Providers write it as true, 1, True, TRUE or their own name: anything but empty, false or 0.
+  const ci = (env.CI ?? '').trim().toLowerCase();
+  return ci === '' || ci === 'false' || ci === '0'
+    ? null
+    : '--quick is refused in CI (the variable CI is set): what it reports as holding is not the final check. Run selfcheck without it, with --shard to split it over jobs';
+}
+
+/** What is said in the last line when controls were judged in the run that --quick shares. */
+export function quickCaveat(shared: number): string {
+  return shared === 0
+    ? ''
+    : `. Of the controls that held, ${shared} came from one shared run (--quick), which a spec that depends on other specs can make differ from a run per gate: run without --quick for the final check`;
+}
+
+/**
  * What can be said before any run: why a full gate run for notes would be for nothing, or null
  * when that is not known. Saying nothing is always right; it costs one run.
  *

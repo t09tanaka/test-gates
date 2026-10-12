@@ -34,6 +34,19 @@ export function cleanup(): void {
   }
 }
 
+/**
+ * The environment for a run of the CLI in a test. `selfcheck --quick` is refused in CI, and
+ * the tests run there too: for a run with that option, the CI of the machine is taken out.
+ * Every other run inherits it; a test that is about CI passes it itself.
+ */
+function environment(args: string[], extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const inherited = { ...process.env };
+  if (args.includes('--quick')) {
+    delete inherited.CI;
+  }
+  return { ...inherited, ...extra };
+}
+
 export interface CliResult {
   status: number | null;
   stdout: string;
@@ -47,7 +60,7 @@ export function testGates(
 ): CliResult {
   const result = spawnSync(process.execPath, [cliPath, ...args], {
     cwd: options.cwd ?? repoRoot,
-    env: { ...process.env, ...options.env },
+    env: environment(args, options.env),
     encoding: 'utf8',
   });
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
@@ -61,7 +74,7 @@ export function testGatesAsync(args: string[], env: NodeJS.ProcessEnv = {}): Pro
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [cliPath, ...args], {
       cwd: repoRoot,
-      env: { ...process.env, ...env },
+      env: environment(args, env),
     });
     let stdout = '';
     let stderr = '';

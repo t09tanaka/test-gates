@@ -9,6 +9,8 @@ import {
   EXCLUDE_ENV,
   judgeSelfcheck,
   planControls,
+  quickCaveat,
+  quickRefused,
   selectControls,
   sharedRunPrecheck,
 } from '../core/selfcheck.js';
@@ -159,11 +161,15 @@ export function runSelfcheck(
     mode: 'all' | 'first' | null;
     gates: string[];
     shard: Shard | null;
-    shared?: boolean;
+    quick?: boolean;
   },
   commandOverride: string[],
   io: Io
 ): number {
+  const refused = selection.quick === true ? quickRefused(process.env) : null;
+  if (refused !== null) {
+    throw new UsageError(refused);
+  }
   const manifest = readManifest(dir);
   if (manifest.violations.length > 0 || manifest.gates.length === 0) {
     io.err('test-gates selfcheck: test-gates.json has problems. Run "test-gates check" first');
@@ -219,7 +225,7 @@ export function runSelfcheck(
   // Controls that held in the run they shared (see planControls): gate path → exit code.
   const heldTogether = new Map<string, number | null>();
   const single = targets.filter((gate) => gate.spec !== null && gate.existingSpecs.length === 1);
-  if (selection.shared === true && single.length >= 3) {
+  if (selection.quick === true && single.length >= 3) {
     // The text of the gate config says something only when the gate command is derived from it.
     const derived = commandOverride.length === 0 && manifest.settings.gateCommand === null;
     const configFile = derived ? args[args.indexOf('--config') + 1] : undefined;
@@ -258,7 +264,9 @@ export function runSelfcheck(
       continue;
     }
     if (heldTogether.has(gate.path)) {
-      io.out(`  ✓ without ${gate.spec} the gate fails (exit ${heldTogether.get(gate.path)})`);
+      io.out(
+        `  ✓ without ${gate.spec} the gate fails (exit ${heldTogether.get(gate.path)}, in the shared run)`
+      );
       continue;
     }
     const result = runGate({ exclude: gate.spec });
@@ -295,12 +303,12 @@ export function runSelfcheck(
 
   if (failed > 0) {
     io.err(
-      `test-gates selfcheck: FAILED (${failed} of ${targets.length} negative control(s)${notSelected})`
+      `test-gates selfcheck: FAILED (${failed} of ${targets.length} negative control(s)${notSelected})${quickCaveat(heldTogether.size)}`
     );
     return 1;
   }
   io.out(
-    `test-gates selfcheck: OK (${targets.length} negative control(s) failed as they should${notSelected})`
+    `test-gates selfcheck: OK (${targets.length} negative control(s) failed as they should${notSelected})${quickCaveat(heldTogether.size)}`
   );
   return 0;
 }

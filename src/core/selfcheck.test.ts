@@ -7,6 +7,8 @@ import {
   accountedFor,
   minorOf,
   planControls,
+  quickCaveat,
+  quickRefused,
   selectControls,
   sharedRunPrecheck,
   unverifiedRun,
@@ -407,6 +409,33 @@ describe('the runs the shared run is verified with', () => {
     ],
   ])('refuses a run outside of the table (%#)', (run, reason) => {
     expect(unverifiedRun(run)).toBe(reason);
+  });
+});
+
+describe('--quick', () => {
+  it.each(['true', '1', 'TRUE', 'True', 'yes', 'woodpecker', ' true ', '2'])(
+    'is refused when CI is %j',
+    (value) => {
+      expect(quickRefused({ CI: value })).toBe(
+        '--quick is refused in CI (the variable CI is set): what it reports as holding is not the final check. Run selfcheck without it, with --shard to split it over jobs'
+      );
+    }
+  );
+
+  it.each([undefined, '', '  ', 'false', 'FALSE', 'False', '0', ' 0 '])(
+    'is allowed when CI is %j',
+    (value) => {
+      expect(quickRefused({ CI: value })).toBeNull();
+      expect(quickRefused({ OTHER: 'true' })).toBeNull();
+    }
+  );
+
+  it('says in the last line that a shared run is not the final check, when one was used', () => {
+    expect(quickCaveat(0)).toBe('');
+    expect(quickCaveat(3)).toBe(
+      '. Of the controls that held, 3 came from one shared run (--quick), which a spec that depends on other specs can make differ from a run per gate: run without --quick for the final check'
+    );
+    expect(quickCaveat(1)).toContain('. Of the controls that held, 1 came from');
   });
 });
 
