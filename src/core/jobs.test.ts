@@ -129,6 +129,8 @@ describe('reachesOutside', () => {
     ["process['env']", 'process'],
     ['process.hrtime.bigint()', 'process'],
     ['globalThis.started = true;', 'globalThis'],
+    ['global.started = true;', 'global'],
+    ["global['started'] = true;", 'global'],
     ['import.meta.env.MODE', 'import.meta.env'],
     ['const at = Date.now();', 'Date.now'],
     ['const at = new Date();', 'Date()'],
@@ -166,55 +168,46 @@ describe('reachesOutside', () => {
     expect(reachesOutside(file('const at = new Date(2024, 0, 1);'), [])).toBeNull();
   });
 
-  it.each(['require(name)', 'await import(name)', 'require(`./${name}`)', 'import( name )'])(
-    'does not take a module whose name is computed: %s',
-    (line) => {
-      expect(reachesOutside(file(line), [])).toBe('loads a module whose name is computed');
-    }
-  );
-
-  it.each(["require('./fee')", 'await import("./fee")', "jest.requireActual('./fee')"])(
-    'takes a module that is named: %s',
-    (line) => {
-      expect(reachesOutside(file(line), [])).toBeNull();
-    }
-  );
-
   it.each([
-    'assert',
-    'assert/strict',
-    'buffer',
-    'events',
-    'path',
-    'path/posix',
-    'path/win32',
-    'querystring',
-    'string_decoder',
-    'url',
-    'util',
-    'util/types',
-  ])('takes the built-in module %s, with and without node:', (name) => {
-    expect(reachesOutside(file('', [{ specifier: name, builtin: true }]), [])).toBeNull();
-    expect(reachesOutside(file('', [{ specifier: `node:${name}`, builtin: true }]), [])).toBeNull();
+    'require(name)',
+    'await import(name)',
+    'require(`./${name}`)',
+    'import( name )',
+    'const load = require;',
+    'load(require)',
+    "require.call(null, 'fs')",
+    'require.cache',
+    'require.resolved',
+    'x = require',
+  ])('does not take a module whose name is computed: %s', (line) => {
+    expect(reachesOutside(file(line), [])).toBe('loads a module whose name is computed');
   });
 
-  it.each(['fs', 'node:fs', 'node:fs/promises', 'net', 'node:child_process', 'os', 'node:test'])(
+  it.each([
+    "require('./fee')",
+    'await import("./fee")',
+    "jest.requireActual('./fee')",
+    "require.resolve('./fee')",
+    'const required = 1;',
+    "it('requires a name', () => {});",
+    'const require$ = 1;',
+    'const requirement = prerequired;',
+  ])('takes a module that is named: %s', (line) => {
+    expect(reachesOutside(file(line), [])).toBeNull();
+  });
+
+  it.each(['fs', 'node:fs', 'node:fs/promises', 'net', 'node:child_process', 'os', 'path'])(
     'does not take the built-in module %s',
     (specifier) => {
       expect(reachesOutside(file('', [{ specifier, builtin: true }]), [])).toBe(
         `imports ${specifier}`
       );
+      // a built-in module is not trusted by a name
+      expect(reachesOutside(file('', [{ specifier, builtin: true }]), [specifier])).toBe(
+        `imports ${specifier}`
+      );
     }
   );
-
-  it('strips node: only from the start of a name', () => {
-    expect(reachesOutside(file('', [{ specifier: 'xnode:path', builtin: true }]), [])).toBe(
-      'imports xnode:path'
-    );
-    expect(reachesOutside(file('', [{ specifier: 'pathnode:', builtin: true }]), [])).toBe(
-      'imports pathnode:'
-    );
-  });
 
   it('takes the packages of the runners, and their subpaths', () => {
     for (const specifier of ['vitest', 'vitest/config', '@jest/globals']) {
@@ -245,10 +238,6 @@ describe('reachesOutside', () => {
     // a package that is called like a built-in module is a package
     expect(reachesOutside(file('', [{ specifier: 'path', builtin: false }]), [])).toBe(
       'imports the package path, which is not looked into'
-    );
-    // and a built-in module is not trusted by a name
-    expect(reachesOutside(file('', [{ specifier: 'fs', builtin: true }]), ['fs'])).toBe(
-      'imports fs'
     );
   });
 
@@ -528,6 +517,13 @@ describe('cleanHold', () => {
         names: ['src/errors.spec.ts'],
       })
     ).toBe(false);
+    // and what a name stands in the middle of is not put together
+    expect(
+      clean({
+        output: `${VITEST_SUM}absrc/errors.spec.tsorted\n${VITEST_LINE}\n`,
+        names: ['src/errors.spec.ts'],
+      })
+    ).toBe(true);
     // every place a name stands in
     expect(
       clean({

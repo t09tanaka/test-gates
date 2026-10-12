@@ -9,6 +9,9 @@ import type { LoadedManifest } from '../load.js';
 const SCRIPT = /\.[cm]?[jt]sx?$/;
 const EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'];
 const QUOTED = /(['"`])([^'"`\n]+)\1/g;
+// A module that is named to the runner instead of imported: jest.requireActual('fs').
+const RUNNER_LOAD =
+  /\b(?:requireActual|requireMock|importActual|importMock|mock|doMock|unstable_mockModule)\(\s*(['"`])([^'"`\n]+)\1/g;
 
 function isFile(file: string): boolean {
   try {
@@ -75,7 +78,12 @@ export function loadedFiles(
   const read = (file: string) => {
     const source = fs.readFileSync(file, 'utf8');
     const imports = parseImports(source).filter((ref) => !ref.typeOnly);
-    const specifiers = [...new Set(imports.map((ref) => ref.module))];
+    const specifiers = [
+      ...new Set([
+        ...imports.map((ref) => ref.module),
+        ...[...source.matchAll(RUNNER_LOAD)].map((match) => match[2] as string),
+      ]),
+    ];
     const strings = [...source.matchAll(QUOTED)]
       .map((match) => match[2] as string)
       .filter((text) => !specifiers.includes(text));

@@ -1205,6 +1205,11 @@ describe('test-gates selfcheck', () => {
           `src/fee.spec.ts imports node:fs${MEETS}`,
         ],
         [
+          'a spec that imports a built-in module that only computes',
+          { 'src/fee.spec.ts': `import path from 'node:path';\n${SPEC}` },
+          `src/fee.spec.ts imports node:path${MEETS}`,
+        ],
+        [
           'a spec that waits',
           {
             'src/fee.spec.ts':
@@ -1256,6 +1261,19 @@ describe('test-gates selfcheck', () => {
             'src/rates.ts': "import os from 'node:os';\nexport const cores = os.cpus().length;\n",
           },
           `src/rates.ts imports node:os${MEETS}`,
+        ],
+        [
+          'a built-in module that a spec gets from the runner',
+          { 'src/fee.spec.ts': `const files = jest.requireActual('fs');\n${SPEC}` },
+          `src/fee.spec.ts imports fs${MEETS}`,
+        ],
+        [
+          'a package that a spec only mocks',
+          {
+            'src/fee.spec.ts': `vi.mock('some-lock');\n${SPEC}`,
+            'node_modules/some-lock/package.json': { name: 'some-lock', version: '1.0.0' },
+          },
+          `src/fee.spec.ts imports the package some-lock, which is not looked into${MEETS}`,
         ],
         [
           'a gate that reads the clock',
@@ -1331,7 +1349,7 @@ describe('test-gates selfcheck', () => {
           'specs that import the runner, their gate, a file that only computes and a type',
           {
             'src/fee.spec.ts':
-              "import { expect, it } from 'vitest';\nimport path from 'node:path';\nimport type { Rate } from './gone';\nimport { value } from './fee';\nimport { twice } from './support/math';\nimport rates from './rates.json';\nit('x', () => {});\n",
+              "import { expect, it } from 'vitest';\nimport type { Rate } from './gone';\nimport { value } from './fee';\nimport { twice } from './support/math';\nimport rates from './rates.json';\nit('x', () => {});\n",
             'src/support/math.ts': 'export const twice = (value: number) => value * 2;\n',
             'src/rates.json': {},
           },

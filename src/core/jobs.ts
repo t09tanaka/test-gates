@@ -40,23 +40,19 @@ export function knownCommand(
   if (runner === 'vitest' && args[0] !== 'run') {
     return { stray: args[0] ?? 'vitest without "run"' };
   }
-  const rest = runner === 'vitest' ? args.slice(1) : args;
+  const rest = runner === 'vitest' ? args.slice(1) : [...args];
   let configs = 0;
-  for (let index = 0; index < rest.length; index += 1) {
-    const arg = rest[index] as string;
+  for (let arg = rest.shift(); arg !== undefined; arg = rest.shift()) {
     if (SWITCHES[runner].includes(arg)) {
       continue;
     }
     const equals = arg.indexOf('=');
     const name = equals === -1 ? arg : arg.slice(0, equals);
     // The value is in the same word (`--config=x`) or is the next one.
-    const value = equals === -1 ? rest[index + 1] : arg.slice(equals + 1);
-    if (equals === -1) {
-      index += 1;
-    }
+    const value = equals === -1 ? rest.shift() : arg.slice(equals + 1);
     if (value !== undefined && (name === '--config' || name === '-c')) {
       configs += 1;
-    } else if (value === undefined || !COUNTS[runner].includes(name) || !COUNT.test(value)) {
+    } else if (!COUNTS[runner].includes(name) || !COUNT.test(String(value))) {
       return { stray: arg };
     }
   }
@@ -94,6 +90,8 @@ const REACHES = [
   'process?.',
   'process[',
   'globalThis',
+  'global.',
+  'global[',
   'import.meta.env',
   'Date.now',
   'Date()',
@@ -116,23 +114,9 @@ const REACHES = [
   'eval(',
   'Function(',
 ];
-// A module that is named by an expression cannot be followed.
-const COMPUTED_LOAD = /(?:require|import)\((?!['"])/;
-// Built-in modules that only compute.
-const QUIET_BUILTINS = [
-  'assert',
-  'assert/strict',
-  'buffer',
-  'events',
-  'path',
-  'path/posix',
-  'path/win32',
-  'querystring',
-  'string_decoder',
-  'url',
-  'util',
-  'util/types',
-];
+// A module that is named by an expression cannot be followed, and neither can `require` once it
+// is handed on under another name.
+const COMPUTED_LOAD = /(?:require|import)\((?!['"])|\brequire(?!\(|\.resolve\b|[\w$])/;
 const RUNNER_PACKAGES = ['vitest', '@jest/globals'];
 
 /**
@@ -146,7 +130,7 @@ const RUNNER_PACKAGES = ['vitest', '@jest/globals'];
  *   package).
  */
 export function reachesOutside(file: LoadedFile, trusted: string[]): string | null {
-  const dense = file.source.replace(/\s+/g, '');
+  const dense = file.source.replace(/\s/g, '');
   const mark = REACHES.find((text) => dense.includes(text));
   if (mark !== undefined) {
     return `uses ${mark.replace(/[.?[(:]+$/, '')}`;
@@ -155,10 +139,10 @@ export function reachesOutside(file: LoadedFile, trusted: string[]): string | nu
     return 'loads a module whose name is computed';
   }
   for (const { specifier, builtin } of file.imports) {
+    // Also one that only computes: with Jest the spec files of a worker share the objects of
+    // the built-in modules, and a setting changed on one of them is seen by the next spec.
     if (builtin) {
-      if (!QUIET_BUILTINS.includes(specifier.replace(/^node:/, ''))) {
-        return `imports ${specifier}`;
-      }
+      return `imports ${specifier}`;
     } else if (
       ![...RUNNER_PACKAGES, ...trusted].some(
         (name) => specifier === name || specifier.startsWith(`${name}/`)
@@ -246,7 +230,7 @@ const TROUBLE = [
 const TROUBLE_SIGNS = ['✗', '×', '✕', '✖'];
 
 function troubled(line: string): boolean {
-  const words = line.toLowerCase().match(/[a-z]+/g) ?? [];
+  const words = line.toLowerCase().split(/[^a-z]/);
   return (
     // (`TypeError`, `errors`)
     words.some((word) => TROUBLE.includes(word) || /errors?$/.test(word)) ||
@@ -333,7 +317,10 @@ export function cleanHold(input: {
     // A row of the coverage table names a file, and only that.
     return (
       line.split('|').length >= 5 ||
-      !troubled(input.names.reduce((rest, name) => rest.split(name).join(''), line))
+      // What stands around the names of the project, piece by piece.
+      !input.names
+        .reduce((pieces, name) => pieces.flatMap((piece) => piece.split(name)), [line])
+        .some(troubled)
     );
   });
 }
