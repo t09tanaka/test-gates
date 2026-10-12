@@ -759,7 +759,7 @@ How the incremental file and this tool interact (covered by `test/incremental-*.
 
 ## Contributing
 
-Run `npm run check:quick` (lint, typecheck, format check and the light tests; about 20 seconds) before you push. CI runs the same checks as a separate fast job, and the heavy tests, gates and mutation test as parallel jobs.
+Run `npm run check:quick` (lint, typecheck, format check and the light tests; about 20 seconds) before you push. CI runs the same checks as a separate fast job, and the heavy tests (spread over four shards, on Node 22 and on Node 20), gates and mutation test as parallel jobs. `npm run test:heavy` runs all of them in one process.
 
 ## License
 
