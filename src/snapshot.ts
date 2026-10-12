@@ -1,0 +1,415 @@
+import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import fs from 'node:fs';
+import { createRequire } from 'node:module';
+import os from 'node:os';
+import path from 'node:path';
+import type { Snapshot } from './core/reuse-guard.js';
+
+/** Thrown when the files a run depends on cannot be listed. The results are then not reused. */
+export class SnapshotError extends Error {}
+
+/** Packages whose version changes what a mutation run reports. */
+const TOOLS = [
+  '@stryker-mutator/core',
+  '@stryker-mutator/jest-runner',
+  '@stryker-mutator/vitest-runner',
+  '@stryker-mutator/typescript-checker',
+  'jest',
+  'babel-jest',
+  'ts-jest',
+  '@swc/jest',
+  'vitest',
+  'vite',
+  '@vitest/coverage-istanbul',
+  '@vitest/coverage-v8',
+  'typescript',
+];
+
+/** Files a package manager writes into node_modules when it installs. */
+const INSTALL_MARKERS = [
+  '.package-lock.json',
+  '.yarn-integrity',
+  '.yarn-state.yml',
+  '.modules.yaml',
+];
+
+const LOCK_FILES = [
+  'package-lock.json',
+  'npm-shrinkwrap.json',
+  'yarn.lock',
+  'pnpm-lock.yaml',
+  'bun.lock',
+  'bun.lockb',
+];
+
+/** Directories that are never part of a snapshot. */
+const NEVER = ['node_modules', '.git'];
+
+/** Larger files are hashed but not searched for paths. */
+const SCAN_LIMIT = 8 * 1024 * 1024;
+/** A string literal with `..` as a part of a path: it may lead out of the directory of its file. */
+const UPWARD = /(['"`])((?:[^'"`\n]*\/)?\.\.(?:\/[^'"`\n]*)?)\1/g;
+
+function hashOf(content: Buffer | string): string {
+  return createHash('sha256').update(content).digest('hex');
+}
+
+/** Hash of a file, or null when there is no such file. */
+export function hashFile(file: string): string | null {
+  try {
+    return hashOf(fs.readFileSync(file));
+  } catch {
+    return null;
+  }
+}
+
+function isInside(parent: string, child: string): boolean {
+  const relative = path.relative(parent, child);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function toPosix(file: string): string {
+  return file.split(path.sep).join('/');
+}
+
+function git(cwd: string, args: string[]): string | null {
+  const result = spawnSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 1024 * 1024 * 1024 });
+  return result.error || result.status !== 0 ? null : result.stdout;
+}
+
+/** Lists the files below a directory, relative to `root`. */
+type Lister = (directory: string, recursive: boolean) => string[];
+
+function gitLister(root: string): Lister {
+  return (directory, recursive) => {
+    const relative = toPosix(path.relative(root, directory));
+    const pattern = recursive
+      ? `${relative === '' ? '' : `${relative}/`}**`
+      : `${relative === '' ? '' : `${relative}/`}*`;
+    const listed = git(root, [
+      'ls-files',
+      '-z',
+      '--cached',
+      '--others',
+      '--exclude-standard',
+      '--',
+      `:(glob)${pattern}`,
+    ]);
+    if (listed === null) {
+      throw new SnapshotError('git could not list the files');
+    }
+    return listed.split('\0').filter((file) => file !== '');
+  };
+}
+
+function walkLister(root: string): Lister {
+  const walk = (directory: string, recursive: boolean, found: string[]): string[] => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const file = path.join(directory, entry.name);
+      if (NEVER.includes(entry.name)) {
+        continue; // also when it is a link to a directory of that name
+      }
+      if (entry.isDirectory()) {
+        if (recursive) {
+          walk(file, true, found);
+        }
+      } else {
+        found.push(toPosix(path.relative(root, file)));
+      }
+    }
+    return found;
+  };
+  return (directory, recursive) => walk(directory, recursive, []);
+}
+
+/** Directories from `from` up to `to`, both included. `to` contains `from`. */
+function upTo(from: string, to: string): string[] {
+  const directories = [from];
+  while (directories[directories.length - 1] !== to) {
+    directories.push(path.dirname(directories[directories.length - 1] as string));
+  }
+  return directories;
+}
+
+function declaresWorkspaces(directory: string): boolean {
+  if (fs.existsSync(path.join(directory, 'pnpm-workspace.yaml'))) {
+    return true;
+  }
+  try {
+    const manifest = JSON.parse(fs.readFileSync(path.join(directory, 'package.json'), 'utf8')) as {
+      workspaces?: unknown;
+    };
+    return manifest.workspaces !== undefined;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * How far up the directories are read without git: to the nearest directory with a `.git`
+ * entry, else to the topmost one that declares workspaces, else no further than the subproject.
+ * Never the home directory or anything above it: what lies there is not part of a project.
+ */
+function walkRoot(dir: string): string {
+  const candidates = withinBounds(dir);
+  const repository = candidates.find((directory) => fs.existsSync(path.join(directory, '.git')));
+  if (repository !== undefined) {
+    return repository;
+  }
+  return candidates.filter(declaresWorkspaces).pop() ?? dir;
+}
+
+/** `dir` and the directories above it, without the home directory and what lies above that. */
+function withinBounds(dir: string): string[] {
+  let home: string | null = null;
+  try {
+    home = fs.realpathSync(os.homedir());
+  } catch {
+    // no home directory: only the root of the file system is out of bounds
+  }
+  return upTo(dir, path.parse(dir).root).filter(
+    (directory) =>
+      directory !== path.parse(dir).root && (home === null || !isInside(directory, home))
+  );
+}
+
+/** Packages of the same repository that are linked into a node_modules directory. */
+function linkedPackages(nodeModules: string, root: string): string[] {
+  const found: string[] = [];
+  const visit = (directory: string, depth: number): void => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(directory, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const file = path.join(directory, entry.name);
+      if (entry.isSymbolicLink()) {
+        let target: string;
+        try {
+          target = fs.realpathSync(file);
+        } catch {
+          continue;
+        }
+        if (target.split(path.sep).includes('node_modules') || !fs.statSync(target).isDirectory()) {
+          continue; // the layout of a package manager, not a package of the repository
+        }
+        if (!isInside(root, target)) {
+          throw new SnapshotError(
+            `${file} is a link to a directory outside of what can be listed (${target})`
+          );
+        }
+        found.push(target);
+      } else if (depth === 0 && entry.isDirectory() && entry.name.startsWith('@')) {
+        visit(file, 1);
+      }
+    }
+  };
+  visit(nodeModules, 0);
+  return found;
+}
+
+/** Version of an installed package, looked up from `start` upwards. */
+function installedVersion(start: string, name: string): string | null {
+  let current = start;
+  for (;;) {
+    try {
+      const manifest = JSON.parse(
+        fs.readFileSync(path.join(current, 'node_modules', name, 'package.json'), 'utf8')
+      ) as { version?: unknown };
+      return typeof manifest.version === 'string' ? manifest.version : 'unknown';
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) {
+        return null;
+      }
+      current = parent;
+    }
+  }
+}
+
+function ownVersion(): string {
+  const { version } = createRequire(import.meta.url)('../package.json') as { version: string };
+  return version;
+}
+
+/**
+ * Takes the snapshot of everything a mutation run of the subproject depends on.
+ *
+ * The files are those of the subproject, the files directly in the directories above it (lock
+ * files, shared configs), packages of the same repository linked into node_modules, and every
+ * directory outside the subproject that a file points at: with a link, or with a path that has
+ * `..` in it. Where such a path cannot be followed, every file that can be listed is taken.
+ * With git, files that are ignored are left out; without it, everything but node_modules is
+ * read.
+ *
+ * @param input.dir Absolute path of the subproject.
+ * @param input.written Paths the run writes (reports, the sandbox), as files or directories,
+ *   absolute or relative to `dir`.
+ * @throws SnapshotError when the files cannot be listed, or a path leads out of what can be
+ *   listed.
+ */
+export function takeSnapshot(input: { dir: string; written: string[]; args: string[] }): Snapshot {
+  const dir = fs.realpathSync(input.dir);
+  const top = git(dir, ['rev-parse', '--show-toplevel']);
+  let root = top === null ? dir : fs.realpathSync(top.trim());
+  let lister = gitLister(root);
+  let mode: Snapshot['mode'] = 'git';
+  const manifest = toPosix(path.relative(root, path.join(dir, 'test-gates.json')));
+  if (top === null || !lister(dir, false).includes(manifest)) {
+    // No git, or the subproject is not something git lists: read the directories.
+    mode = 'walk';
+    root = walkRoot(dir);
+    lister = walkLister(root);
+  }
+
+  const listRoot = root;
+  const list = lister;
+  const walk = walkLister(listRoot);
+  const written = input.written.map((file) => {
+    const target = path.resolve(dir, file);
+    try {
+      return fs.realpathSync(target);
+    } catch {
+      return target;
+    }
+  });
+  const swallowing = written.find((target) => isInside(target, path.join(dir, 'test-gates.json')));
+  if (swallowing !== undefined) {
+    throw new SnapshotError(`the run writes to ${swallowing}, which holds test-gates.json`);
+  }
+  // No prototype: a file may be called "constructor".
+  const files = Object.create(null) as Record<string, string>;
+
+  // The subproject, then every directory its files (and the files of those directories) lead to.
+  const regions = [dir];
+  const queued = new Set(regions);
+  const enqueue = (target: string, from: string): void => {
+    // Of a directory that contains the subproject, what is used cannot be told: take everything.
+    const directory = isInside(target, dir) && isInside(listRoot, target) ? listRoot : target;
+    if (!isInside(listRoot, directory)) {
+      throw new SnapshotError(
+        `${toPosix(path.relative(dir, from))} points outside of what can be listed (${directory})`
+      );
+    }
+    if (![...queued].some((region) => isInside(region, directory))) {
+      queued.add(directory);
+      regions.push(directory);
+    }
+  };
+  /** A path found in `file`: the directory it leads to joins the snapshot. */
+  const follow = (literal: string, file: string): void => {
+    // `../fixtures/${name}.json`: what is known is the part before the placeholder.
+    const fixed = literal.includes('${')
+      ? literal.slice(0, literal.lastIndexOf('/', literal.indexOf('${')) + 1)
+      : literal;
+    if (!fixed.startsWith('../')) {
+      // `<rootDir>/../shared`, or a lone `..` handed to path.join: where it leads is not known.
+      enqueue(listRoot, file);
+      return;
+    }
+    const target = path.resolve(path.dirname(file), fixed);
+    let isDirectory = false;
+    try {
+      isDirectory = fs.statSync(target).isDirectory();
+    } catch {
+      // An import without its extension, or a file that is not there: take its directory.
+    }
+    const directory = isDirectory ? target : path.dirname(target);
+    // Nothing is there (text that only looks like a path). Should the directory appear later, it
+    // is looked at then.
+    if (fs.existsSync(directory)) {
+      enqueue(directory, file);
+    }
+  };
+  const add = (relative: string): void => {
+    const file = path.join(listRoot, relative);
+    if (relative in files || written.some((target) => isInside(target, file))) {
+      return;
+    }
+    let stat: fs.Stats;
+    try {
+      stat = fs.lstatSync(file);
+    } catch {
+      files[relative] = 'missing';
+      return;
+    }
+    if (stat.isSymbolicLink()) {
+      files[relative] = `link ${fs.readlinkSync(file)}`;
+      let target: string;
+      try {
+        target = fs.realpathSync(file);
+      } catch {
+        return; // a link to nothing
+      }
+      enqueue(fs.statSync(target).isDirectory() ? target : path.dirname(target), file);
+    } else if (stat.isDirectory()) {
+      // A repository inside the repository: git lists it as one path. Read what is in it.
+      files[relative] = 'directory';
+      walk(file, true).forEach(add);
+    } else if (!stat.isFile()) {
+      files[relative] = 'special';
+    } else {
+      const content = fs.readFileSync(file);
+      files[relative] = hashOf(content);
+      if (content.length <= SCAN_LIMIT && !content.subarray(0, 8000).includes(0)) {
+        // `..\/` in JSON and `..\\` on Windows are the same path.
+        const text = content.toString('utf8').replace(/\\[\\/]/g, '/');
+        for (const match of text.matchAll(UPWARD)) {
+          follow(match[2] as string, file);
+        }
+      }
+    }
+  };
+
+  const ancestors = upTo(dir, listRoot).slice(1);
+  for (const directory of ancestors) {
+    list(directory, false).forEach(add);
+  }
+  for (const directory of [dir, ...ancestors]) {
+    for (const linked of linkedPackages(path.join(directory, 'node_modules'), listRoot)) {
+      if (!isInside(linked, dir)) {
+        enqueue(linked, path.join(directory, 'node_modules'));
+      }
+    }
+  }
+  // What is installed, and the lock files: also above what is listed, where the node_modules
+  // of a workspace may be. By name only; nothing else up there is read.
+  const above = withinBounds(listRoot).slice(1);
+  for (const directory of [dir, ...ancestors, ...above]) {
+    const candidates = [
+      ...INSTALL_MARKERS.map((marker) => path.join(directory, 'node_modules', marker)),
+      ...(above.includes(directory) ? LOCK_FILES.map((name) => path.join(directory, name)) : []),
+    ];
+    for (const file of candidates) {
+      const hash = hashFile(file);
+      if (hash !== null) {
+        files[toPosix(path.relative(listRoot, file))] = hash;
+      }
+    }
+  }
+  for (let position = 0; position < regions.length; position += 1) {
+    list(regions[position] as string, true).forEach(add);
+  }
+
+  const environment: Record<string, string> = {
+    'Node.js': process.version,
+    platform: `${process.platform} ${process.arch}`,
+    'test-gates': ownVersion(),
+  };
+  for (const name of TOOLS) {
+    const version = installedVersion(dir, name);
+    if (version !== null) {
+      environment[name] = version;
+    }
+  }
+
+  return {
+    mode,
+    environment,
+    args: input.args,
+    files,
+  };
+}
