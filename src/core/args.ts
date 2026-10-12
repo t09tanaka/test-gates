@@ -12,6 +12,10 @@ export interface ParsedArgs {
   file: string | null;
   /** `--all` / `--first` (selfcheck). */
   mode: 'all' | 'first' | null;
+  /** `--gate` (selfcheck), once per gate: only these gates. Empty: no selection. */
+  gates: string[];
+  /** `--shard <index>/<total>` (selfcheck): one of `total` parts of the gates, `index` from 1. */
+  shard: Shard | null;
   /**
    * mutation: arguments handed to Stryker. selfcheck: the gate command to run instead of the
    * configured one.
@@ -19,15 +23,33 @@ export interface ParsedArgs {
   rest: string[];
 }
 
+export interface Shard {
+  index: number;
+  total: number;
+}
+
 export class UsageError extends Error {}
 
-const VALUE_OPTIONS = ['--dir', '--report', '--file'];
+const VALUE_OPTIONS = ['--dir', '--report', '--file', '--gate', '--shard'];
+
+/** `<index>/<total>` with 1 <= index <= total, both written as plain decimal numbers. */
+function parseShard(value: string): Shard {
+  const match = /^([1-9]\d*)\/([1-9]\d*)$/.exec(value);
+  const index = Number(match?.[1]);
+  const total = Number(match?.[2]);
+  if (match === null || index > total) {
+    throw new UsageError(
+      `--shard needs <index>/<total> with 1 <= index <= total (for example 2/4), got ${value}`
+    );
+  }
+  return { index, total };
+}
 
 const OPTIONS_BY_COMMAND: Record<Command, string[]> = {
   check: ['--dir'],
   mutation: ['--dir'],
   'mutation-result': ['--dir', '--report'],
-  selfcheck: ['--dir', '--all', '--first'],
+  selfcheck: ['--dir', '--all', '--first', '--gate', '--shard'],
   lcov: ['--dir', '--file'],
 };
 
@@ -68,8 +90,14 @@ function consume(
       if (value === undefined || value === '') {
         throw new UsageError(`${name} needs a value`);
       }
-      const key = name.slice(2) as 'dir' | 'report' | 'file';
-      parsed[key] = value;
+      if (name === '--gate') {
+        parsed.gates.push(value);
+      } else if (name === '--shard') {
+        parsed.shard = parseShard(value);
+      } else {
+        const key = name.slice(2) as 'dir' | 'report' | 'file';
+        parsed[key] = value;
+      }
       return equals !== -1 ? next : next + 1;
     }
     if (equals !== -1) {
@@ -108,6 +136,8 @@ export function parseArgs(argv: string[]): ParsedArgs {
     report: null,
     file: null,
     mode: null,
+    gates: [],
+    shard: null,
     rest: [],
   };
 
@@ -126,6 +156,14 @@ export function parseArgs(argv: string[]): ParsedArgs {
     index = consume(parsed, argv, index, allowed);
   }
 
+  const selections = [
+    parsed.mode === null ? null : `--${parsed.mode}`,
+    parsed.gates.length > 0 ? '--gate' : null,
+    parsed.shard === null ? null : '--shard',
+  ].filter((option) => option !== null);
+  if (selections.length > 1) {
+    throw new UsageError(`${selections.join(' and ')} cannot be combined`);
+  }
   if (parsed.command === 'selfcheck' && parsed.rest.length === 0 && argv.includes('--')) {
     throw new UsageError('"--" must be followed by the gate command');
   }

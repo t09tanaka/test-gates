@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { EXCLUDE_ENV, judgeSelfcheck } from './selfcheck';
+import { EXCLUDE_ENV, judgeSelfcheck, selectControls } from './selfcheck';
 
 const GATE = 'src/common/shipping-fee.ts';
 
@@ -102,5 +102,87 @@ describe('judgeSelfcheck', () => {
     expect(
       judgeSelfcheck({ status: 1, output: 'unrelated', gatePath: GATE, failurePattern: '' })
     ).not.toBeNull();
+  });
+});
+
+describe('selectControls', () => {
+  const gates = ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts', 'src/e.ts'];
+  const none = { only: [], shard: null };
+
+  it('selects every gate in mode all and only the first in mode first', () => {
+    expect(selectControls({ gates, mode: 'all', ...none })).toEqual({ selected: gates });
+    expect(selectControls({ gates, mode: 'first', ...none })).toEqual({ selected: ['src/a.ts'] });
+  });
+
+  it('selects the gates named with --gate, each once, in the order of test-gates.json', () => {
+    expect(
+      selectControls({
+        gates,
+        mode: 'all',
+        only: ['src/d.ts', 'src/b.ts', 'src/d.ts'],
+        shard: null,
+      })
+    ).toEqual({ selected: ['src/b.ts', 'src/d.ts'] });
+  });
+
+  it('lets --gate and --shard win over mode first', () => {
+    expect(selectControls({ gates, mode: 'first', only: ['src/c.ts'], shard: null })).toEqual({
+      selected: ['src/c.ts'],
+    });
+    expect(
+      selectControls({ gates, mode: 'first', only: [], shard: { index: 2, total: 2 } })
+    ).toEqual({ selected: ['src/b.ts', 'src/d.ts'] });
+  });
+
+  it('refuses a --gate that is not a gate, and names every such path', () => {
+    expect(
+      selectControls({
+        gates,
+        mode: 'all',
+        only: ['src/b.ts', './src/a.ts', 'src/x.ts'],
+        shard: null,
+      })
+    ).toEqual({
+      error:
+        '--gate ./src/a.ts, src/x.ts: not a gate of test-gates.json (write the path as it is written there)',
+    });
+  });
+
+  it('deals the gates out to the parts of --shard in turn', () => {
+    const part = (index: number, total: number) =>
+      selectControls({ gates, mode: 'all', only: [], shard: { index, total } });
+    expect(part(1, 1)).toEqual({ selected: gates });
+    expect(part(1, 2)).toEqual({ selected: ['src/a.ts', 'src/c.ts', 'src/e.ts'] });
+    expect(part(2, 2)).toEqual({ selected: ['src/b.ts', 'src/d.ts'] });
+    expect(part(1, 3)).toEqual({ selected: ['src/a.ts', 'src/d.ts'] });
+    expect(part(2, 3)).toEqual({ selected: ['src/b.ts', 'src/e.ts'] });
+    expect(part(3, 3)).toEqual({ selected: ['src/c.ts'] });
+    expect(part(5, 5)).toEqual({ selected: ['src/e.ts'] });
+  });
+
+  it.each([1, 2, 3, 4, 5])('covers every gate exactly once with %i part(s)', (total) => {
+    const all = Array.from({ length: total }, (_unused, position) => {
+      const part = selectControls({
+        gates,
+        mode: 'all',
+        only: [],
+        shard: { index: position + 1, total },
+      });
+      return 'selected' in part ? part.selected : [];
+    });
+    expect(all.every((part) => part.length > 0)).toBe(true);
+    expect(all.flat().sort()).toEqual(gates);
+  });
+
+  it('refuses more parts than gates, because a part without a gate would check nothing', () => {
+    expect(selectControls({ gates, mode: 'all', only: [], shard: { index: 6, total: 6 } })).toEqual(
+      {
+        error:
+          '--shard 6/6: there are only 5 gate(s). A part without a gate would pass without checking anything',
+      }
+    );
+    expect(
+      selectControls({ gates, mode: 'all', only: [], shard: { index: 1, total: 6 } })
+    ).toHaveProperty('error');
   });
 });

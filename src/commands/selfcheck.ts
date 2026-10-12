@@ -1,9 +1,10 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { type Shard, UsageError } from '../core/args.js';
 import { ManifestError } from '../core/manifest.js';
 import { findImporters } from '../core/import-policy.js';
-import { EXCLUDE_ENV, judgeSelfcheck } from '../core/selfcheck.js';
+import { EXCLUDE_ENV, judgeSelfcheck, selectControls } from '../core/selfcheck.js';
 import { existsExact, findLocalBin, readText } from '../fs.js';
 import { readManifest, type LoadedManifest } from '../load.js';
 import type { Io } from './output.js';
@@ -46,7 +47,7 @@ export function resolveGateCommand(manifest: LoadedManifest): string[] {
  */
 export function runSelfcheck(
   dir: string,
-  mode: 'all' | 'first' | null,
+  selection: { mode: 'all' | 'first' | null; gates: string[]; shard: Shard | null },
   commandOverride: string[],
   io: Io
 ): number {
@@ -58,10 +59,21 @@ export function runSelfcheck(
   const command = commandOverride.length > 0 ? commandOverride : resolveGateCommand(manifest);
   const [program, ...args] = command as [string, ...string[]];
   const executable = findLocalBin(manifest.dir, program) ?? program;
-  const targets =
-    (mode ?? manifest.settings.selfcheckMode) === 'first'
-      ? manifest.gates.slice(0, 1)
-      : manifest.gates;
+  const chosen = selectControls({
+    gates: manifest.gates.map((gate) => gate.path),
+    mode: selection.mode ?? manifest.settings.selfcheckMode,
+    only: selection.gates,
+    shard: selection.shard,
+  });
+  if ('error' in chosen) {
+    throw new UsageError(chosen.error);
+  }
+  const targets = manifest.gates.filter((gate) => chosen.selected.includes(gate.path));
+  // Said only for --gate and --shard: a run of a part must not read like a run of every gate.
+  const notSelected =
+    selection.gates.length > 0 || selection.shard !== null
+      ? `, ${manifest.gates.length - targets.length} gate(s) not selected`
+      : '';
 
   let failed = 0;
   for (const gate of targets) {
@@ -116,9 +128,13 @@ export function runSelfcheck(
   }
 
   if (failed > 0) {
-    io.err(`test-gates selfcheck: FAILED (${failed} of ${targets.length} negative control(s))`);
+    io.err(
+      `test-gates selfcheck: FAILED (${failed} of ${targets.length} negative control(s)${notSelected})`
+    );
     return 1;
   }
-  io.out(`test-gates selfcheck: OK (${targets.length} negative control(s) failed as they should)`);
+  io.out(
+    `test-gates selfcheck: OK (${targets.length} negative control(s) failed as they should${notSelected})`
+  );
   return 0;
 }
