@@ -1,9 +1,10 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { type Shard, UsageError } from '../core/args.js';
 import { ManifestError } from '../core/manifest.js';
 import { findImporters } from '../core/import-policy.js';
-import { EXCLUDE_ENV, judgeSelfcheck } from '../core/selfcheck.js';
+import { EXCLUDE_ENV, judgeSelfcheck, selectControls } from '../core/selfcheck.js';
 import { existsExact, findLocalBin, readText } from '../fs.js';
 import { readManifest, type LoadedManifest } from '../load.js';
 import type { Io } from './output.js';
@@ -46,7 +47,7 @@ export function resolveGateCommand(manifest: LoadedManifest): string[] {
  */
 export function runSelfcheck(
   dir: string,
-  mode: 'all' | 'first' | null,
+  selection: { mode: 'all' | 'first' | null; gates: string[]; shard: Shard | null },
   commandOverride: string[],
   io: Io
 ): number {
@@ -55,13 +56,28 @@ export function runSelfcheck(
     io.err('test-gates selfcheck: test-gates.json has problems. Run "test-gates check" first');
     return 1;
   }
+  const chosen = selectControls({
+    gates: manifest.gates.map((gate) => gate.path),
+    mode: selection.mode ?? manifest.settings.selfcheckMode,
+    only: selection.gates,
+    shard: selection.shard,
+  });
+  if ('error' in chosen) {
+    throw new UsageError(chosen.error);
+  }
+  const targets = manifest.gates.filter((gate) => chosen.selected.includes(gate.path));
+  // Said for --gate and --shard, so that such a run does not read like a run of every gate and
+  // a CI log shows which part it was.
+  const skipped = manifest.gates.length - targets.length;
+  const notSelected =
+    selection.shard !== null
+      ? `, ${skipped} gate(s) not selected by --shard ${selection.shard.index}/${selection.shard.total}`
+      : selection.gates.length > 0
+        ? `, ${skipped} gate(s) not selected by --gate`
+        : '';
   const command = commandOverride.length > 0 ? commandOverride : resolveGateCommand(manifest);
   const [program, ...args] = command as [string, ...string[]];
   const executable = findLocalBin(manifest.dir, program) ?? program;
-  const targets =
-    (mode ?? manifest.settings.selfcheckMode) === 'first'
-      ? manifest.gates.slice(0, 1)
-      : manifest.gates;
 
   let failed = 0;
   for (const gate of targets) {
@@ -116,9 +132,13 @@ export function runSelfcheck(
   }
 
   if (failed > 0) {
-    io.err(`test-gates selfcheck: FAILED (${failed} of ${targets.length} negative control(s))`);
+    io.err(
+      `test-gates selfcheck: FAILED (${failed} of ${targets.length} negative control(s)${notSelected})`
+    );
     return 1;
   }
-  io.out(`test-gates selfcheck: OK (${targets.length} negative control(s) failed as they should)`);
+  io.out(
+    `test-gates selfcheck: OK (${targets.length} negative control(s) failed as they should${notSelected})`
+  );
   return 0;
 }

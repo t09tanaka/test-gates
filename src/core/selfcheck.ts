@@ -1,3 +1,5 @@
+import type { Shard } from './args.js';
+
 /** Environment variable through which `test-gates selfcheck` tells the gate config which spec to leave out. */
 export const EXCLUDE_ENV = 'TEST_GATES_EXCLUDE_SPEC';
 
@@ -45,4 +47,44 @@ export function judgeSelfcheck(input: {
   return reported
     ? null
     : `the gate failed (exit ${status}) but not on the coverage threshold of ${gatePath}. It may be failing for another reason`;
+}
+
+/**
+ * Decides which gates get a negative control in this run. Each control is independent of the
+ * others, so a run of a part gives those gates the verdict they get in a run of all of them.
+ * The parts of `--shard` are disjoint and together they are every gate: gate `k` (from 0, in
+ * the order of test-gates.json) belongs to part `k % total + 1`.
+ *
+ * @param input.gates Paths of all gates, in the order of test-gates.json.
+ * @param input.only Paths given with `--gate`. They win over `mode`.
+ * @param input.shard Value of `--shard`. It wins over `mode`.
+ * @returns The selected paths in the order of test-gates.json, or why the selection is refused.
+ */
+export function selectControls(input: {
+  gates: string[];
+  mode: 'all' | 'first';
+  only: string[];
+  shard: Shard | null;
+}): { selected: string[] } | { error: string } {
+  const { gates, mode, only, shard } = input;
+  if (only.length > 0) {
+    const unknown = only.filter((path) => !gates.includes(path));
+    if (unknown.length > 0) {
+      return {
+        error: `--gate ${unknown.join(', ')}: not a gate of test-gates.json (write the path as it is written there)`,
+      };
+    }
+    return { selected: gates.filter((path) => only.includes(path)) };
+  }
+  if (shard !== null) {
+    if (shard.total > gates.length) {
+      return {
+        error: `--shard ${shard.index}/${shard.total}: there are only ${gates.length} gate(s). A part without a gate would pass without checking anything`,
+      };
+    }
+    return {
+      selected: gates.filter((_path, position) => position % shard.total === shard.index - 1),
+    };
+  }
+  return { selected: mode === 'first' ? gates.slice(0, 1) : gates };
 }

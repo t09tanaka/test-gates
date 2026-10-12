@@ -9,6 +9,8 @@ const base = {
   report: null,
   file: null,
   mode: null,
+  gates: [],
+  shard: null,
   rest: [],
 };
 
@@ -105,6 +107,54 @@ describe('parseArgs', () => {
     });
   });
 
+  it('collects every --gate of selfcheck, in both forms and in the order given', () => {
+    expect(parseArgs(['selfcheck', '--gate', 'src/b.ts', '--gate=src/a.ts'])).toEqual({
+      ...base,
+      command: 'selfcheck',
+      gates: ['src/b.ts', 'src/a.ts'],
+    });
+  });
+
+  it.each([
+    ['1/1', { index: 1, total: 1 }],
+    ['2/2', { index: 2, total: 2 }],
+    ['3/12', { index: 3, total: 12 }],
+    ['10/12', { index: 10, total: 12 }],
+  ])('reads --shard %s', (value, shard) => {
+    expect(parseArgs(['selfcheck', '--shard', value])).toEqual({
+      ...base,
+      command: 'selfcheck',
+      shard,
+    });
+    expect(parseArgs(['selfcheck', `--shard=${value}`]).shard).toEqual(shard);
+  });
+
+  it.each([
+    '0/2',
+    '3/2',
+    '1/0',
+    '01/2',
+    '1/02',
+    'a1/2',
+    '1/2a',
+    '1',
+    '1/',
+    '/2',
+    '1-2',
+    '-1/2',
+    '1.5/2',
+    ' 1/2',
+    '1/2 ',
+    '1 / 2',
+    '1/2\n',
+    '１/２',
+    '1/9007199254740993',
+  ])('rejects --shard %s', (value) => {
+    const message = `--shard needs <index>/<total> with 1 <= index <= total (for example 2/4), got ${value}`;
+    expect(() => parseArgs(['selfcheck', `--shard=${value}`])).toThrow(UsageError);
+    expect(() => parseArgs(['selfcheck', `--shard=${value}`])).toThrow(new UsageError(message));
+  });
+
   it.each([
     [['frobnicate'], 'unknown command: frobnicate'],
     [['--frob'], 'unknown argument: --frob'],
@@ -120,6 +170,36 @@ describe('parseArgs', () => {
     [['selfcheck', '--all=1'], '--all does not take a value'],
     [['selfcheck', '--all', '--first'], '--all and --first cannot be combined'],
     [['selfcheck', '--first', '--all'], '--all and --first cannot be combined'],
+    [['selfcheck', '--gate'], '--gate needs a value'],
+    [['selfcheck', '--shard'], '--shard needs a value'],
+    [['check', '--gate', 'src/a.ts'], 'unknown argument for check: --gate'],
+    [['mutation-result', '--shard', '1/2'], 'unknown argument for mutation-result: --shard'],
+    [['selfcheck', '--first', '--gate', 'src/a.ts'], '--first and --gate cannot be combined'],
+    [['selfcheck', '--gate', 'src/a.ts', '--all'], '--all and --gate cannot be combined'],
+    [['selfcheck', '--all', '--shard', '1/2'], '--all and --shard cannot be combined'],
+    [['selfcheck', '--shard', '1/2', '--first'], '--first and --shard cannot be combined'],
+    [['selfcheck', '--shard', '1/4', '--shard', '2/4'], '--shard can be given only once'],
+    [['selfcheck', '--shard=1/4', '--shard=1/4'], '--shard can be given only once'],
+    [
+      ['selfcheck', '--', 'vitest', 'run', '--shard', '2/4'],
+      '--shard after "--" would go to the gate command. Write it before "--"',
+    ],
+    [
+      ['selfcheck', '--', 'jest', '--shard=2/4'],
+      '--shard after "--" would go to the gate command. Write it before "--"',
+    ],
+    [
+      ['selfcheck', '--first', '--', 'jest', '--gate', 'src/a.ts'],
+      '--gate after "--" would go to the gate command. Write it before "--"',
+    ],
+    [
+      ['selfcheck', '--', 'jest', '--gate=src/a.ts'],
+      '--gate after "--" would go to the gate command. Write it before "--"',
+    ],
+    [
+      ['selfcheck', '--shard', '1/2', '--gate', 'src/a.ts'],
+      '--gate and --shard cannot be combined',
+    ],
     [['check', '--'], '"--" is only accepted by the mutation and selfcheck commands'],
     [['lcov', '--', 'x'], '"--" is only accepted by the mutation and selfcheck commands'],
     [['--', 'x'], '"--" is only accepted by the mutation and selfcheck commands'],
@@ -127,6 +207,26 @@ describe('parseArgs', () => {
   ])('rejects %j', (argv, message) => {
     expect(() => parseArgs(argv)).toThrow(UsageError);
     expect(() => parseArgs(argv)).toThrow(new UsageError(message));
+  });
+
+  it('still hands --gate and --shard of the mutation command to Stryker, in every position', () => {
+    expect(parseArgs(['mutation', '--gate', 'x', '--shard', '1/2', '--gate=y'])).toEqual({
+      ...base,
+      command: 'mutation',
+      rest: ['--gate', 'x', '--shard', '1/2', '--gate=y'],
+    });
+    expect(parseArgs(['mutation', '--', '--shard', '1/2', '--gate']).rest).toEqual([
+      '--shard',
+      '1/2',
+      '--gate',
+    ]);
+  });
+
+  it('leaves alone a gate command whose arguments only start like the two options', () => {
+    expect(
+      parseArgs(['selfcheck', '--', 'jest', '--shardless', '--gates=1', 'x--shard', '--gateway'])
+        .rest
+    ).toEqual(['jest', '--shardless', '--gates=1', 'x--shard', '--gateway']);
   });
 
   it('accepts "mutation --" with nothing after it', () => {
