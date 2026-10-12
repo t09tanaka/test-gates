@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -251,3 +252,98 @@ describe.skipIf(!strykerRuns).each(['vitest', 'jest'] as const)(
     );
   }
 );
+
+// Why `mutation --gate` is not the final check. A change in one gate (here together with its
+// spec) can make a mutant of another gate survive: the spec of `next` compares through `same`,
+// and `same` is made to tell less apart. Running only the mutants of the gate that changed and
+// taking over the old results of the other one passes; the run of every mutant does not.
+describe.skipIf(!strykerRuns)('test-gates mutation --gate with a real Stryker', () => {
+  it(
+    'judges only the gate it ran, and the run of every gate finds the survivor in the other',
+    { timeout: 480_000 },
+    async () => {
+      const same = (body: string) =>
+        `export const same = (left: number, right: number) => ${body};\n`;
+      const sameSpec = (cases: string) =>
+        "import { expect, it } from 'vitest';\nimport { same } from './same';\n" +
+        `it('compares', () => {\n${cases}});\n`;
+      const dir = project({
+        'package.json': { name: 'gate-run-fixture', private: true, type: 'module' },
+        'test-gates.json': { gates: [gate('src/same.ts'), gate('src/next.ts')], candidates: [] },
+        'src/same.ts': same('left === right'),
+        'src/same.spec.ts': sameSpec(
+          '  expect(same(1, 1)).toBe(true);\n  expect(same(1, 2)).toBe(false);\n'
+        ),
+        'src/next.ts': 'export const next = (value: number) => value + 1;\n',
+        'src/next.spec.ts':
+          "import { expect, it } from 'vitest';\nimport { next } from './next';\nimport { same } from './same';\n" +
+          "it('adds one', () => {\n  expect(same(next(2), 3)).toBe(true);\n});\n",
+        'vitest.gates.config.ts':
+          `import { createVitestGatesConfig } from ${JSON.stringify(helper('vitest'))};\n` +
+          'export default createVitestGatesConfig({ rootDir: import.meta.url });\n',
+        'stryker.gates.config.mjs':
+          `import { createStrykerGatesConfig } from ${JSON.stringify(helper('stryker'))};\n` +
+          "export default createStrykerGatesConfig({ rootDir: import.meta.url, testRunner: 'vitest', " +
+          "vitest: { configFile: 'vitest.gates.config.ts' }, concurrency: 1 });\n",
+      });
+      fs.symlinkSync(path.join(repoRoot, 'node_modules'), path.join(dir, 'node_modules'), 'dir');
+      const run = (...args: string[]) => testGatesAsync(['mutation', '--dir', dir, ...args]);
+      const stryker = (...args: string[]) =>
+        new Promise<number | null>((resolve, reject) => {
+          const child = spawn(
+            path.join(dir, 'node_modules/.bin/stryker'),
+            ['run', 'stryker.gates.config.mjs', ...args],
+            { cwd: dir, stdio: 'ignore' }
+          );
+          child.on('error', reject);
+          child.on('close', resolve);
+        });
+      const SURVIVOR =
+        '  - src/next.ts:1:40 / ArithmeticOperator / value + 1 → value - 1 (Survived)';
+
+      // 1. Every mutant of both gates is killed.
+      const first = await run();
+      expect(first.stdout).toContain('unallowed survivors 0)');
+      expect(first.status).toBe(0);
+
+      // 2. `same` now only tells zero from the rest, and its spec is changed with it. Every
+      //    mutant of `same` is still killed. `next(2)` with `value - 1` is 1, which is no
+      //    longer told from 3.
+      write(dir, {
+        'src/same.ts': same('(left === 0) === (right === 0)'),
+        'src/same.spec.ts': sameSpec(
+          '  expect(same(1, 2)).toBe(true);\n  expect(same(0, 0)).toBe(true);\n' +
+            '  expect(same(0, 2)).toBe(false);\n  expect(same(2, 0)).toBe(false);\n'
+        ),
+      });
+
+      // 3. What must not be reported as a pass: Stryker runs the mutants of the changed gate
+      //    only and takes the old results of the other gate over from its incremental file.
+      //    Judged as a report of every gate, that passes.
+      expect(await stryker('--mutate', 'src/same.ts')).toBe(0);
+      const takenOver = await testGatesAsync(['mutation-result', '--dir', dir]);
+      expect(takenOver.stdout).toContain('unallowed survivors 0)');
+      expect(takenOver.status).toBe(0);
+
+      // 4. `mutation --gate` runs the same mutants, judges that gate alone, and says so.
+      const part = await run('--gate', 'src/same.ts');
+      expect(part.stdout).toContain(
+        'unallowed survivors 0). Only 1 of 2 gate(s) were run and judged (--gate)'
+      );
+      expect(part.stdout).toContain('run without --gate for the final check');
+      expect(part.status).toBe(0);
+      // Its report is gone, so `mutation-result` cannot judge it as one of every gate.
+      expect((await testGatesAsync(['mutation-result', '--dir', dir])).status).toBe(1);
+
+      // 5. The run of every gate after it takes nothing over, and fails.
+      const full = await run();
+      expect(full.stdout).toContain(
+        'the results of the last run are not reused: there is no record of the run that wrote the incremental file'
+      );
+      expect(full.stderr).toContain(SURVIVOR);
+      // (and the mutant that returns nothing: undefined is not told from 3 either)
+      expect(full.stderr).toContain('unallowed survivors 2)');
+      expect(full.status).toBe(1);
+    }
+  );
+});

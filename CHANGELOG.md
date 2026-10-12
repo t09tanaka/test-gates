@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `test-gates mutation --gate <path>` runs and judges the mutants of the named gates only, for the time a gate is being worked on. It is not the final check: a change in one gate can make a mutant of another gate survive. The last line says so, the run takes nothing over from an earlier one and leaves neither a record nor a JSON report behind, and the option is refused when `CI` is set.
+
+### Changed
+
+- `test-gates mutation` takes `--gate` for itself. Before, it was handed to Stryker like every unknown argument (Stryker has no such option).
+
 ## 0.3.3
 
 Documentation only; the commands and the helpers behave as in 0.3.2.

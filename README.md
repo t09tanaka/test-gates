@@ -227,7 +227,7 @@ Static checks, before the gate run. Reports every violation as `file:line: reaso
 - The Stryker config does not use `excludedMutations`, `ignoreStatic` or `ignorers`.
 - A Vitest gate run below Vitest 4 does not use the plain v8 coverage provider (since 0.3.0), see [Vitest: v8 or istanbul](#vitest-v8-or-istanbul).
 
-### `test-gates mutation [-- <stryker arguments>]`
+### `test-gates mutation [--gate <path>…] [-- <stryker arguments>]`
 
 Runs `stryker run <config>` from the project's own `node_modules`, then judges the JSON report (see `mutation-result`). Unknown arguments, and everything after `--`, are handed to Stryker. If Stryker itself fails, the exit code is 1 and nothing is judged. A report from an earlier run is deleted first, so a run that writes none cannot pass on old results.
 
@@ -268,6 +268,22 @@ What it does not see, and what therefore still needs `-- --force` by hand, or CI
 - environment variables, the clock, the network, and a Stryker config that reads them or the command line to decide about incremental mode,
 - files outside the subproject that are reached without a link and without `..` in a path: an absolute path, an alias defined in a config above the subproject (in that case every file of the repository is compared only if the subproject points at that config with a relative path),
 - changes inside `node_modules` that leave the files of the package manager as they were.
+
+#### `--gate <path>`: only the mutants of one gate
+
+While working on one gate, `test-gates mutation --gate src/pricing/shipping-fee.ts` runs the mutants of that gate only (it hands the path to Stryker as `--mutate`) and judges that gate only. The option can be given more than once; the path is written as in `test-gates.json`.
+
+**It is not the final check, and the last line says so.** A change in one gate, in its spec or in a file they import can make a mutant of **another** gate survive, and the mutants of that other gate are not run. `test/incremental.test.ts` has such a project, with a real Stryker: the spec of one gate compares its result through a function of another gate; that function is changed to tell less apart, together with its own spec. Every mutant of the changed gate is still killed. Running only those and taking over the old results of the other gate from Stryker's incremental file passes. The run of every gate finds the survivor in the other gate.
+
+So a run with `--gate`
+
+- judges the named gates and no other (the report of such a run can hold old results of the other gates, which Stryker takes over from its incremental file),
+- takes nothing over from an earlier run: it adds `--force`, and removes the record of the last run, so the next run without `--gate` is one of every mutant,
+- removes the JSON report after it is judged, so that `mutation-result` cannot take it for the report of a full run,
+- ends its last line with `Only 1 of 9 gate(s) were run and judged (--gate), and a change in one gate can make a mutant of another survive: run without --gate for the final check`,
+- **is refused when `CI` is set** in the environment (to anything but an empty value, `false` or `0`), with exit code 2, like `selfcheck --quick`.
+
+`--gate` is written before `--`, and cannot be combined with a `--mutate` of your own.
 
 ### `test-gates mutation-result [--report <path>]`
 

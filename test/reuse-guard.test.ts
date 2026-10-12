@@ -354,6 +354,43 @@ describe.each(['git', 'walk'] as const)(
       );
     });
 
+    it('takes nothing over in a run with --gate, and leaves no record of it', () => {
+      const dir = fresh();
+      // First run of all: there is no incremental file to take anything from.
+      expect(mutation(dir, '--gate', 'src/age.ts')).toEqual({
+        status: 0,
+        forced: false,
+        reason: null,
+        args: ['run', 'stryker.gates.config.mjs', '--mutate', 'src/age.ts'],
+      });
+      expect(fs.existsSync(path.join(dir, RECORD))).toBe(false);
+      // The run without --gate after it: the incremental file is one no record came with.
+      expect(mutation(dir)).toEqual(
+        forcedBy('there is no record of the run that wrote the incremental file')
+      );
+      expect(mutation(dir)).toEqual(REUSED);
+      // Nothing changed, and a run with --gate still runs every mutant of its gate ...
+      expect(mutation(dir, '--gate', 'src/age.ts')).toEqual({
+        status: 0,
+        forced: true,
+        reason: 'with --gate nothing is taken over from an earlier run',
+        args: ['run', 'stryker.gates.config.mjs', '--mutate', 'src/age.ts', '--force'],
+      });
+      // ... and takes the record away, so that the next run is one of every mutant too.
+      expect(fs.existsSync(path.join(dir, RECORD))).toBe(false);
+      expect(mutation(dir)).toEqual(
+        forcedBy('there is no record of the run that wrote the incremental file')
+      );
+      // With --force given, nothing is added.
+      expect(mutation(dir, '--gate', 'src/age.ts', '--force')).toEqual({
+        status: 0,
+        forced: true,
+        reason: null,
+        args: ['run', 'stryker.gates.config.mjs', '--force', '--mutate', 'src/age.ts'],
+      });
+      expect(fs.existsSync(path.join(dir, RECORD))).toBe(false);
+    });
+
     it('does nothing when Stryker does not run in incremental mode', () => {
       const dir = fresh({
         'stryker.gates.config.mjs': 'export default {};\n',

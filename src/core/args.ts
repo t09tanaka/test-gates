@@ -12,7 +12,7 @@ export interface ParsedArgs {
   file: string | null;
   /** `--all` / `--first` (selfcheck). */
   mode: 'all' | 'first' | null;
-  /** `--gate` (selfcheck), once per gate: only these gates. Empty: no selection. */
+  /** `--gate` (selfcheck, mutation), once per gate: only these gates. Empty: no selection. */
   gates: string[];
   /** `--quick` (selfcheck): gates that only their own spec touches share one run. */
   quick: boolean;
@@ -51,7 +51,7 @@ function parseShard(value: string): Shard {
 
 const OPTIONS_BY_COMMAND: Record<Command, string[]> = {
   check: ['--dir'],
-  mutation: ['--dir'],
+  mutation: ['--dir', '--gate'],
   'mutation-result': ['--dir', '--report'],
   selfcheck: ['--dir', '--all', '--first', '--gate', '--shard', '--quick'],
   lcov: ['--dir', '--file'],
@@ -183,6 +183,11 @@ export function parseArgs(argv: string[]): ParsedArgs {
     throw new UsageError(
       `${misplaced.split('=')[0]} after "--" would go to the gate command. Write it before "--"`
     );
+  }
+  // After "--" the option would go to Stryker, which does not know it. (Only mutation is left
+  // here with such an argument: selfcheck was refused above, and no other command has a rest.)
+  if (parsed.rest.some((arg) => arg === '--gate' || arg.startsWith('--gate='))) {
+    throw new UsageError('--gate after "--" would go to Stryker. Write it before "--"');
   }
   if (parsed.command === 'selfcheck' && parsed.rest.length === 0 && argv.includes('--')) {
     throw new UsageError('"--" must be followed by the gate command');
