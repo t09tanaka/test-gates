@@ -697,6 +697,10 @@ How the incremental file and this tool interact (covered by `test/incremental.te
 - [dart_mutant](https://github.com/t09tanaka/dart_mutant): mutation testing for Dart, the tool that writes the mutation report those gates judge.
 - [contract-fixtures](https://github.com/t09tanaka/contract-fixtures) (TypeScript and Dart): shared request and response fixtures that keep an API and its clients in step.
 
+## Contributing
+
+Run `npm run check:quick` (lint, typecheck, format check and the light tests; about 20 seconds) before you push. CI runs the same checks as a separate fast job, and the heavy tests, gates and mutation test as parallel jobs.
+
 ## License
 
 MIT
