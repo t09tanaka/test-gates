@@ -8,9 +8,14 @@ on:
 permissions:
   contents: read
 
+# A newer push to the same branch cancels the older run. Pushes to main are never cancelled.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
-  gates:
-    name: lint, test, gates, mutation (Node from .node-version)
+  quick:
+    name: quick (lint, format, typecheck, test)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -34,14 +39,59 @@ jobs:
       - name: test (builds first)
         run: npm test
 
-      - name: heavy tests (a real Stryker, Jest and Vitest)
+  heavy:
+    name: heavy tests (a real Stryker, Jest and Vitest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - run: npm ci
+
+      - name: heavy tests
         run: npm run test:heavy
+
+  gates:
+    name: test gates (checks, 100% coverage, negative control)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - run: npm ci
+
+      - name: build
+        run: npm run build
 
       - name: test gates (static checks + per-file 100% coverage)
         run: npm run test:gates
 
       - name: negative control
         run: npm run test:gates:selfcheck
+
+  mutation:
+    name: mutation test (full run)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - run: npm ci
+
+      - name: build
+        run: npm run build
 
       - name: mutation test (full run)
         run: npm run test:gates:mutation -- --force
