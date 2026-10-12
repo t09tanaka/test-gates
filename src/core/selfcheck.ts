@@ -152,7 +152,7 @@ export interface RunInfo {
 
 /**
  * The runs for which this repository's tests compare the shared run with a run per gate
- * (`test/selfcheck-runners.test.ts`), by runner and its major.minor version. Outside of it the
+ * (`test/selfcheck-runners-*.test.ts`), by runner and its major.minor version. Outside of it the
  * notes are not trusted and every gate gets its own run.
  */
 export const VERIFIED_RUNS: {
