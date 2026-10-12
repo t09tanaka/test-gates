@@ -3,7 +3,7 @@ import path from 'node:path';
 import { judgeLcov, parseLcov, summarizeLcov } from '../core/lcov.js';
 import { ManifestError } from '../core/manifest.js';
 import type { Violation } from '../core/types.js';
-import { existsExact } from '../fs.js';
+import { existsExact, type Listing } from '../fs.js';
 import { readManifest } from '../load.js';
 import { type Io, printViolations } from './output.js';
 
@@ -28,8 +28,9 @@ export function runLcov(dir: string, fileOption: string | null, io: Io): number 
   }
 
   const violations: Violation[] = [...manifest.violations];
+  const listing: Listing = new Map();
   const existing = manifest.gates.filter((gate) => {
-    const exists = existsExact(manifest.dir, gate.path);
+    const exists = existsExact(manifest.dir, gate.path, 'file', listing);
     if (!exists) {
       violations.push({
         file: gate.path,
