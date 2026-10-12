@@ -57,9 +57,12 @@ export function testGates(
  * Runs the built CLI without blocking the test worker. For a run that takes many seconds (a
  * real Stryker): a worker that is blocked for too long cannot report to Vitest and the run fails.
  */
-export function testGatesAsync(args: string[]): Promise<CliResult> {
+export function testGatesAsync(args: string[], env: NodeJS.ProcessEnv = {}): Promise<CliResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [cliPath, ...args], { cwd: repoRoot });
+    const child = spawn(process.execPath, [cliPath, ...args], {
+      cwd: repoRoot,
+      env: { ...process.env, ...env },
+    });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (chunk: Buffer) => (stdout += chunk.toString()));

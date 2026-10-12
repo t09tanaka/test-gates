@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { gateSpecs, loadGates, NO_SPEC_PATTERN } from './load.js';
 import { FULL_COVERAGE, resolveRootDir } from './shared.js';
 import { TOUCH_ENV, vitestProviderFile } from './touch.js';
@@ -51,7 +52,18 @@ export function createVitestGatesConfig(options: VitestGatesOptions = {}): Recor
         // While `test-gates selfcheck` asks for it: write down what each spec executed. Only
         // the istanbul provider can be wrapped for that (see src/touch.ts).
         ...(touchDir && provider === 'istanbul'
-          ? { provider: 'custom', customProviderModule: vitestProviderFile(touchDir) }
+          ? {
+              provider: 'custom',
+              customProviderModule: vitestProviderFile(touchDir),
+              // The runner's own total, to check the notes against.
+              reporter: [
+                ...(Array.isArray(coverage.reporter)
+                  ? (coverage.reporter as unknown[])
+                  : [coverage.reporter ?? 'text']),
+                'json',
+              ],
+              reportsDirectory: path.join(touchDir, 'coverage'),
+            }
           : {}),
         enabled: true,
         include: manifest.gates.map((gate) => gate.path),

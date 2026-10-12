@@ -4,8 +4,14 @@ import {
   EXCLUDE_ENV,
   excludedSpecs,
   judgeSelfcheck,
+  accountedFor,
+  minorOf,
   planControls,
   selectControls,
+  sharedRunPrecheck,
+  unverifiedRun,
+  unverifiedVersion,
+  VERIFIED_RUNS,
 } from './selfcheck';
 
 const GATE = 'src/common/shipping-fee.ts';
@@ -234,6 +240,330 @@ describe('excludedSpecs', () => {
   });
 });
 
+const c = (s: number[], f: number[] = [], b: number[] = []) => ({ s, f, b });
+
+describe('accountedFor', () => {
+  it('says yes when the notes add up to the total, counter by counter', () => {
+    expect(
+      accountedFor(c([2, 5], [5], [3, 2]), [c([1, 2], [2], [1, 1]), c([1, 3], [3], [2, 1])])
+    ).toBe('yes');
+    expect(accountedFor(c([1], [1]), [c([1], [1])])).toBe('yes');
+    // A spec that loaded the file and executed nothing of it.
+    expect(accountedFor(c([1], [1]), [c([1], [1]), c([0], [0])])).toBe('yes');
+  });
+
+  it('says no when the runner counted an execution no note has', () => {
+    // a function that was called once more, after the notes were taken
+    expect(accountedFor(c([2], [3]), [c([1], [1]), c([1], [1])])).toBe('no');
+    expect(accountedFor(c([3], [2]), [c([1], [1]), c([1], [1])])).toBe('no');
+    expect(accountedFor(c([2], [2], [2, 1]), [c([1], [1], [1, 0]), c([1], [1], [0, 1])])).toBe(
+      'no'
+    );
+    // and when a note has more than the runner counted
+    expect(accountedFor(c([1], [1]), [c([1], [1]), c([1], [1])])).toBe('no');
+  });
+
+  it('compares functions and branch arms as sets of counts: the report may order them otherwise', () => {
+    expect(accountedFor(c([1, 4], [4, 1], [0, 2]), [c([1, 4], [1, 4], [2, 0])])).toBe('yes');
+    expect(accountedFor(c([1, 4], [4, 2], [0, 2]), [c([1, 4], [1, 4], [2, 0])])).toBe('no');
+    expect(accountedFor(c([1, 4], [4, 1], [1, 2]), [c([1, 4], [1, 4], [2, 0])])).toBe('no');
+    expect(accountedFor(c([4, 1], [1, 4]), [c([1, 4], [1, 4])])).toBe('yes');
+  });
+
+  it('lets several statements of the notes be one statement of the report, each used once', () => {
+    // three statements in the compiled file, two in the source
+    expect(accountedFor(c([2, 5], [5]), [c([1, 1, 2], [2]), c([1, 1, 3], [3])])).toBe('yes');
+    expect(accountedFor(c([2, 6], [5]), [c([1, 1, 2], [2]), c([1, 1, 3], [3])])).toBe('no');
+    expect(accountedFor(c([5, 5], [5]), [c([1, 1, 2], [2]), c([1, 1, 3], [3])])).toBe('no');
+    expect(accountedFor(c([2, 2], [5]), [c([1, 1, 2], [2]), c([1, 1, 3], [3])])).toBe('yes');
+    expect(accountedFor(c([10, 9], [5]), [c([9, 1, 10], [5])])).toBe('yes');
+    // With as many statements on both sides, they have to be the same.
+    expect(accountedFor(c([2, 2, 5], [5]), [c([1, 1, 2], [2]), c([1, 1, 3], [3])])).toBe('yes');
+    expect(accountedFor(c([2, 5, 5], [5]), [c([1, 1, 2], [2]), c([1, 1, 3], [3])])).toBe('no');
+  });
+
+  it('says unknown when there is nothing to compare, or functions and branches do not line up', () => {
+    expect(accountedFor(undefined, [c([1], [1])])).toBe('unknown');
+    expect(accountedFor(c([1], [1]), [])).toBe('unknown');
+    expect(accountedFor(c([1], [1, 1]), [c([1], [1])])).toBe('unknown');
+    expect(accountedFor(c([1], [1], [1]), [c([1], [1], [1, 1])])).toBe('unknown');
+    // notes of one file that do not line up with each other
+    expect(accountedFor(c([2], [2]), [c([1], [1]), c([1, 0], [1])])).toBe('unknown');
+    expect(accountedFor(c([2], [2]), [c([1], [1]), c([1], [1, 0])])).toBe('unknown');
+    expect(accountedFor(c([2], [2], [2]), [c([1], [1], [1]), c([1], [1], [1, 0])])).toBe('unknown');
+  });
+});
+
+const jestRun = {
+  runner: 'jest',
+  version: '30.5.2',
+  provider: 'babel',
+  pool: 'default',
+  isolate: true,
+  projects: 1,
+  problem: null,
+};
+const vitestRun = {
+  runner: 'vitest',
+  version: '3.2.7',
+  provider: 'istanbul',
+  pool: 'forks',
+  isolate: true,
+  projects: 1,
+  problem: null,
+};
+
+describe('the runs the shared run is verified with', () => {
+  it('lists them in one table', () => {
+    expect(VERIFIED_RUNS).toEqual([
+      { runner: 'jest', versions: ['30.5'], provider: 'babel', pools: ['default'] },
+      { runner: 'vitest', versions: ['3.2'], provider: 'istanbul', pools: ['forks', 'threads'] },
+    ]);
+  });
+
+  it('reads major.minor from a version', () => {
+    expect(minorOf('30.5.2')).toBe('30.5');
+    expect(minorOf('30.15.2')).toBe('30.15');
+    expect(minorOf('130.5.0-rc.1')).toBe('130.5');
+    expect(minorOf('3.2')).toBe('3.2');
+    expect(minorOf('unknown')).toBe('unknown');
+    expect(minorOf('v3.2.1')).toBe('v3.2.1');
+  });
+
+  it('names every verified version of a runner when it refuses another', () => {
+    const table = [{ runner: 'vitest', versions: ['3.2', '4.1'] }];
+    expect(unverifiedVersion('vitest', '4.1.11', table)).toBeNull();
+    expect(unverifiedVersion('vitest', '4.0.0', table)).toBe(
+      'the shared run is verified with vitest 3.2, 4.1, not with 4.0.0'
+    );
+    expect(unverifiedVersion('jest', '30.5.2', table)).toBe(
+      'the shared run is not verified with jest'
+    );
+  });
+
+  it('accepts a runner by its major and minor version', () => {
+    expect(unverifiedVersion('jest', '30.5.0')).toBeNull();
+    expect(unverifiedVersion('jest', '30.5.99')).toBeNull();
+    expect(unverifiedVersion('vitest', '3.2.7')).toBeNull();
+    expect(unverifiedVersion('vitest', '3.2.0-beta.1')).toBeNull();
+    expect(unverifiedVersion('vitest', '3.2')).toBeNull();
+  });
+
+  it.each([
+    ['jest', '30.6.0', 'the shared run is verified with jest 30.5, not with 30.6.0'],
+    ['jest', '29.7.0', 'the shared run is verified with jest 30.5, not with 29.7.0'],
+    ['jest', '130.5.0', 'the shared run is verified with jest 30.5, not with 130.5.0'],
+    ['jest', '30.50.0', 'the shared run is verified with jest 30.5, not with 30.50.0'],
+    ['vitest', '4.0.0', 'the shared run is verified with vitest 3.2, not with 4.0.0'],
+    ['vitest', '3.20.1', 'the shared run is verified with vitest 3.2, not with 3.20.1'],
+    ['vitest', 'x3.2.1', 'the shared run is verified with vitest 3.2, not with x3.2.1'],
+    ['vitest', 'unknown', 'the shared run is verified with vitest 3.2, not with unknown'],
+    ['mocha', '11.0.0', 'the shared run is not verified with mocha'],
+  ])('refuses %s %s', (runner, version, reason) => {
+    expect(unverifiedVersion(runner, version)).toBe(reason);
+  });
+
+  it('accepts a run that is in the table', () => {
+    expect(unverifiedRun(jestRun)).toBeNull();
+    expect(unverifiedRun(vitestRun)).toBeNull();
+    expect(unverifiedRun({ ...vitestRun, pool: 'threads' })).toBeNull();
+  });
+
+  it.each([
+    [{ ...vitestRun, problem: 'the provider changed' }, 'the provider changed'],
+    [
+      { ...vitestRun, version: '4.1.0' },
+      'the shared run is verified with vitest 3.2, not with 4.1.0',
+    ],
+    [{ ...vitestRun, version: '4.1.0', problem: 'first' }, 'first'],
+    [
+      { ...vitestRun, provider: 'v8' },
+      'the shared run is not verified with the coverage provider v8',
+    ],
+    [
+      { ...jestRun, provider: 'v8' },
+      'the shared run is not verified with the coverage provider v8',
+    ],
+    [{ ...vitestRun, pool: 'vmThreads' }, 'the shared run is not verified with the pool vmThreads'],
+    [{ ...jestRun, pool: 'forks' }, 'the shared run is not verified with the pool forks'],
+    [
+      { ...vitestRun, isolate: false },
+      'the shared run is not verified with spec files that share their modules (isolate: false)',
+    ],
+    [{ ...vitestRun, projects: 2 }, 'the shared run is not verified with 2 projects in one run'],
+    [{ ...jestRun, projects: 0 }, 'the shared run is not verified with 0 projects in one run'],
+    [{ ...jestRun, runner: 'mocha' }, 'the shared run is not verified with mocha'],
+    [
+      { ...vitestRun, provider: 'v8', pool: 'vmThreads', isolate: false, projects: 3 },
+      'the shared run is not verified with the coverage provider v8',
+    ],
+    [
+      { ...vitestRun, pool: 'vmThreads', isolate: false, projects: 3 },
+      'the shared run is not verified with the pool vmThreads',
+    ],
+    [
+      { ...vitestRun, isolate: false, projects: 3 },
+      'the shared run is not verified with spec files that share their modules (isolate: false)',
+    ],
+  ])('refuses a run outside of the table (%#)', (run, reason) => {
+    expect(unverifiedRun(run)).toBe(reason);
+  });
+});
+
+describe('sharedRunPrecheck', () => {
+  const configForJest = 'module.exports = createJestGatesConfig({ rootDir: __dirname });';
+  const configForVitest =
+    "export default createVitestGatesConfig({ coverageProvider: 'istanbul' });";
+
+  it('says nothing when the run for notes may be of use', () => {
+    expect(
+      sharedRunPrecheck({
+        specs: [],
+        program: 'jest',
+        version: '30.5.2',
+        configSource: configForJest,
+      })
+    ).toBeNull();
+    expect(
+      sharedRunPrecheck({
+        specs: [],
+        program: 'vitest',
+        version: '3.2.7',
+        configSource: configForVitest,
+      })
+    ).toBeNull();
+    // a gate command of the project's own: its config is not known
+    expect(
+      sharedRunPrecheck({ specs: [], program: 'jest', version: '30.5.2', configSource: null })
+    ).toBeNull();
+    // the runner is not installed where it is looked for
+    expect(
+      sharedRunPrecheck({
+        specs: [],
+        program: 'vitest',
+        version: null,
+        configSource: configForVitest,
+      })
+    ).toBeNull();
+    expect(
+      sharedRunPrecheck({ specs: [], program: 'vitest', version: null, configSource: null })
+    ).toBeNull();
+  });
+
+  it('says nothing about a program it does not know, whatever the rest', () => {
+    expect(
+      sharedRunPrecheck({ specs: [], program: 'node', version: '1.0.0', configSource: 'x' })
+    ).toBeNull();
+    expect(
+      sharedRunPrecheck({ specs: [], program: 'npx', version: null, configSource: null })
+    ).toBeNull();
+    expect(
+      sharedRunPrecheck({ specs: [], program: 'jest2', version: '1.0.0', configSource: 'x' })
+    ).toBeNull();
+  });
+
+  it('knows beforehand that a version outside of the table gets a run per gate', () => {
+    expect(
+      sharedRunPrecheck({
+        specs: [],
+        program: 'vitest',
+        version: '4.0.1',
+        configSource: configForVitest,
+      })
+    ).toBe('the shared run is verified with vitest 3.2, not with 4.0.1');
+    expect(
+      sharedRunPrecheck({ specs: [], program: 'jest', version: '29.7.0', configSource: null })
+    ).toBe('the shared run is verified with jest 30.5, not with 29.7.0');
+  });
+
+  it('knows beforehand that a config without the helper leaves no notes', () => {
+    expect(
+      sharedRunPrecheck({
+        specs: [],
+        program: 'jest',
+        version: '30.5.2',
+        configSource: 'module.exports = {};',
+      })
+    ).toBe('the gate config does not use createJestGatesConfig');
+    expect(
+      sharedRunPrecheck({
+        specs: [],
+        program: 'jest',
+        version: null,
+        configSource: configForVitest,
+      })
+    ).toBe('the gate config does not use createJestGatesConfig');
+    expect(
+      sharedRunPrecheck({
+        specs: [],
+        program: 'vitest',
+        version: '3.2.7',
+        configSource: configForJest,
+      })
+    ).toBe('the gate config does not use createVitestGatesConfig');
+  });
+
+  it.each([
+    'if (process.env.TEST_GATES_EXCLUDE_SPEC) { extra(); }',
+    'const mode = process . env.MODE;',
+    'const mode = import.meta.env.MODE;',
+    "import fs from 'node:fs';",
+    'const fs = require("fs");',
+    "import { readFile } from 'fs/promises';",
+    "import { readFile } from 'node:fs/promises';",
+    'const { execSync } = require(`child_process`);',
+    "import { Worker } from 'node:worker_threads';",
+    "import net from 'net';",
+    "import http from 'http';",
+    "import https from 'node:https';",
+  ])('refuses a spec that can see what is around it: %s', (source) => {
+    const specs = [
+      { path: 'src/a.spec.ts', source: "it('x', () => {});" },
+      { path: 'src/b.spec.ts', source },
+      { path: 'src/c.spec.ts', source },
+    ];
+    expect(sharedRunPrecheck({ specs, program: 'node', version: null, configSource: null })).toBe(
+      'src/b.spec.ts reads the environment or files, so what it executes may depend on which other specs ran'
+    );
+  });
+
+  it.each([
+    "import { fee } from './fs';",
+    "import path from 'node:path';",
+    'const processEnv = 1; const env = process.argv;',
+    "it('reads fs', () => { expect(name).toBe('fs/promises!'); });",
+    "import x from 'https-proxy';",
+    'const process_env = unprocess.environment;',
+  ])('lets a spec pass that only looks like it: %s', (source) => {
+    expect(
+      sharedRunPrecheck({
+        specs: [{ path: 'src/a.spec.ts', source }],
+        program: 'node',
+        version: null,
+        configSource: null,
+      })
+    ).toBeNull();
+  });
+
+  it('knows beforehand that Vitest with the v8 provider leaves no notes', () => {
+    const v8 = 'export default createVitestGatesConfig({ rootDir: import.meta.url });';
+    expect(
+      sharedRunPrecheck({ specs: [], program: 'vitest', version: '3.2.7', configSource: v8 })
+    ).toBe(
+      "Vitest measures with the v8 provider; the shared run needs coverageProvider: 'istanbul'"
+    );
+    // Jest has one provider under the helper.
+    expect(
+      sharedRunPrecheck({
+        specs: [],
+        program: 'jest',
+        version: '30.5.2',
+        configSource: configForJest,
+      })
+    ).toBeNull();
+  });
+});
+
 describe('planControls', () => {
   const gate = (name: string) => ({
     path: `src/${name}.ts`,
@@ -242,85 +572,207 @@ describe('planControls', () => {
   });
   const all = [gate('a'), gate('b'), gate('c'), gate('d')];
   const targets = all.map((entry) => entry.path);
-  const own = (name: string, ...others: string[]) => ({
+  const hit = c([1], [1]);
+  const loaded = c([0], [0]);
+  /** The note of the spec of `name`: all of its own gate, and the given counters of others. */
+  const note = (name: string, others: Record<string, ReturnType<typeof c>> = {}) => ({
     spec: `/work/src/${name}.spec.ts`,
-    touched: [`/work/src/${name}.ts`, ...others.map((other) => `/work/src/${other}.ts`)],
+    files: {
+      [`/work/src/${name}.ts`]: hit,
+      ...Object.fromEntries(
+        Object.entries(others).map(([other, counters]) => [`/work/src/${other}.ts`, counters])
+      ),
+    },
   });
-  const records = [own('a'), own('b'), own('c'), own('d')];
+  const notes = [note('a'), note('b'), note('c'), note('d')];
+  const totalsOf = (counts: Record<string, ReturnType<typeof c>>) =>
+    Object.fromEntries(
+      Object.entries(counts).map(([name, counters]) => [`/work/src/${name}.ts`, counters])
+    );
+  const totals = totalsOf({ a: hit, b: hit, c: hit, d: hit });
   const plan = (changes: Partial<Parameters<typeof planControls>[0]> = {}) =>
-    planControls({ all, targets, records, failurePattern: null, ...changes });
-  const everyoneAlone = { together: [], alone: targets };
+    planControls({ all, targets, run: vitestRun, notes, totals, failurePattern: null, ...changes });
+  const everyoneAlone = (reason: string) => ({ together: [], alone: targets, reason });
+  const NO_NOTES =
+    'the gate run left no notes (the gate config does not use the helpers of this package, or Vitest measures with the v8 provider)';
 
   it('lets every gate that only its own spec touches share one run', () => {
-    expect(plan()).toEqual({ together: targets, alone: [] });
-    // A file that is not a gate (a setup file that is measured by mistake) does not matter.
-    expect(
-      plan({
-        records: [
-          { spec: '/work/src/a.spec.ts', touched: ['/work/src/a.ts', '/work/x.ts'] },
-          ...records.slice(1),
-        ],
-      })
-    ).toEqual({ together: targets, alone: [] });
+    expect(plan()).toEqual({ together: targets, alone: [], reason: null });
+    expect(plan({ run: jestRun })).toEqual({ together: targets, alone: [], reason: null });
   });
 
   it('keeps the order of the targets, and plans only for them', () => {
     expect(plan({ targets: ['src/d.ts', 'src/b.ts'] })).toEqual({
       together: ['src/d.ts', 'src/b.ts'],
       alone: [],
+      reason: null,
     });
   });
 
   it('gives a gate its own run when the spec of another gate touches it', () => {
-    expect(plan({ records: [own('a'), own('b', 'a'), own('c'), own('d')] })).toEqual({
+    expect(
+      plan({
+        notes: [note('a'), note('b', { a: hit }), note('c'), note('d')],
+        totals: totalsOf({ a: c([2], [2]), b: hit, c: hit, d: hit }),
+      })
+    ).toEqual({
       together: ['src/b.ts', 'src/c.ts', 'src/d.ts'],
       alone: ['src/a.ts'],
+      reason: null,
     });
-    // Two specs that each touch a part of it.
-    expect(plan({ records: [own('a'), own('b', 'a'), own('c', 'a'), own('d')] }).alone).toEqual([
-      'src/a.ts',
-    ]);
+    // one statement, one function, one branch arm are each enough
+    for (const touch of [c([1], [0], [0]), c([0], [1], [0]), c([0], [0], [1])]) {
+      const one = c([1], [1], [1]);
+      expect(
+        plan({
+          notes: [
+            { spec: '/work/src/a.spec.ts', files: { '/work/src/a.ts': one } },
+            note('b', { a: touch }),
+            note('c'),
+            note('d'),
+          ],
+          totals: totalsOf({
+            a: c([1 + touch.s[0]!], [1 + touch.f[0]!], [1 + touch.b[0]!]),
+            b: hit,
+            c: hit,
+            d: hit,
+          }),
+        }).alone
+      ).toEqual(['src/a.ts']);
+    }
+  });
+
+  it('lets a gate share the run when another spec loads it and executes nothing of it', () => {
+    expect(plan({ notes: [note('a'), note('b', { a: loaded }), note('c'), note('d')] })).toEqual({
+      together: targets,
+      alone: [],
+      reason: null,
+    });
   });
 
   it('gives a gate its own run when its own spec is not seen to touch it', () => {
+    const silent = { spec: '/work/src/a.spec.ts', files: {} };
     expect(
       plan({
-        records: [{ spec: '/work/src/a.spec.ts', touched: [] }, own('b'), own('c'), own('d')],
+        notes: [silent, note('b'), note('c'), note('d')],
+        totals: totalsOf({ b: hit, c: hit, d: hit }),
       })
-    ).toEqual({ together: ['src/b.ts', 'src/c.ts', 'src/d.ts'], alone: ['src/a.ts'] });
-    // Touched by exactly one spec, but not its own.
+    ).toEqual({
+      together: ['src/b.ts', 'src/c.ts', 'src/d.ts'],
+      alone: ['src/a.ts'],
+      reason: null,
+    });
+    // touched by exactly one spec, but not its own
+    expect(plan({ notes: [silent, note('b', { a: hit }), note('c'), note('d')] }).alone).toEqual([
+      'src/a.ts',
+    ]);
+    // loaded by its own spec with nothing executed
     expect(
       plan({
-        records: [{ spec: '/work/src/a.spec.ts', touched: [] }, own('b', 'a'), own('c'), own('d')],
+        notes: [
+          { spec: '/work/src/a.spec.ts', files: { '/work/src/a.ts': loaded } },
+          note('b'),
+          note('c'),
+          note('d'),
+        ],
+        totals: totalsOf({ a: loaded, b: hit, c: hit, d: hit }),
       }).alone
     ).toEqual(['src/a.ts']);
   });
 
-  it('gives every gate its own run when the record of a spec is missing', () => {
-    expect(plan({ records: records.slice(1) })).toEqual(everyoneAlone);
-    expect(plan({ records: [] })).toEqual(everyoneAlone);
-    // Also when the spec without a record is that of a gate that is not a target.
-    expect(plan({ targets: ['src/a.ts', 'src/b.ts'], records: records.slice(0, 3) })).toEqual({
+  it('gives a gate its own run when its notes cannot be compared with the total', () => {
+    // the report has no entry for it
+    expect(plan({ totals: totalsOf({ b: hit, c: hit, d: hit }) })).toEqual({
+      together: ['src/b.ts', 'src/c.ts', 'src/d.ts'],
+      alone: ['src/a.ts'],
+      reason: null,
+    });
+    // the report counts another number of functions
+    expect(plan({ totals: totalsOf({ a: c([1], [1, 1]), b: hit, c: hit, d: hit }) }).alone).toEqual(
+      ['src/a.ts']
+    );
+  });
+
+  it('trusts no note when those of one gate do not add up to what the runner counted', () => {
+    const reason = 'the notes of the specs do not add up to what the runner counted for src/c.ts';
+    // The runner counted two calls of c, the notes have one: something ran after a note.
+    expect(plan({ totals: totalsOf({ a: hit, b: hit, c: c([1], [2]), d: hit }) })).toEqual(
+      everyoneAlone(reason)
+    );
+    // Also when that gate is not a target.
+    expect(
+      plan({
+        targets: ['src/a.ts', 'src/b.ts'],
+        totals: totalsOf({ a: hit, b: hit, c: c([2], [1]), d: hit }),
+      })
+    ).toEqual({
       together: [],
       alone: ['src/a.ts', 'src/b.ts'],
+      reason,
+    });
+    // The first such gate in the order of test-gates.json is named.
+    expect(
+      plan({ totals: totalsOf({ a: hit, b: c([2], [2]), c: c([1], [2]), d: hit }) }).reason
+    ).toBe('the notes of the specs do not add up to what the runner counted for src/b.ts');
+  });
+
+  it('gives every gate its own run when the note of a spec is missing', () => {
+    expect(plan({ notes: notes.slice(1) })).toEqual(
+      everyoneAlone('the gate run left no note for the spec of src/a.ts')
+    );
+    expect(plan({ notes: [] })).toEqual(
+      everyoneAlone('the gate run left no note for the spec of src/a.ts')
+    );
+    // Also when the spec without a note is that of a gate that is not a target.
+    expect(plan({ targets: ['src/a.ts', 'src/b.ts'], notes: notes.slice(0, 3) })).toEqual({
+      together: [],
+      alone: ['src/a.ts', 'src/b.ts'],
+      reason: 'the gate run left no note for the spec of src/d.ts',
     });
   });
 
+  it('gives every gate its own run when the gate run left nothing to plan on', () => {
+    expect(plan({ run: null })).toEqual(everyoneAlone(NO_NOTES));
+    expect(plan({ notes: null })).toEqual(everyoneAlone(NO_NOTES));
+    expect(plan({ totals: null })).toEqual(everyoneAlone(NO_NOTES));
+  });
+
+  it('gives every gate its own run for a run outside of the verified ones', () => {
+    expect(plan({ run: { ...vitestRun, version: '4.0.0' } })).toEqual(
+      everyoneAlone('the shared run is verified with vitest 3.2, not with 4.0.0')
+    );
+    expect(plan({ run: { ...vitestRun, problem: 'no onAfterSuiteRun' } })).toEqual(
+      everyoneAlone('no onAfterSuiteRun')
+    );
+  });
+
   it('gives every gate its own run when fewer than two could share one', () => {
+    const reason = 'fewer than two gates are touched by their own spec only';
     expect(
-      plan({ records: [own('a'), own('b', 'a', 'c', 'd'), own('c', 'a', 'b', 'd'), own('d')] })
-    ).toEqual(everyoneAlone);
-    expect(plan({ targets: ['src/a.ts'] })).toEqual({ together: [], alone: ['src/a.ts'] });
+      plan({
+        notes: [note('a'), note('b', { a: hit, c: hit }), note('c', { a: hit, b: hit }), note('d')],
+        totals: totalsOf({ a: c([3], [3]), b: c([2], [2]), c: c([2], [2]), d: hit }),
+      })
+    ).toEqual(everyoneAlone(reason));
+    expect(plan({ targets: ['src/a.ts'] })).toEqual({ together: [], alone: ['src/a.ts'], reason });
     expect(plan({ targets: ['src/a.ts', 'src/b.ts'] })).toEqual({
       together: ['src/a.ts', 'src/b.ts'],
       alone: [],
+      reason: null,
     });
   });
 
   it('gives every gate its own run for a failure pattern that does not name the gate', () => {
-    expect(plan({ failurePattern: 'threshold' })).toEqual(everyoneAlone);
-    expect(plan({ failurePattern: 'threshold.*{gate}' })).toEqual({ together: targets, alone: [] });
-    expect(plan({ failurePattern: '' })).toEqual({ together: targets, alone: [] });
+    const reason = 'settings.selfcheck.failurePattern does not contain {gate}';
+    expect(plan({ failurePattern: 'threshold' })).toEqual(everyoneAlone(reason));
+    // the first reason that applies is given
+    expect(plan({ failurePattern: 'threshold', run: null })).toEqual(everyoneAlone(reason));
+    expect(plan({ failurePattern: 'threshold.*{gate}' })).toEqual({
+      together: targets,
+      alone: [],
+      reason: null,
+    });
+    expect(plan({ failurePattern: '' })).toEqual({ together: targets, alone: [], reason: null });
   });
 
   it('gives a gate its own run when its path is part of the path of another gate', () => {
@@ -328,20 +780,22 @@ describe('planControls', () => {
       ...all,
       { path: 'lib/src/a.ts', file: '/work/lib/src/a.ts', specFile: '/work/lib/src/a.spec.ts' },
     ];
-    const nestedRecords = [
-      ...records,
-      { spec: '/work/lib/src/a.spec.ts', touched: ['/work/lib/src/a.ts'] },
-    ];
     expect(
       planControls({
         all: nested,
         targets: nested.map((entry) => entry.path),
-        records: nestedRecords,
+        run: vitestRun,
+        notes: [
+          ...notes,
+          { spec: '/work/lib/src/a.spec.ts', files: { '/work/lib/src/a.ts': hit } },
+        ],
+        totals: { ...totals, '/work/lib/src/a.ts': hit },
         failurePattern: null,
       })
     ).toEqual({
       together: ['src/b.ts', 'src/c.ts', 'src/d.ts', 'lib/src/a.ts'],
       alone: ['src/a.ts'],
+      reason: null,
     });
   });
 
@@ -349,6 +803,7 @@ describe('planControls', () => {
     expect(plan({ targets: ['src/a.ts', 'src/b.ts', 'src/x.ts'] })).toEqual({
       together: ['src/a.ts', 'src/b.ts'],
       alone: ['src/x.ts'],
+      reason: null,
     });
   });
 });

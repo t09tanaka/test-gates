@@ -294,7 +294,7 @@ The run also fails when
 On failure every unallowed survivor is listed as `file:line:column / mutator / original → replacement / occurrence`, followed by a JSON fragment that can be pasted into `equivalentMutants`. The last line gives the real numbers, never a percentage. For the gates of this repository:
 
 ```
-test-gates mutation: OK (mutants 1429 / detected 1429 (timeout 2) / allowed equivalent 0 / not evaluable 0 / unallowed survivors 0)
+test-gates mutation: OK (mutants 1676 / detected 1676 (timeout 2) / allowed equivalent 0 / not evaluable 0 / unallowed survivors 0)
 ```
 
 #### Timeouts
@@ -341,24 +341,42 @@ When the run fails on a timeout, first run again with less load (`npm run test:g
 
 0.3.1 set `timeoutMS` to 30000 instead. That was the wrong fix and 0.3.2 takes it back: the longer limit let most slow mutants finish, but the same full run then took about three times as long as without it, and in another project mutants that exhaust the heap crashed the test runner before the limit and came back as `RuntimeError`, which is only counted, not failed. `timeoutMS` is Stryker's default (5000) again unless the project sets it.
 
-### `test-gates selfcheck [--all | --first | --gate <path>… | --shard <index>/<total>] [--one-by-one] [-- <gate command>]`
+### `test-gates selfcheck [--all | --first | --gate <path>… | --shard <index>/<total>] [--shared] [-- <gate command>]`
 
 Negative control. For each gate, runs the gate with that gate's spec left out and requires the run to **fail on the coverage threshold of that very file**. A gate that stays green without its spec measures nothing; a run that fails for another reason (a config that does not load) proves nothing either.
 
 The spec to leave out is passed in the environment variable `TEST_GATES_EXCLUDE_SPEC`. The config helpers read it. The gate command is `jest --config jest.gates.config.*` or `vitest run --config vitest.gates.config.*`, whichever config exists; override it with `settings.gateCommand` or after `--`. `--all` (default) checks every gate, `--first` only the first.
 
-**One run for the gates that only their own spec touches.** A run of the gate command for every gate executes the specs of all the other gates each time, and takes minutes with many gates (see [Cost](#cost-and-how-to-use-strykers-incremental-mode)). With three gates or more, `selfcheck` therefore starts with a full gate run in which the config helpers write down, for each spec file, which gates it executed anything of. Leaving out the spec of a gate changes the coverage of that gate only by what its spec executed of it. So for a gate that no other spec touched, the result does not depend on which other specs are left out with it, and all those gates lose their specs in **one** run. Each of them is judged in that run as it is in a run of its own: the run has to fail, and it has to report the coverage threshold of that very file.
+**`--shared`: one run for the gates that only their own spec touches.** A run of the gate command for every gate executes the specs of all the other gates each time, and takes minutes with many gates (see [Cost](#cost-and-how-to-use-strykers-incremental-mode)). With `--shared` and three gates or more, `selfcheck` starts with a full gate run in which the config helpers write down, for each spec file, what it executed of each gate. Leaving out the spec of a gate changes the coverage of that gate only by what its spec executed of it. So for a gate that no other spec touched, the result does not depend on which other specs are left out with it, and all those gates lose their specs in **one** run. Each of them is judged in that run as it is in a run of its own: the run has to fail, and it has to report the coverage threshold of that very file.
 
-The notes are taken from what the runner itself counts for a spec file, after the file has run to its end: with Jest, the coverage a reporter is given for the file; with Vitest, what the worker hands to the istanbul coverage provider. A gate keeps a run of its own when another spec touches it (it imports the gate, a setup file calls it, an `afterAll` or a cleanup function calls it), when its own spec is not seen to touch it, or when the shared run does not confirm it. Every gate keeps a run of its own when
+**It is an option, not the default, because it takes one thing for granted: that a spec executes the same code whichever other specs run with it.** A spec that covers another gate only while that gate's spec is away is not caught by any note of a full run; the run per gate catches it, because it really leaves that one spec out. Specs of pure modules do not behave that way, and the ones that could (they read `process.env`, also the variables of `selfcheck` itself, or files, a child process, the network) are recognised by their text and switch the shared run off. That is a search by text in the spec files only, not in what they import, and it cannot be made complete. Two hunts for counterexamples found projects in which `--shared` reports every control as holding and the plain run does not, with nothing in the text of a spec: a helper that keeps state in the process (it changes a setting of a Node.js core module once; with Jest that state is shared by the spec files of one worker, so whether a later spec has to do it again, and thereby executes another gate, depends on which spec ran before it, and with the default number of workers even on Jest's cache of run times), and a helper that keeps a cache on disk which one spec fills and another reads. In each of them a spec covers a gate only while that gate's spec is away. No way of taking notes from one full run can see that.
 
-- the full gate run does not pass (a failing test, a gate below 100%),
+So: `--shared` while working and before a push, the plain `selfcheck` in CI. A control that `--shared` reports as holding is not the last word; one that it reports as not holding is, because that one was run on its own.
+
+The notes are taken from what the runner itself counts for a spec file, after the file has run to its end: with Jest, the coverage a reporter is given for the file; with Vitest, what the worker hands to the istanbul coverage provider. All of it rests on the notes being complete: an execution that is missing from the note of a spec could make a gate look untouched. So the notes are used only within three limits, and outside of them every gate gets a run of its own, as before, with the reason on the first line (`test-gates selfcheck: a run of the gate command for every gate (…)`).
+
+1. **Only for the runs it is verified with.** This table is the list; it is also `VERIFIED_RUNS` in the code, and `test/selfcheck-runners.test.ts` compares the shared run with a run per gate for every row.
+
+   | Runner | Versions | Coverage                       | Pool                         | Other                                  |
+   | ------ | -------- | ------------------------------ | ---------------------------- | -------------------------------------- |
+   | Jest   | 30.5     | `babel` (what the helper sets) | —                            | one project                            |
+   | Vitest | 3.2      | `istanbul`                     | `forks` (default), `threads` | `isolate: true` (default), one project |
+
+   Another minor version, another provider or pool, spec files that share their modules, a workspace with several projects: a run per gate. The Vitest wrapper also checks what it relies on while it runs (the provider has `onAfterSuiteRun` and `initialize`; every hand-over of coverage names exactly one spec file) and reports a deviation, which has the same effect. Vitest 4.1 was tried by hand on three of the cases below and agreed; it is not in the table because the tests of this repository do not run it.
+
+2. **Only when the notes account for what the runner counted.** The same run writes the runner's own total (its JSON coverage report). For every gate, the executions in the notes of all specs are added up and compared with that total: every function, every branch arm and every statement. An execution that happened after a note was taken, or that no note has, shows as a total above the sum; then no note is trusted. (Checked with notes taken too early, the way the first version of this took them: a cleanup function returned by `beforeAll`, and an `afterAll` with the hooks in the order written, are both refused.) Where the two cannot be compared for a gate, because the report puts the counters back onto the source through a source map and the functions do not line up, that gate gets its own run.
+
+3. **Only on a gate run that passes.** A failing test or a gate below 100% in the full run: a run per gate.
+
+A gate also keeps a run of its own when another spec touches it (it imports the gate, a setup file calls it, an `afterAll` or a cleanup function calls it), when its own spec is not seen to touch it, or when the shared run does not confirm it. And every gate does when
+
 - the gate config does not use the helpers (the list of specs to leave out arrives in `TEST_GATES_EXCLUDE_SPECS` as a JSON list, the directory for the notes in `TEST_GATES_TOUCH_DIR`),
-- Vitest measures with the v8 provider, which the helper cannot wrap (use istanbul, see [Vitest: v8 or istanbul](#vitest-v8-or-istanbul)),
+- Vitest measures with the v8 provider, which the helper cannot wrap. **v8 is the default of `createVitestGatesConfig`**: the shared run needs `coverageProvider: 'istanbul'` (see [Vitest: v8 or istanbul](#vitest-v8-or-istanbul), which recommends it for another reason),
 - `settings.selfcheck.failurePattern` does not contain `{gate}`, or a gate has no single spec.
 
-In those cases the full gate run was one run for nothing, also in every part of `--shard`; `--one-by-one` skips it.
+When the gate command is `jest` or `vitest` and the version installed is outside of the table, or the gate command is the one derived from the gate config and that config does not name the helper (or, for Vitest, `istanbul`), this is known beforehand and the run for the notes is not started. Otherwise that run was one run for nothing, also in every part of `--shard`.
 
-With Jest and Vitest the lines printed and the exit code are those of the run per gate, which `--one-by-one` asks for. (A gate command of your own whose exit code says what failed would show the code of the shared run in the `✓` lines.) The two are compared with a real Jest and a real Vitest in `test/selfcheck-runners.test.ts`, for a gate that the spec of another gate covers, one that two other specs cover between them, one that another spec covers in part, one whose top-level code runs when another spec loads it, one that a setup file calls, one that another spec replaces with a mock, one that another spec calls in `afterAll` (with Vitest's hooks in the order written), and one that another spec calls in a cleanup function returned by `beforeAll`.
+With Jest and Vitest, and specs that do not depend on each other, the lines printed and the exit code are those of the run per gate. (A gate command of your own whose exit code says what failed would show the code of the shared run in the `✓` lines.) The two are compared with a real Jest and a real Vitest in `test/selfcheck-runners.test.ts`, for a gate that the spec of another gate covers, one that two other specs cover between them, one that another spec covers in part, one whose top-level code runs when another spec loads it, one that a setup file calls, one that another spec replaces with a mock, one that another spec calls in `afterAll` (with Vitest's hooks in the order written), and one that another spec calls in a cleanup function returned by `beforeAll`.
 
 During the first run a directory `.test-gates-touch-…` exists in the subproject (Vitest loads the wrapped provider from there). It is removed when the run ends. A run that is interrupted leaves it behind; a later `selfcheck` removes what is older than an hour. Add `.test-gates-touch-*` to `.gitignore`.
 
@@ -630,18 +648,18 @@ The time grows with the number of mutants and depends heavily on cores and on `c
 - **CI: full.** `npm run test:gates:mutation -- --force`. CI has no incremental file to start from anyway, and the full run is the one that counts.
 - If even CI is too slow, split by subproject (each has its own `test-gates.json`) before you think about sampling.
 
-The negative control (`selfcheck`) was the step that grew fastest: a run of the gate command per gate, each executing the specs of all the other gates, grows up to the square of the number of gates. It now shares one run among the gates that only their own spec touches (see [`selfcheck`](#commands)). Measured on a project written for this measurement: N gates of 20 lines each, one spec of five tests per gate, Vitest 3.2 with istanbul or Jest 30 with ts-jest, Stryker 10 without a `concurrency` setting; an Apple M2 Max (12 cores), Node 22.22, other jobs running. Read the growth, not the seconds:
+The negative control (`selfcheck`) is the step that grows fastest: a run of the gate command per gate, each executing the specs of all the other gates, grows up to the square of the number of gates. With `--shared` it uses one run for the gates that only their own spec touches (see [`selfcheck`](#commands) for what that takes for granted). Measured on a project written for this measurement: N gates of 20 lines each, one spec of five tests per gate, Vitest 3.2 with istanbul or Jest 30 with ts-jest, Stryker 10 without a `concurrency` setting; an Apple M2 Max (12 cores), Node 22.22, other jobs running. Read the growth, not the seconds:
 
-| Gates | Runner | Gate run | `selfcheck --one-by-one` | `selfcheck` | `mutation -- --force` |
-| ----- | ------ | -------- | ------------------------ | ----------- | --------------------- |
-| 5     | Vitest | 0.9 s    | 3.8 s                    | 1.3 s       | 13 s                  |
-| 30    | Vitest | 2.0 s    | 49 s                     | 2.3 s       | 38 s                  |
-| 100   | Vitest | 5.1 s    | 8 min 4 s                | 5.2 s       | 1 min 55 s            |
-| 5     | Jest   | 0.8 s    | 6.3 s                    | 0.9 s       | 8 s                   |
-| 30    | Jest   | 2.4 s    | 1 min 19 s               | 2.1 s       | 22 s                  |
-| 100   | Jest   | 3.1 s    | 6 min 2 s                | 2.7 s       | 1 min 8 s             |
+| Gates | Runner | Gate run | `selfcheck` | `selfcheck --shared` | `mutation -- --force` |
+| ----- | ------ | -------- | ----------- | -------------------- | --------------------- |
+| 5     | Vitest | 0.9 s    | 3.8 s       | 1.3 s                | 13 s                  |
+| 30    | Vitest | 2.0 s    | 49 s        | 2.1 s                | 38 s                  |
+| 100   | Vitest | 5.1 s    | 8 min 4 s   | 5.0 s                | 1 min 55 s            |
+| 5     | Jest   | 0.8 s    | 6.3 s       | 1.4 s                | 8 s                   |
+| 30    | Jest   | 2.4 s    | 1 min 19 s  | 3.1 s                | 22 s                  |
+| 100   | Jest   | 3.1 s    | 6 min 2 s   | 4.5 s                | 1 min 8 s             |
 
-In this project no spec touches the gate of another, so `selfcheck` is two runs of the gate command. (The `selfcheck` column was measured later, with fewer other jobs running than for the other columns; the difference in load is far smaller than the difference between the two columns.) Every gate that another spec touches adds a run of its own. Where the shared run is not available (see above) the column `--one-by-one` applies, and `selfcheck --shard <index>/<total>` splits those runs over parallel CI jobs: each part runs its share of the gates. That does not reduce the total work; only the waiting time gets shorter.
+In this project no spec touches the gate of another, so `selfcheck --shared` is two runs of the gate command. (That column was measured later, with fewer other jobs running than for the other columns; the difference in load is far smaller than the difference between the two columns.) Every gate that another spec touches adds a run of its own. For the plain `selfcheck`, which is the one for CI, `--shard <index>/<total>` splits the runs over parallel jobs: each part runs its share of the gates. That does not reduce the total work; only the waiting time gets shorter.
 
 How the incremental file and this tool interact (covered by `test/incremental.test.ts`, which runs a real Stryker):
 
