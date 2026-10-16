@@ -1049,6 +1049,19 @@ describe('test-gates mutation, reuse of the last run (what the comparison reache
     expect(mutation(dir)).toEqual(forcedBy(`${CHANGED}shared-data/rate.json`));
   });
 
+  it('follows a way up from the directory the run starts in also when the path is there from the file', () => {
+    const root = repository({
+      'shared-data/rate.json': { rate: 1 },
+      'fee-rules/src/shared-data/rate.json': { rate: 1 },
+      'fee-rules/src/nested/rate.spec-data.ts': `export const rate = readFileSync('${up(1)}/shared-data/rate.json');\n`,
+    });
+    const dir = path.join(root, 'fee-rules');
+    mutation(dir);
+    expect(mutation(dir)).toEqual(REUSED);
+    write(root, { 'shared-data/rate.json': { rate: 2 } });
+    expect(mutation(dir)).toEqual(forcedBy(`${CHANGED}shared-data/rate.json`));
+  });
+
   it('notices a file that appears where a way up from the directory the run starts in leads', () => {
     const root = repository({
       'fee-rules/src/rate.spec-data.ts': `export const rate = readFileSync('${up(1)}/shared-data/rate.json');\n`,

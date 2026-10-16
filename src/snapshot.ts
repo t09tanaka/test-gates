@@ -440,35 +440,45 @@ export function snapshotOf(input: {
         found: isDirectory || resolveFile(target, true, false) !== null,
       };
     };
-    let chosen = from(path.dirname(file));
-    if (!anchored && !chosen.found && path.dirname(file) !== dir) {
+    const fromFile = from(path.dirname(file));
+    const targets = [fromFile];
+    if (!anchored && path.dirname(file) !== dir) {
       // A plain path handed to readFileSync or path.resolve starts in the directory the run starts
-      // in, the subproject. When nothing is there from the file, it may be there from the
-      // subproject. When nothing is there from either, a file that appears later at one of them
-      // is followed then, and its files change the snapshot.
+      // in, the subproject; one that is imported starts in the directory of the file. Which one
+      // is meant cannot be told, so both are followed where something is there. When nothing is
+      // there from either, a file that appears later at one of them is followed then, and its
+      // files change the snapshot. A path that is there from the file and leads out of what can
+      // be listed from the subproject is taken for an import.
       const fromRun = from(dir);
-      if (fromRun.found) {
-        chosen = fromRun;
+      if (fromRun.found && !fromFile.found) {
+        targets[0] = fromRun;
+      } else if (fromRun.found && isInside(listRoot, fromRun.target)) {
+        targets.push(fromRun);
       }
     }
-    const { target, isDirectory } = chosen;
-    // A file directly in a directory above the subproject is compared anyway
-    // (`"extends": "../../tsconfig.base.json"`).
-    if (!isDirectory && !open && besideAncestors.has(resolveFile(target, false, false) ?? '')) {
-      return;
-    }
-    // Declaration files are left out here, so that what counts as missing stays as it was.
-    if (!isDirectory && !isInside(listRoot, target) && resolveFile(target, true, false) === null) {
-      // Nothing is there, outside of what can be listed (a path for the sandbox of Stryker, from
-      // the subproject itself): that it stays so is compared.
-      files[toPosix(path.relative(listRoot, target))] = 'missing';
-      return;
-    }
-    const directory = isDirectory ? target : path.dirname(target);
-    // Nothing is there (text that only looks like a path). Should the directory appear later, it
-    // is looked at then.
-    if (fs.existsSync(directory)) {
-      enqueue(directory, file, reference, anchored && !open);
+    for (const { target, isDirectory } of targets) {
+      // A file directly in a directory above the subproject is compared anyway
+      // (`"extends": "../../tsconfig.base.json"`).
+      if (!isDirectory && !open && besideAncestors.has(resolveFile(target, false, false) ?? '')) {
+        continue;
+      }
+      // Declaration files are left out here, so that what counts as missing stays as it was.
+      if (
+        !isDirectory &&
+        !isInside(listRoot, target) &&
+        resolveFile(target, true, false) === null
+      ) {
+        // Nothing is there, outside of what can be listed (a path for the sandbox of Stryker,
+        // from the subproject itself): that it stays so is compared.
+        files[toPosix(path.relative(listRoot, target))] = 'missing';
+        continue;
+      }
+      const directory = isDirectory ? target : path.dirname(target);
+      // Nothing is there (text that only looks like a path). Should the directory appear later,
+      // it is looked at then.
+      if (fs.existsSync(directory)) {
+        enqueue(directory, file, reference, anchored && !open);
+      }
     }
   };
   /** Follows every path in the text of `file` that has `..` in it. */
