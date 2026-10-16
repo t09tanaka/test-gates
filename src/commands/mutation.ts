@@ -120,40 +120,79 @@ function coveringSpecs(report: MutationReport, gates: string[]): Record<string, 
   return covering;
 }
 
+/** What is known before a run about reusing the results of the last one. */
+export interface ReuseDecision {
+  /** Stryker runs in incremental mode: there is something to reuse at all. */
+  incremental: boolean;
+  /** The incremental file and the record next to it; null without incremental mode. */
+  incrementalFile: string | null;
+  recordFile: string | null;
+  /** Hash of the incremental file, or null when there is none. */
+  incrementalHash: string | null;
+  /** Whether Stryker is given --force already, by the config or the arguments. */
+  forced: boolean;
+  snapshot: Snapshot | null;
+  /** Why the snapshot could not be taken, or null. */
+  failure: string | null;
+  root: string;
+  /** What made every file of the repository part of the snapshot (see snapshotOf). */
+  widened: string[];
+  /** The files whose paths are followed, or why every file is. */
+  scope: { files: number } | { every: string } | null;
+  /** Why every mutant is run again, or null. */
+  force: string | null;
+  plan: AffectedPlan | null;
+  last: AffectedRecord | undefined;
+  /** Whether --affected is refused here (CI), and why. */
+  ci: string | null;
+  configs: () => ReturnType<typeof runnerConfigs>;
+}
+
 /**
  * Decides whether this run may reuse the results of the last one (see core/reuse-guard.ts, and
- * core/affected.ts for `--affected`).
+ * core/affected.ts for `--affected`). Changes nothing on disk.
  *
- * @param part Whether the run is one of `--gate`. Such a run takes nothing over and leaves no
- *   record, so that the next run without `--gate` is one of every mutant.
+ * @param part Whether the run is one of `--gate`. Such a run takes nothing over.
  */
-function guardIncremental(
+export function decideReuse(
   manifest: LoadedManifest,
   config: string,
   strykerArgs: string[],
   part: boolean,
   affected: boolean
-): Guard {
-  const nothing: Guard = { force: null, mutate: null, said: [], record: () => undefined };
+): ReuseDecision {
   const loaded = loadStrykerConfig(manifest, config);
   const options = incrementalOptions(loaded, strykerArgs);
-  if (loaded !== undefined && !options.incremental) {
-    // Stryker neither reads nor writes an incremental file
-    return affected
-      ? {
-          ...nothing,
-          said: [
-            'test-gates mutation --affected: Stryker does not run in incremental mode, so every mutant is run',
-          ],
-        }
-      : nothing;
-  }
   // The real path: the files of the snapshot are listed by theirs.
   const base = fs.realpathSync(manifest.dir);
-  const incrementalFile = path.resolve(base, options.incrementalFile);
-  const recordFile = guardRecordPath(incrementalFile);
   const configs = (): ReturnType<typeof runnerConfigs> =>
     runnerConfigs(base, config, (loaded ?? {}) as Record<string, unknown>);
+  const decision: ReuseDecision = {
+    incremental: false,
+    incrementalFile: null,
+    recordFile: null,
+    incrementalHash: null,
+    forced: options.force,
+    snapshot: null,
+    failure: null,
+    root: base,
+    widened: [],
+    scope: null,
+    force: null,
+    plan: null,
+    last: undefined,
+    ci: affected ? affectedRefused(process.env) : null,
+    configs,
+  };
+  if (loaded !== undefined && !options.incremental) {
+    // Stryker neither reads nor writes an incremental file
+    return decision;
+  }
+  decision.incremental = true;
+  const incrementalFile = path.resolve(base, options.incrementalFile);
+  const recordFile = guardRecordPath(incrementalFile);
+  decision.incrementalFile = incrementalFile;
+  decision.recordFile = recordFile;
 
   let snapshot: Snapshot | null = null;
   let root = base;
@@ -161,13 +200,18 @@ function guardIncremental(
   if (loaded !== undefined) {
     const scope = (listed: string[]): Set<string> | null => {
       try {
-        return loadedScope(manifest, configs(), listed);
-      } catch {
-        return null; // what the run loads cannot be told: every path is followed
+        const found = loadedScope(manifest, configs(), listed);
+        decision.scope = 'files' in found ? { files: found.files.size } : found;
+        return 'files' in found ? found.files : null;
+      } catch (error) {
+        // what the run loads cannot be told: every path is followed
+        decision.scope = { every: (error as Error).message };
+        return null;
       }
     };
     try {
-      ({ snapshot, root } = snapshotOf({
+      let widened: string[];
+      ({ snapshot, root, widened } = snapshotOf({
         scope,
         dir: manifest.dir,
         written: [
@@ -178,23 +222,25 @@ function guardIncremental(
         ],
         args: comparableArgs(strykerArgs),
       }));
+      decision.widened = widened;
     } catch (error) {
       failure = `the files the run depends on could not be listed (${(error as Error).message})`;
     }
   }
+  decision.snapshot = snapshot;
+  decision.failure = snapshot === null ? failure : null;
+  decision.root = root;
 
   const incremental = hashFile(incrementalFile);
+  decision.incrementalHash = incremental;
   if (part) {
     // Stryker would take over the old results of the named gates, which the change that is
     // being worked on may have made wrong.
-    fs.rmSync(recordFile, { force: true });
-    return {
-      ...nothing,
-      force:
-        incremental !== null && !options.force
-          ? 'with --gate nothing is taken over from an earlier run'
-          : null,
-    };
+    decision.force =
+      incremental !== null && !options.force
+        ? 'with --gate nothing is taken over from an earlier run'
+        : null;
+    return decision;
   }
   let stored: unknown;
   try {
@@ -202,7 +248,7 @@ function guardIncremental(
   } catch {
     stored = undefined;
   }
-  const ci = affected ? affectedRefused(process.env) : null;
+  const ci = decision.ci;
 
   let force: string | null = null;
   let plan: AffectedPlan | null = null;
@@ -253,6 +299,47 @@ function guardIncremental(
     }
   } else if (affected && incremental === null && !options.force) {
     force = 'there is no incremental file of an earlier run';
+  }
+  decision.force = force;
+  decision.plan = plan;
+  decision.last = last;
+  return decision;
+}
+
+/**
+ * Decides whether this run may reuse the results of the last one (see decideReuse), and removes
+ * the record, so that a run that fails leaves none.
+ *
+ * @param part Whether the run is one of `--gate`. Such a run takes nothing over and leaves no
+ *   record, so that the next run without `--gate` is one of every mutant.
+ */
+function guardIncremental(
+  manifest: LoadedManifest,
+  config: string,
+  strykerArgs: string[],
+  part: boolean,
+  affected: boolean
+): Guard {
+  const nothing: Guard = { force: null, mutate: null, said: [], record: () => undefined };
+  const decision = decideReuse(manifest, config, strykerArgs, part, affected);
+  if (!decision.incremental) {
+    return affected
+      ? {
+          ...nothing,
+          said: [
+            'test-gates mutation --affected: Stryker does not run in incremental mode, so every mutant is run',
+          ],
+        }
+      : nothing;
+  }
+  const { snapshot, root, plan, last, ci, configs, force } = decision;
+  const incrementalFile = decision.incrementalFile as string;
+  const recordFile = decision.recordFile as string;
+  const incremental = decision.incrementalHash;
+  const options = { force: decision.forced };
+  if (part) {
+    fs.rmSync(recordFile, { force: true });
+    return { ...nothing, force };
   }
   // A run that is interrupted or fails must not leave a record that says "nothing changed".
   fs.rmSync(recordFile, { force: true });

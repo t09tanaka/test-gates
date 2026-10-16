@@ -381,22 +381,27 @@ const READ_BY_NAME = [
  *
  * @param configs The Stryker config and the config of the test runner.
  * @param listed The files of the subproject, as absolute paths.
- * @returns null when the specs the run starts are not known, or when a file loads a module whose
- *   path is not written out: then every file is followed.
+ * @returns `every`, with the reason, when the specs the run starts are not known, or when a file
+ *   loads a module whose path is not written out: then every file is followed.
  */
 export function loadedScope(
   manifest: LoadedManifest,
   configs: RunConfigs,
   listed: string[]
-): Set<string> | null {
+): { files: Set<string> } | { every: string } {
   const dir = realpath(manifest.dir);
   // Only a config made with the helpers of this tool runs the specs of the gates and no others,
   // unless it is given projects of its own, which the helpers pass on.
   const own = /@t09tanaka\/test-gates\/(?:jest|vitest)\b/;
   const widened = /\b(?:projects|workspace)\b/;
   const runner = configs.files.slice(1).map((file) => fs.readFileSync(file, 'utf8'));
-  if (runner.length === 0 || !runner.every((text) => own.test(text) && !widened.test(text))) {
-    return null;
+  if (runner.length === 0 || !runner.every((text) => own.test(text))) {
+    return {
+      every: 'the runner config is not made with createJestGatesConfig or createVitestGatesConfig',
+    };
+  }
+  if (runner.some((text) => widened.test(text))) {
+    return { every: 'the runner config is given projects of its own' };
   }
   const cache = new Map<string, Edges>();
   const context = { dir, aliases: manifest.settings.importAliases, cache };
@@ -430,7 +435,7 @@ export function loadedScope(
     }
     const edges = fileEdges(file, context);
     if (edges.computed) {
-      return null;
+      return { every: edges.unknown ?? 'a file imports a module whose path is not written out' };
     }
     edges.loads.forEach(add);
     for (const specifier of edges.unnamed) {
@@ -454,7 +459,7 @@ export function loadedScope(
       }
     }
   }
-  return seen;
+  return { files: seen };
 }
 
 /** The files whose path, without its extension, ends as the import after its first part does. */

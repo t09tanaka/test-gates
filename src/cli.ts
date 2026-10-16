@@ -3,6 +3,7 @@ import { createRequire } from 'node:module';
 import { parseArgs, UsageError } from './core/args.js';
 import { ManifestError } from './core/manifest.js';
 import { runCheck } from './commands/check.js';
+import { runDoctor } from './commands/doctor.js';
 import { runLcov } from './commands/lcov.js';
 import { runMutation } from './commands/mutation.js';
 import { runMutationResult } from './commands/mutation-result.js';
@@ -20,6 +21,8 @@ Commands:
   mutation-result             Judge an existing Stryker JSON report
   selfcheck [-- <command>]    Negative control: leave one spec out, the gate must fail
   lcov [--file <lcov.info>]   Per-file 100% line coverage from an lcov tracefile
+  doctor                      Why a mutation run would not reuse the last results, and what
+                              to change. Runs nothing; exit 1 when runs are full ones needlessly
 
 Options:
   --dir <subproject>          Directory that holds test-gates.json (default: .)
@@ -63,6 +66,8 @@ function main(argv: string[]): number | Promise<number> {
   switch (args.command) {
     case 'check':
       return runCheck(args.dir, io);
+    case 'doctor':
+      return runDoctor(args.dir, io);
     case 'mutation':
       return runMutation(args.dir, args.rest, io, args.gates, args.affected);
     case 'mutation-result':
