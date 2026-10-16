@@ -134,7 +134,11 @@ export function loadedFiles(
     const { source, specifiers, strings } = read(file);
     const imports: LoadedFile['imports'] = [];
     const next: string[] = [];
-    let lost: string | null = null;
+    // A component can use others that it does not import (registered by a plugin): what it loads
+    // is not all in its text.
+    let lost: string | null = COMPONENT.test(file)
+      ? `${relative(file)} is a component, which can use others that it does not import`
+      : null;
     for (const specifier of specifiers) {
       if (isProjectImport(specifier, aliases)) {
         const found = target(specifier, file);

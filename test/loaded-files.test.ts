@@ -8,7 +8,7 @@ afterAll(cleanup);
 const gate = (file: string) => ({ path: file, decides: 'a price', impact: 'a wrong price' });
 
 describe('loadedFiles', () => {
-  it('follows the imports of a component a spec loads', () => {
+  it('follows the imports of a component a spec loads, and takes the spec for one that may load any gate', () => {
     const dir = project({
       'test-gates.json': { gates: [gate('src/fee.ts'), gate('src/tax.ts')], candidates: [] },
       'src/fee.ts': 'export const fee = (x: number) => x + 1;\n',
@@ -20,11 +20,11 @@ describe('loadedFiles', () => {
       'src/data.json': '{}',
     });
     const { roots } = loadedFiles(readManifest(dir), null);
-    expect(roots.find((root) => root.spec === 'src/tax.spec.ts')?.files).toEqual([
-      'src/tax.spec.ts',
-      'src/tax.ts',
-      'src/Comp.vue',
-      'src/fee.ts',
-    ]);
+    const tax = roots.find((root) => root.spec === 'src/tax.spec.ts');
+    // It may load any gate besides: a component can use others that it does not import.
+    expect(tax?.lost).toBe(
+      'src/Comp.vue is a component, which can use others that it does not import'
+    );
+    expect(tax?.files).toEqual(['src/tax.spec.ts', 'src/tax.ts', 'src/Comp.vue', 'src/fee.ts']);
   });
 });
