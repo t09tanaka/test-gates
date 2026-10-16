@@ -114,7 +114,7 @@ export default createStrykerGatesConfig({
 2. `concurrency` in the options of `createStrykerGatesConfig`;
 3. the default above.
 
-A config that sets `concurrency: 2` keeps 2 everywhere; remove it to get the default.
+A config that sets `concurrency: 2` keeps 2 everywhere; remove the key to get the default. Setting it to `undefined` gives Stryker's own default instead.
 
 Add `reports/`, `.stryker-tmp/` and `.test-gates-touch-*` (see `test-gates selfcheck`) to `.gitignore`.
 
@@ -473,7 +473,7 @@ Every control runs on its own, and the first line says why, when the gate comman
 test-gates selfcheck: one negative control at a time (the gate config does not use createVitestGatesConfig)
 ```
 
-This is a search by text: a comment that names `setTimeout` counts, and `new Date('2024-01-01')` does not. Which spec loads which gate is also read from the text: the imports, and paths handed to the runner (`vi.mock('./rates')`). A package that loads files of the project by itself (by a glob, for one) is not seen to load them.
+This is a search by text: a comment that names `setTimeout` counts, and `new Date('2024-01-01')` does not. Which spec loads which gate is also read from the text: the imports, also those of a component (`.vue`, `.svelte`, `.astro`, `.mdx`), and paths handed to the runner (`vi.mock('./rates')`). A spec that loads modules by a name it computes, or by `import.meta.glob`, may load any gate. A package that loads files of the project by itself (by a glob, for one) is not seen to load them.
 
 _Of each run next to others_, the result is taken only when the control held and the runner itself sums the run up as undisturbed: every spec file but the one left out passed, every test passed and none was skipped (` Test Files  13 passed (13)` and `Tests  14 passed (14)` of Vitest, `Test Suites: 13 passed, 13 total` and `Tests: 14 passed, 14 total` of Jest), every threshold the run reports is that of this gate, the process ended by itself, and no other line speaks of a failure, a timeout, an error or a retry. Anything less (a test that timed out under the load, a reporter that prints no summary) and the control is run again on its own after the others have ended, and that run counts. So a control that does **not** hold is always reported from a run of its own, with the output of that run. The first line says how many controls were run again:
 
@@ -772,7 +772,7 @@ The time grows with the number of mutants and depends heavily on cores and on `c
 - **CI: full.** `npm run test:gates:mutation -- --force`. CI has no incremental file to start from anyway, and the full run is the one that counts.
 - If even CI is too slow, split by subproject (each has its own `test-gates.json`) before you think about sampling.
 
-The negative control (`selfcheck`) is the step that grows fastest: a run of the gate command per gate, each executing the specs of all the other gates, grows up to the square of the number of gates. With `--quick` it uses one run for the gates that only their own spec touches (see [`selfcheck`](#commands) for what that takes for granted). Measured on a project written for this measurement: N gates of 20 lines each, one spec of five tests per gate, Vitest 3.2 with istanbul or Jest 30 with ts-jest, Stryker 10 without a `concurrency` setting; an Apple M2 Max (12 cores), Node 22.22, other jobs running. Read the growth, not the seconds:
+The negative control (`selfcheck`) is the step that grows fastest: a run of the gate command per gate, each executing the specs of all the other gates, grows up to the square of the number of gates. With `--quick` it uses one run for the gates that only their own spec touches (see [`selfcheck`](#commands) for what that takes for granted). Measured on a project written for this measurement: N gates of 20 lines each, one spec of five tests per gate, Vitest 3.2 with istanbul or Jest 30 with ts-jest, Stryker 10 with its own default `concurrency` (one fewer than the cores, before the helper set half of them); an Apple M2 Max (12 cores), Node 22.22, other jobs running. Read the growth, not the seconds:
 
 | Gates | Runner | Gate run | `selfcheck` | `selfcheck --quick` | `mutation -- --force` |
 | ----- | ------ | -------- | ----------- | ------------------- | --------------------- |

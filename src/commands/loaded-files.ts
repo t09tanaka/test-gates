@@ -7,6 +7,8 @@ import type { LoadedFile, LoadRoot } from '../core/jobs.js';
 import type { LoadedManifest } from '../load.js';
 
 export const SCRIPT = /\.[cm]?[jt]sx?$/;
+/** Components, whose imports (in their scripts, or the frontmatter of Astro) are read as text. */
+export const COMPONENT = /\.(?:vue|svelte|astro|mdx)$/;
 const EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'];
 export const QUOTED = /(['"`])([^'"`\n]+)\1/g;
 // A module that is named to the runner instead of imported: jest.requireActual('fs').
@@ -159,7 +161,8 @@ export function loadedFiles(
     }
     const visited = {
       file: { path: relative(file), source, imports },
-      next: next.filter((found) => SCRIPT.test(found)),
+      // A component imports like a script (see COMPONENT); data imports nothing.
+      next: next.filter((found) => SCRIPT.test(found) || COMPONENT.test(found)),
       lost,
     };
     known.set(file, visited);

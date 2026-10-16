@@ -1,3 +1,4 @@
+import { withoutDots } from './affected.js';
 // `test-gates selfcheck --jobs <n>`: several negative controls at the same time.
 //
 // A control that runs next to others is taken only when its run shows, in the runner's own
@@ -118,7 +119,8 @@ const REACHES = [
 ];
 // A module that is named by an expression cannot be followed, and neither can `require` once it
 // is handed on under another name.
-const COMPUTED_LOAD = /(?:require|import)\((?!['"])|\brequire(?!\(|\.resolve\b|[\w$])/;
+const COMPUTED_LOAD =
+  /(?:require|import)\((?!['"])|\brequire(?!\(|\.resolve\b|[\w$])|\bimport\.meta\.glob\b/;
 const COMPUTED = 'loads a module whose name is computed';
 const RUNNER_PACKAGES = ['vitest', '@jest/globals'];
 
@@ -259,7 +261,9 @@ export function jobsPlan(input: {
     // is known may load any gate.
     const any = root.spec === null || root.lost !== null || computed;
     const gates = input.gates
-      .filter((gate) => gate.spec !== root.spec && (any || root.files.includes(gate.path)))
+      .filter(
+        (gate) => gate.spec !== root.spec && (any || root.files.includes(withoutDots(gate.path)))
+      )
       .map((gate) => gate.path);
     const by =
       root.spec === null

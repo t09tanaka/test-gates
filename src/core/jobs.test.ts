@@ -180,6 +180,7 @@ describe('reachesOutside', () => {
     'require.cache',
     'require.resolved',
     'x = require',
+    "const all = import.meta.glob('./*.ts', { eager: true })",
   ])('does not take a module whose name is computed: %s', (line) => {
     expect(reachesOutside(file(line), [])).toBe('loads a module whose name is computed');
   });
@@ -334,6 +335,20 @@ describe('jobsPlan', () => {
   ) => jobsPlan({ gates, files, roots, trusted: [], ...changes });
   const ALL = { atOnce: ['src/fee.ts', 'src/tax.ts', 'src/age.ts'], alone: [], causes: [] };
   const LOCK = 'src/support/lock.ts imports node:fs';
+
+  it('finds a gate written with ./ in what a spec reaching outside loads', () => {
+    const roots = [
+      ...quiet.slice(0, 3),
+      root('src/age.spec.ts', [
+        'src/age.spec.ts',
+        'src/age.ts',
+        'src/support/lock.ts',
+        'src/fee.ts',
+      ]),
+    ];
+    const dotted = gates.map((gate) => ({ ...gate, path: `./${gate.path}` }));
+    expect(plan(roots, { gates: dotted }).alone).toEqual(['./src/fee.ts']);
+  });
 
   it('lets every control of specs that only call their own gate run next to others', () => {
     expect(plan(quiet)).toEqual(ALL);
