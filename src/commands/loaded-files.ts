@@ -18,9 +18,28 @@ export const RUNNER_LOAD =
 
 function isFile(file: string): boolean {
   try {
-    return fs.statSync(file).isFile();
+    return fs.statSync(file, { throwIfNoEntry: false })?.isFile() === true;
   } catch {
-    return false;
+    return false; // a part of the path is a file (ENOTDIR)
+  }
+}
+
+/** The files of each path already resolved, while one run reads the files (see resolving). */
+let resolved: Map<string, string[]> | null = null;
+
+/**
+ * Runs `read` with the files of each path resolved once: a path that several files import is
+ * looked up on disk once. The files must not change while it runs. Nested runs share it.
+ */
+export function resolving<T>(read: () => T): T {
+  if (resolved !== null) {
+    return read();
+  }
+  resolved = new Map();
+  try {
+    return read();
+  } finally {
+    resolved = null;
   }
 }
 
@@ -37,6 +56,17 @@ const DECLARATIONS = ['.d.ts', '.d.mts', '.d.cts'];
  *   (`@/types/schema` for `src/types/schema.d.ts`). A script of the same name comes first.
  */
 export function resolveFiles(base: string, directory = true, declarations = true): string[] {
+  const key = `${Number(directory)}${Number(declarations)}${base}`;
+  const known = resolved?.get(key);
+  if (known !== undefined) {
+    return [...known];
+  }
+  const found = filesOf(base, directory, declarations);
+  resolved?.set(key, found);
+  return [...found];
+}
+
+function filesOf(base: string, directory: boolean, declarations: boolean): string[] {
   const candidates = (extensions: string[]) => [
     ...extensions.map((extension) => base + extension),
     // `./fee.js` written in a TypeScript file is `./fee.ts`
@@ -84,6 +114,13 @@ export function installed(specifier: string, from: string): boolean {
  *   files the gate config names, each with every file it loads.
  */
 export function loadedFiles(
+  manifest: LoadedManifest,
+  configFile: string | null
+): { files: LoadedFile[]; roots: LoadRoot[] } {
+  return resolving(() => loadedFilesNow(manifest, configFile));
+}
+
+function loadedFilesNow(
   manifest: LoadedManifest,
   configFile: string | null
 ): { files: LoadedFile[]; roots: LoadRoot[] } {

@@ -500,6 +500,19 @@ describe('affectedInputs', () => {
     expect(inputs(dir).config).toEqual(['stryker.gates.config.mjs', 'vitest.gates.config.ts']);
   });
 
+  it('looks again on disk in the next run for a file that was not there', () => {
+    const dir = fixture({
+      'src/c.ts': "import { rate } from './rate';\nexport const c = (x: number) => x - rate;\n",
+    });
+    expect(refusal(dir)).toBe('src/c.ts imports ./rate, which leads to no file');
+    write(dir, { 'src/rate.ts': 'export const rate = 1;\n' });
+    expect(inputs(dir).gates['src/c.ts']?.files).toEqual([
+      'src/c.spec.ts',
+      'src/c.ts',
+      'src/rate.ts',
+    ]);
+  });
+
   it('ignores a package and a builtin', () => {
     const dir = fixture({
       'node_modules/money-kit/package.json': '{ "name": "money-kit" }',

@@ -9,6 +9,7 @@ import {
   installed,
   QUOTED,
   resolveFiles,
+  resolving,
   RUNNER_LOAD,
   SCRIPT,
 } from './commands/loaded-files.js';
@@ -351,10 +352,13 @@ export function fileEdges(
   // runners look for the name of the file; one of another extension is taken as well.
   const mocks = path.join(path.dirname(file), '__mocks__');
   const name = path.basename(file);
-  for (const mock of new Set([
-    path.join(mocks, name),
-    ...resolveFiles(path.join(mocks, name.replace(/\.[^.]+$/, '')), false, false),
-  ])) {
+  const candidates = isDirectory(mocks)
+    ? [
+        path.join(mocks, name),
+        ...resolveFiles(path.join(mocks, name.replace(/\.[^.]+$/, '')), false, false),
+      ]
+    : [];
+  for (const mock of new Set(candidates)) {
     if (isFile(mock)) {
       found.loads.push(realpath(mock));
     }
@@ -493,6 +497,13 @@ export function affectedInputs(
   /** By gate as in test-gates.json. */
   gates: Record<string, { key: string; specs: string[]; files: string[] }>;
 } {
+  return resolving(() => inputsOf(manifest, input));
+}
+
+function inputsOf(
+  manifest: LoadedManifest,
+  input: Parameters<typeof affectedInputs>[1]
+): ReturnType<typeof affectedInputs> {
   const dir = realpath(manifest.dir);
   const aliases = manifest.settings.importAliases;
   // The report names its spec files relative to the subproject; anything else cannot be placed.
@@ -793,6 +804,14 @@ export function loadedScope(
   configs: RunConfigs,
   listed: string[]
 ): { files: Set<string> } | { every: string } {
+  return resolving(() => scopeOf(manifest, configs, listed));
+}
+
+function scopeOf(
+  manifest: LoadedManifest,
+  configs: RunConfigs,
+  listed: string[]
+): ReturnType<typeof loadedScope> {
   const dir = realpath(manifest.dir);
   const cache = new Map<string, Edges>();
   const context = { dir, aliases: manifest.settings.importAliases, cache };

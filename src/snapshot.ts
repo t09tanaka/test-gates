@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
-import { resolveFile, resolveFiles } from './commands/loaded-files.js';
+import { resolveFile, resolveFiles, resolving } from './commands/loaded-files.js';
 import type { Snapshot } from './core/reuse-guard.js';
 
 /** Thrown when the files a run depends on cannot be listed. The results are then not reused. */
@@ -347,6 +347,10 @@ export function snapshotOf(input: {
    */
   widened: string[];
 } {
+  return resolving(() => snapshotNow(input));
+}
+
+function snapshotNow(input: Parameters<typeof snapshotOf>[0]): ReturnType<typeof snapshotOf> {
   const dir = fs.realpathSync(input.dir);
   const top = git(dir, ['rev-parse', '--show-toplevel']);
   let root = top === null ? dir : fs.realpathSync(top.trim());
