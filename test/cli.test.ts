@@ -554,6 +554,32 @@ describe('test-gates check: allowlist mode and the Vitest coverage provider', ()
     ]);
   });
 
+  it('does not take a directory next to the subproject for one inside it', () => {
+    // From src/age.ts, `../../shared/rate` is outside the subproject; `../shared/rate` is inside.
+    const files = (specifier: string) => ({
+      'src/age.ts': `import { rate } from '${specifier}';\n${GATE_SOURCE}`,
+      'src/age.spec.ts': `vi.mock('../../src/age');\n${SPEC_SOURCE}`,
+      'shared/rate.ts': 'export const rate = 1;\n',
+    });
+    const manifest = {
+      settings: {
+        impurePaths: { add: [{ pattern: '^shared/', reason: 'shared services' }] },
+        imports: { mode: 'allowlist', allow: [] },
+      },
+    };
+    expect(
+      testGates(['check', '--dir', validProject(files('../../shared/rate'), manifest)])
+    ).toEqual({
+      status: 0,
+      stdout: 'test-gates check: OK (1 gate(s), 0 candidate(s))\n',
+      stderr: '',
+    });
+    const inside = testGates(['check', '--dir', validProject(files('../shared/rate'), manifest)]);
+    expect(violationsOf(inside.stderr)).toEqual([
+      'src/age.ts:1: runtime import of "../shared/rate" (shared services)',
+    ]);
+  });
+
   it('fails on the v8 provider with Vitest 3', () => {
     const dir = validProject({
       'vitest.gates.config.ts': 'export default createVitestGatesConfig({});\n',

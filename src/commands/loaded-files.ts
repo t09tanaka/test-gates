@@ -11,28 +11,79 @@ export const SCRIPT = /\.[cm]?[jt]sx?$/;
 export const COMPONENT = /\.(?:vue|svelte|astro|mdx)$/;
 const EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'];
 export const QUOTED = /(['"`])([^'"`\n]+)\1/g;
-// A module that is named to the runner instead of imported: jest.requireActual('fs').
+// A module that is named to the runner instead of imported: jest.requireActual('fs'), also with
+// a type argument: jest.createMockFromModule<Rates>('./rates').
 export const RUNNER_LOAD =
-  /\b(?:requireActual|requireMock|importActual|importMock|mock|doMock|unstable_mockModule)\(\s*(['"`])([^'"`\n]+)\1/g;
+  /\b(?:requireActual|requireMock|importActual|importMock|mock|doMock|unstable_mockModule|createMockFromModule|genMockFromModule)\s*(?:<[^()\n]*>)?\s*\(\s*(['"`])([^'"`\n]+)\1/g;
 
 function isFile(file: string): boolean {
   try {
-    return fs.statSync(file).isFile();
+    return fs.statSync(file, { throwIfNoEntry: false })?.isFile() === true;
   } catch {
-    return false;
+    return false; // a part of the path is a file (ENOTDIR)
   }
 }
 
-/** The file a path without (or with a compiled) extension stands for, or null. */
-export function resolveFile(base: string, directory = true): string | null {
-  const candidates = [
-    base,
-    ...EXTENSIONS.map((extension) => base + extension),
+/** The files of each path already resolved, while one run reads the files (see resolving). */
+let resolved: Map<string, string[]> | null = null;
+
+/**
+ * Runs `read` with the files of each path resolved once: a path that several files import is
+ * looked up on disk once. The files must not change while it runs. Nested runs share it.
+ */
+export function resolving<T>(read: () => T): T {
+  if (resolved !== null) {
+    return read();
+  }
+  resolved = new Map();
+  try {
+    return read();
+  } finally {
+    resolved = null;
+  }
+}
+
+/** What the compiler takes for a module that has no script: `schema.d.ts` for `./schema`. */
+const DECLARATIONS = ['.d.ts', '.d.mts', '.d.cts'];
+
+/**
+ * The files a path without (or with a compiled) extension may stand for: each that exists, as
+ * runners do not agree on which comes first (Vite takes `rate.js` before `rate.ts`, the
+ * TypeScript compiler `rate.ts`). Where both are there, either may be the one loaded.
+ *
+ * @param directory Whether a directory stands for its index file.
+ * @param declarations Whether a declaration file stands for the module when no script does
+ *   (`@/types/schema` for `src/types/schema.d.ts`). A script of the same name comes first.
+ */
+export function resolveFiles(base: string, directory = true, declarations = true): string[] {
+  const key = `${Number(directory)}${Number(declarations)}${base}`;
+  const known = resolved?.get(key);
+  if (known !== undefined) {
+    return [...known];
+  }
+  const found = filesOf(base, directory, declarations);
+  resolved?.set(key, found);
+  return [...found];
+}
+
+function filesOf(base: string, directory: boolean, declarations: boolean): string[] {
+  const candidates = (extensions: string[]) => [
+    ...extensions.map((extension) => base + extension),
     // `./fee.js` written in a TypeScript file is `./fee.ts`
-    ...EXTENSIONS.map((extension) => base.replace(/\.[cm]?jsx?$/, extension)),
-    ...(directory ? EXTENSIONS.map((extension) => path.join(base, `index${extension}`)) : []),
+    ...extensions.map((extension) => base.replace(/\.[cm]?jsx?$/, extension)),
+    ...(directory ? extensions.map((extension) => path.join(base, `index${extension}`)) : []),
   ];
-  return candidates.find(isFile) ?? null;
+  // A JSON file, which Node, Jest and Vite take after the scripts: `require('./rates')`.
+  const data = [`${base}.json`, ...(directory ? [path.join(base, 'index.json')] : [])];
+  const scripts = [...new Set([base, ...candidates(EXTENSIONS), ...data])].filter(isFile);
+  return scripts.length > 0 || !declarations
+    ? scripts
+    : [...new Set(candidates(DECLARATIONS))].filter(isFile);
+}
+
+/** The first of resolveFiles, or null: where only whether the path leads to a file matters. */
+export function resolveFile(base: string, directory = true, declarations = true): string | null {
+  return resolveFiles(base, directory, declarations)[0] ?? null;
 }
 
 /** Whether `node_modules/<package>` exists in the directory of `from` or above it. */
@@ -66,16 +117,23 @@ export function loadedFiles(
   manifest: LoadedManifest,
   configFile: string | null
 ): { files: LoadedFile[]; roots: LoadRoot[] } {
+  return resolving(() => loadedFilesNow(manifest, configFile));
+}
+
+function loadedFilesNow(
+  manifest: LoadedManifest,
+  configFile: string | null
+): { files: LoadedFile[]; roots: LoadRoot[] } {
   const aliases = manifest.settings.importAliases;
   const relative = (file: string) => path.relative(manifest.dir, file).split(path.sep).join('/');
-  const target = (specifier: string, from: string): string | null => {
+  const target = (specifier: string, from: string): string[] => {
     if (specifier.startsWith('.')) {
-      return resolveFile(path.resolve(path.dirname(from), specifier));
+      return resolveFiles(path.resolve(path.dirname(from), specifier));
     }
     const alias = aliases.find((candidate) => specifier.startsWith(candidate.prefix));
     return alias === undefined
-      ? null
-      : resolveFile(
+      ? []
+      : resolveFiles(
           path.resolve(manifest.dir, alias.target + specifier.slice(alias.prefix.length))
         );
   };
@@ -107,18 +165,19 @@ export function loadedFiles(
     const paths = strings.filter((text) => file === entry || /^(?:\.|<rootDir>\/)/.test(text));
     for (const text of paths) {
       const stripped = text.replace(/^<rootDir>\//, '');
+      const here = resolveFiles(path.resolve(path.dirname(file), stripped), false);
       const found =
-        resolveFile(path.resolve(path.dirname(file), stripped), false) ??
-        resolveFile(path.resolve(manifest.dir, stripped), false);
-      if (found !== null && SCRIPT.test(found)) {
-        named.add(found);
+        here.length > 0 ? here : resolveFiles(path.resolve(manifest.dir, stripped), false);
+      for (const one of found.filter((candidate) => SCRIPT.test(candidate))) {
+        named.add(one);
       }
     }
     for (const specifier of specifiers.filter((one) => isProjectImport(one, aliases))) {
-      const found = target(specifier, file);
-      if (found !== null && SCRIPT.test(found) && !seenConfigs.has(found)) {
-        seenConfigs.add(found);
-        configs.push(found);
+      for (const found of target(specifier, file)) {
+        if (SCRIPT.test(found) && !seenConfigs.has(found)) {
+          seenConfigs.add(found);
+          configs.push(found);
+        }
       }
     }
   }
@@ -142,10 +201,10 @@ export function loadedFiles(
     for (const specifier of specifiers) {
       if (isProjectImport(specifier, aliases)) {
         const found = target(specifier, file);
-        if (found === null) {
+        if (found.length === 0) {
           lost ??= `${specifier} (imported by ${relative(file)})`;
         } else {
-          next.push(found);
+          next.push(...found);
         }
       } else if (specifier.startsWith('node:') || builtinModules.includes(specifier)) {
         imports.push({ specifier, builtin: true });
@@ -158,10 +217,7 @@ export function loadedFiles(
     }
     // A path given to the runner as a string: vi.mock('./rates'), jest.requireActual('./rates').
     for (const text of strings.filter((one) => one.startsWith('.'))) {
-      const found = resolveFile(path.resolve(path.dirname(file), text));
-      if (found !== null) {
-        next.push(found);
-      }
+      next.push(...resolveFiles(path.resolve(path.dirname(file), text)));
     }
     const visited = {
       file: { path: relative(file), source, imports },

@@ -27,4 +27,21 @@ describe('loadedFiles', () => {
     );
     expect(tax?.files).toEqual(['src/tax.spec.ts', 'src/tax.ts', 'src/Comp.vue', 'src/fee.ts']);
   });
+
+  it('follows both scripts of one name, as the runner may take either', () => {
+    const dir = project({
+      'test-gates.json': { gates: [gate('src/fee.ts')], candidates: [] },
+      'src/fee.ts': "import { rate } from './rate';\nexport const fee = (x: number) => x + rate;\n",
+      'src/fee.spec.ts': "import { fee } from './fee';\nit('fee', () => expect(fee(1)).toBe(2));\n",
+      'src/rate.ts': 'export const rate: number = 1;\n',
+      'src/rate.js': 'export const rate = 1;\n',
+    });
+    const { roots } = loadedFiles(readManifest(dir), null);
+    expect(roots.find((root) => root.spec === 'src/fee.spec.ts')?.files).toEqual([
+      'src/fee.spec.ts',
+      'src/fee.ts',
+      'src/rate.ts',
+      'src/rate.js',
+    ]);
+  });
 });

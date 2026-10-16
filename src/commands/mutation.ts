@@ -7,6 +7,7 @@ import { ManifestError } from '../core/manifest.js';
 import { AffectedError, affectedInputs, loadedScope, runnerConfigs } from '../affected-files.js';
 import {
   type AffectedPlan,
+  describeExpected,
   describePlan,
   planAffected,
   timeoutRanges,
@@ -21,7 +22,9 @@ import {
   readRecord,
   RECORD_FORMAT,
   refuseReuse,
+  reportFiles,
   type Snapshot,
+  strykerIgnores,
 } from '../core/reuse-guard.js';
 import { affectedRefused, gateRunRefused, selectControls } from '../core/selfcheck.js';
 import { findLocalBin } from '../fs.js';
@@ -54,7 +57,9 @@ function loadStrykerConfig(manifest: LoadedManifest, config: string): unknown {
     'incremental: config.incremental, force: config.force,' +
     'incrementalFile: config.incrementalFile, tempDirName: config.tempDirName,' +
     'testRunner: config.testRunner, vitestConfig: config.vitest?.configFile,' +
-    'jestConfig: config.jest?.configFile,' +
+    'jestConfig: config.jest?.configFile, checkers: config.checkers,' +
+    'htmlReporter: config.htmlReporter, jsonReporter: config.jsonReporter,' +
+    'ignorePatterns: config.ignorePatterns,' +
     `}) + ${JSON.stringify(CONFIG_MARK)});`;
   const result = spawnSync(process.execPath, ['--input-type=module', '--eval', script], {
     cwd: manifest.dir,
@@ -178,8 +183,15 @@ export function decideReuse(
   const options = incrementalOptions(loaded, strykerArgs);
   // The real path: the files of the snapshot are listed by theirs.
   const base = fs.realpathSync(manifest.dir);
+  // Checkers given to Stryker as an argument check types as those of its config do.
+  const checkersArg = strykerArgs.some(
+    (arg) => arg === '--checkers' || arg.startsWith('--checkers=')
+  );
   const configs = (): ReturnType<typeof runnerConfigs> =>
-    runnerConfigs(base, config, (loaded ?? {}) as Record<string, unknown>);
+    runnerConfigs(base, config, {
+      ...((loaded ?? {}) as Record<string, unknown>),
+      ...(checkersArg ? { checkers: ['--checkers'] } : {}),
+    });
   const decision: ReuseDecision = {
     incremental: false,
     incrementalFile: null,
@@ -211,12 +223,26 @@ export function decideReuse(
   let snapshot: Snapshot | null = null;
   let root = base;
   let failure = 'the Stryker config could not be loaded to see where the incremental file is';
+  // The reports of the run, and what Stryker leaves out of it (a cache of lint, of tsc): a text
+  // of the Stryker config that names one is not a file the run reads.
+  const reports = reportFiles(loaded).map((file) => path.resolve(base, file));
+  const ignores = strykerIgnores(loaded);
+  const read = (file: string): boolean => {
+    const relative = path.relative(base, file);
+    const inside = !relative.startsWith('..') && !path.isAbsolute(relative);
+    return !reports.includes(file) && !(inside && ignores(relative.split(path.sep).join('/')));
+  };
   if (loaded !== undefined) {
     const scope = (listed: string[]): Set<string> | null => {
       try {
         const found = loadedScope(manifest, configs(), listed);
-        decision.scope = 'files' in found ? { files: found.files.size } : found;
-        return 'files' in found ? found.files : null;
+        if (!('files' in found)) {
+          decision.scope = found;
+          return null;
+        }
+        const files = new Set([...found.files].filter(read));
+        decision.scope = { files: files.size };
+        return files;
       } catch (error) {
         // what the run loads cannot be told: every path is followed
         decision.scope = { every: (error as Error).message };
@@ -233,6 +259,7 @@ export function decideReuse(
           recordFile,
           path.resolve(base, options.tempDirName),
           path.resolve(base, manifest.settings.strykerReportFile),
+          ...reports,
         ],
         args: comparableArgs(strykerArgs),
       }));
@@ -272,6 +299,11 @@ export function decideReuse(
       force = failure;
     } else if (!affected) {
       force = refuseReuse({ record: stored, incremental, snapshot });
+      if (force === null) {
+        // Every result is taken over: what the last run wrote down about each gate still holds.
+        const read = readRecord({ record: stored, incremental, snapshot });
+        last = 'record' in read ? read.record.affected : undefined;
+      }
     } else if (ci !== null) {
       force = ci;
     } else {
@@ -353,7 +385,7 @@ function guardIncremental(
         }
       : nothing;
   }
-  const { snapshot, root, plan, last, ci, configs, force } = decision;
+  const { snapshot, root, plan, last, configs, force } = decision;
   const incrementalFile = decision.incrementalFile as string;
   const recordFile = decision.recordFile as string;
   const incremental = decision.incrementalHash;
@@ -372,41 +404,59 @@ function guardIncremental(
     (rerun !== null && rerun.length > 0 && rerun.length === manifest.gates.length
       ? 'every gate is affected'
       : null);
-  // Results that are taken over: never those of a mutant that timed out (see timeoutRanges).
+  // Results that are taken over: never those of a mutant that timed out, unless expectedTimeouts
+  // lists it (see timeoutRanges).
   let ranges: string[] = [];
+  let timedOut = 0;
+  let expected = 0;
   if (everyGate === null && incremental !== null && !options.force) {
     const kept =
-      rerun === null
-        ? manifest.gates.map((gate) => gate.path)
-        : manifest.gates.map((gate) => gate.path).filter((gate) => !rerun.includes(gate));
+      rerun === null ? manifest.gates : manifest.gates.filter((gate) => !rerun.includes(gate.path));
     try {
-      ranges = timeoutRanges(
-        JSON.parse(fs.readFileSync(incrementalFile, 'utf8')) as Parameters<typeof timeoutRanges>[0],
+      ({
+        ranges,
+        rerun: timedOut,
+        expected,
+      } = timeoutRanges(
+        JSON.parse(fs.readFileSync(incrementalFile, 'utf8')) as MutationReport,
         kept
-      );
+      ));
     } catch {
-      ranges = [];
+      // no incremental file to read: Stryker takes nothing over either
     }
   }
   const subset = rerun !== null && rerun.length > 0 && everyGate === null ? rerun : [];
+  // The gates whose mutants all run again (null: every gate). Without --affected that is all
+  // of them or none: the others take over their results, and with them what was written down.
+  const ran = affected
+    ? rerun
+    : everyGate !== null || options.force || incremental === null
+      ? null
+      : [];
   let said: string[] = [];
   if (affected && !options.force) {
     if (force !== null) {
       said = describePlan({ full: force });
     } else if (plan !== null) {
-      said = describePlan(plan, 5, ranges.length);
+      said = describePlan(plan, 5, timedOut, expected);
     } else if (decision.unchanged !== null) {
       said = [
         `test-gates mutation --affected: nothing changed since the last run, every result is reused (gate by gate, ${decision.unchanged.replace(/^what a gate/, 'what each gate')})`,
         ...(ranges.length > 0
-          ? [`  and ${ranges.length} mutant(s) that timed out in the last run are run again`]
+          ? [`  and ${timedOut} mutant(s) that timed out in the last run are run again`]
           : []),
+        ...(expected > 0 ? [`  ${describeExpected(expected)}`] : []),
       ];
     }
-  } else if (ranges.length > 0) {
-    said = [
-      `test-gates mutation: ${ranges.length} mutant(s) that timed out in the last run are run again, the other results are reused`,
-    ];
+  } else {
+    if (ranges.length > 0) {
+      said.push(
+        `test-gates mutation: ${timedOut} mutant(s) that timed out in the last run are run again, the other results are reused`
+      );
+    }
+    if (expected > 0) {
+      said.push(`test-gates mutation: ${describeExpected(expected)}`);
+    }
   }
   return {
     // Every gate is run again: the same as a run of every mutant.
@@ -421,8 +471,11 @@ function guardIncremental(
         return;
       }
       const record: GuardRecord = { format: RECORD_FORMAT, incremental: written, snapshot };
-      if (affected && ci === null && judged !== null) {
-        record.affected = affectedRecord(judged, rerun, last);
+      // Also without --affected (a run by hand with -- --force, for one), so that the next run
+      // with it can tell the gates apart. Not in CI: --affected is refused there, and a run with
+      // it in CI writes nothing about the gates either.
+      if (affectedRefused(process.env) === null && judged !== null) {
+        record.affected = affectedRecord(judged, ran, last);
       }
       try {
         fs.writeFileSync(recordFile, `${JSON.stringify(record)}\n`);
@@ -474,7 +527,9 @@ function guardIncremental(
       }
       return { tests: Object.keys(judged.report.testFiles ?? {}).sort(), gates: recorded };
     } catch (error) {
-      if (error instanceof AffectedError) {
+      // Without --affected the run did not ask for this part: whatever keeps it from being
+      // worked out leaves it out, and the next run with --affected runs every mutant.
+      if (error instanceof AffectedError || !affected) {
         return undefined;
       }
       throw error;

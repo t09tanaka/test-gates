@@ -20,7 +20,8 @@ export function isProjectImport(specifier: string, aliases: ImportAlias[]): bool
 
 /**
  * The project path a specifier points at, without its script extension, or null for a
- * package. `./shipping-fee.js` imported from `src/a.ts` is `src/shipping-fee`.
+ * package. `./shipping-fee.js` imported from `src/a.ts` is `src/shipping-fee`. A path above
+ * the root keeps its `..`: `../../shared/x` from `src/a.ts` is `../shared/x`.
  */
 export function resolveSpecifier(
   specifier: string,
@@ -43,7 +44,13 @@ export function resolveSpecifier(
   const segments: string[] = [];
   for (const segment of joined.split('/')) {
     if (segment === '..') {
-      segments.pop();
+      // Above the root of the project the `..` is kept: `../shared/x` is a sibling directory of
+      // the subproject, not `shared/x` inside it.
+      if (segments.length === 0 || segments[segments.length - 1] === '..') {
+        segments.push(segment);
+      } else {
+        segments.pop();
+      }
     } else if (segment !== '.' && segment !== '') {
       segments.push(segment);
     }

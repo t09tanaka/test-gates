@@ -238,3 +238,86 @@ export function incrementalOptions(config: unknown, args: string[]): Incremental
 export function comparableArgs(args: string[]): string[] {
   return args.filter((arg) => arg !== '--force');
 }
+
+/** The object of a config as loaded, or an empty one. */
+function objectOf(value: unknown): Record<string, unknown> {
+  return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {};
+}
+
+/**
+ * The reports a Stryker run writes, relative to the subproject: those of its HTML and its JSON
+ * reporter, at the defaults of Stryker where the config names none. What a run writes is not
+ * something it depends on.
+ *
+ * @param config The Stryker config as loaded (its default export).
+ */
+export function reportFiles(config: unknown): string[] {
+  const options = objectOf(config);
+  const fileName = (reporter: string, fallback: string): string => {
+    const named = objectOf(options[reporter]).fileName;
+    return typeof named === 'string' ? named : fallback;
+  };
+  return [
+    fileName('htmlReporter', 'reports/mutation/mutation.html'),
+    fileName('jsonReporter', 'reports/mutation/mutation.json'),
+  ];
+}
+
+/** What the wildcards of a pattern of ignorePatterns stand for. */
+const WILDCARDS = new Map([
+  ['**/', '(?:.*/)?'],
+  ['*', '[^/]*'],
+  ['?', '[^/]'],
+]);
+
+/**
+ * A pattern of ignorePatterns as a regular expression: `*` and `?` within a part, a part `**`
+ * for any parts before the next. Brackets and braces are taken as they are written, which
+ * leaves out less than Stryker does.
+ */
+function globSource(glob: string): string {
+  return glob
+    .split(/(\*\*\/|\*|\?)/)
+    .map((part) => WILDCARDS.get(part) ?? part.replace(/\W/g, '\\$&'))
+    .join('');
+}
+
+/**
+ * Whether Stryker leaves a file out of the run by the ignorePatterns of its config, which it
+ * reads as a .gitignore: a pattern without a `/` matches a name at any depth, one with a `/` the
+ * path from the subproject, one that ends in `/` a directory only. What lies in a directory that
+ * is left out is left out with it. Where a pattern takes files back (`!`), nothing is left out:
+ * Stryker then keeps files below a directory that is left out, and to leave out more than it does
+ * would compare less than the run reads.
+ *
+ * @param config The Stryker config as loaded (its default export).
+ * @returns A test of a path relative to the subproject, with `/` between its parts.
+ */
+export function strykerIgnores(config: unknown): (relative: string) => boolean {
+  const patterns = [objectOf(config).ignorePatterns]
+    .flat()
+    .filter((pattern): pattern is string => typeof pattern === 'string');
+  if (patterns.some((pattern) => pattern.startsWith('!'))) {
+    return () => false;
+  }
+  const rules = patterns.map((pattern) => {
+    const directoryOnly = pattern.endsWith('/');
+    const body = pattern.replace(/\/+$/, '');
+    const anchored = body.includes('/');
+    const expression = new RegExp(`^${globSource(body.replace(/^\//, ''))}$`, 'i');
+    return { directoryOnly, anchored, expression };
+  });
+  return (relative) => {
+    const parts = relative.split('/');
+    // the file itself, and each directory it lies in
+    return rules.some((rule) =>
+      parts.some((part, index) => {
+        if (rule.directoryOnly && index === parts.length - 1) {
+          return false;
+        }
+        const target = rule.anchored ? parts.slice(0, index + 1).join('/') : part;
+        return rule.expression.test(target);
+      })
+    );
+  };
+}

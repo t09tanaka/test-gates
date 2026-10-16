@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
-import { resolveFile } from './commands/loaded-files.js';
+import { resolveFile, resolveFiles, resolving } from './commands/loaded-files.js';
 import type { Snapshot } from './core/reuse-guard.js';
 
 /** Thrown when the files a run depends on cannot be listed. The results are then not reused. */
@@ -53,8 +53,11 @@ const WIDENED_SHOWN = 5;
 const SCAN_LIMIT = 8 * 1024 * 1024;
 /** A string literal with `..` as a part of a path: it may lead out of the directory of its file. */
 const UPWARD = /(['"`])((?:[^'"`\n]*\/)?\.\.(?:\/[^'"`\n]*)?)\1/g;
-/** Files written for people to read: hashed, but the paths in them are not followed. */
-const DOCUMENTS = ['.md', '.markdown', '.txt', '.rst', '.adoc'];
+/**
+ * Files written for people to read (a report of Stryker is one): hashed, but the paths in them
+ * are not followed.
+ */
+const DOCUMENTS = ['.md', '.markdown', '.txt', '.rst', '.adoc', '.html', '.htm'];
 /** The start of a template literal that is the directory of its own file. */
 const HERE = /^\$\{(?:__dirname|import\.meta\.dirname)\}(?=\/)/;
 /**
@@ -64,6 +67,8 @@ const HERE = /^\$\{(?:__dirname|import\.meta\.dirname)\}(?=\/)/;
  */
 const FROM_HERE = /\b(?:__dirname|import\.meta\.dirname)((?:\s*,\s*(['"])[^'"`\n]*\2)+)(\s*\))?/g;
 const LITERAL = /(['"])([^'"`\n]*)\1/g;
+/** A string literal that is a path from the directory of its file (`./configs/strict.json`). */
+const DOWNWARD = /(['"`])(\.\/[^'"`\n]*)\1/g;
 const isUpward = (segment: string): boolean => segment.split('/').includes('..');
 
 function hashOf(content: Buffer | string): string {
@@ -116,9 +121,17 @@ function git(cwd: string, args: string[]): string | null {
 /** Lists the files below a directory, relative to `root`. */
 type Lister = (directory: string, recursive: boolean) => string[];
 
+/**
+ * A path as part of a `:(glob)` pathspec that matches it alone: a directory named `[locale]` is a
+ * name, not a set of letters.
+ */
+function globLiteral(relative: string): string {
+  return relative.replace(/[*?[\]\\]/g, '\\$&');
+}
+
 function gitLister(root: string): Lister {
   return (directory, recursive) => {
-    const relative = toPosix(path.relative(root, directory));
+    const relative = globLiteral(toPosix(path.relative(root, directory)));
     const pattern = recursive
       ? `${relative === '' ? '' : `${relative}/`}**`
       : `${relative === '' ? '' : `${relative}/`}*`;
@@ -265,6 +278,21 @@ function installedVersion(start: string, name: string): string | null {
   }
 }
 
+/**
+ * The version of the node on PATH, which the shebang of node_modules/.bin/stryker starts, when
+ * there is one. It need not be the node this tool runs on.
+ */
+function nodeOnPath(cwd: string): Record<string, string> {
+  const result = spawnSync('node', ['--version'], {
+    cwd,
+    encoding: 'utf8',
+    shell: process.platform === 'win32',
+    timeout: 30_000,
+  });
+  const version = result.status === 0 ? result.stdout.trim() : '';
+  return version === '' ? {} : { 'Node.js on PATH': version };
+}
+
 function ownVersion(): string {
   const { version } = createRequire(import.meta.url)('../package.json') as { version: string };
   return version;
@@ -274,12 +302,13 @@ function ownVersion(): string {
  * Takes the snapshot of everything a mutation run of the subproject depends on.
  *
  * The files are those of the subproject, the files directly in the directories above it (lock
- * files, shared configs), packages of the same repository linked into node_modules, and every
- * directory outside the subproject that a file points at: with a link, or with a path that has
- * `..` in it (also one that starts at `__dirname`). Where such a path cannot be followed, every
- * file that can be listed is taken. Paths in files written for people are not followed.
- * With git, files that are ignored are left out; without it, everything but node_modules is
- * read.
+ * files, shared configs), the `patches/` directories of those, packages of the same repository
+ * linked into node_modules, and every directory outside the subproject that a file points at:
+ * with a link, or with a path that has `..` in it (also one that starts at `__dirname`, and a
+ * plain one that is there only from the subproject, where the run starts). Where such a path
+ * cannot be followed, every file that can be listed is taken. Paths in files written for people
+ * are not followed. With git, files that are ignored are left out, but for those `scope` says
+ * the run loads; without it, everything but node_modules is read.
  *
  * @param input.dir Absolute path of the subproject.
  * @param input.written Paths the run writes (reports, the sandbox), as files or directories,
@@ -318,6 +347,10 @@ export function snapshotOf(input: {
    */
   widened: string[];
 } {
+  return resolving(() => snapshotNow(input));
+}
+
+function snapshotNow(input: Parameters<typeof snapshotOf>[0]): ReturnType<typeof snapshotOf> {
   const dir = fs.realpathSync(input.dir);
   const top = git(dir, ['rev-parse', '--show-toplevel']);
   let root = top === null ? dir : fs.realpathSync(top.trim());
@@ -402,24 +435,102 @@ export function snapshotOf(input: {
     file: string,
     reference: string
   ): void => {
-    const target = path.resolve(path.dirname(file), fixed);
-    let isDirectory = false;
-    try {
-      isDirectory = fs.statSync(target).isDirectory();
-    } catch {
-      // An import without its extension, or a file that is not there: take its directory.
+    const from = (start: string): { target: string; isDirectory: boolean; found: boolean } => {
+      const target = path.resolve(start, fixed);
+      let isDirectory = false;
+      try {
+        isDirectory = fs.statSync(target).isDirectory();
+      } catch {
+        // An import without its extension, or a file that is not there: take its directory.
+      }
+      return {
+        target,
+        isDirectory,
+        found: isDirectory || resolveFile(target, true, false) !== null,
+      };
+    };
+    const fromFile = from(path.dirname(file));
+    const targets = [fromFile];
+    if (!anchored && path.dirname(file) !== dir) {
+      // A plain path handed to readFileSync or path.resolve starts in the directory the run starts
+      // in, the subproject; one that is imported starts in the directory of the file. Which one
+      // is meant cannot be told, so both are followed where something is there. When nothing is
+      // there from either, a file that appears later at one of them is followed then, and its
+      // files change the snapshot. Where what is there from the subproject lies out of what can
+      // be listed, the snapshot is refused, as for any path there; where it is a directory that
+      // holds all that can be listed (a way up to the top in a nested file), where the path
+      // leads is not known, and every file that can be listed is compared.
+      const fromRun = from(dir);
+      if (fromRun.found && !fromFile.found) {
+        targets[0] = fromRun;
+      } else if (fromRun.found && isInside(fromRun.target, listRoot)) {
+        enqueue(listRoot, file, reference);
+      } else if (fromRun.found) {
+        targets.push(fromRun);
+      }
     }
-    if (!isDirectory && !isInside(listRoot, target) && resolveFile(target) === null) {
-      // Nothing is there, outside of what can be listed (a path for the sandbox of Stryker, from
-      // the subproject itself): that it stays so is compared.
-      files[toPosix(path.relative(listRoot, target))] = 'missing';
+    for (const { target, isDirectory } of targets) {
+      // A file directly in a directory above the subproject is compared anyway
+      // (`"extends": "../../tsconfig.base.json"`). What it points at in turn is followed.
+      // Each file the path may stand for (`base.json` and `base.ts`): either may be the one read.
+      const beside = (isDirectory || open ? [] : resolveFiles(target, false, false)).filter((one) =>
+        besideAncestors.has(one)
+      );
+      if (beside.length > 0) {
+        beside.forEach(reach);
+        continue;
+      }
+      // Declaration files are left out here, so that what counts as missing stays as it was.
+      if (
+        !isDirectory &&
+        !isInside(listRoot, target) &&
+        resolveFile(target, true, false) === null
+      ) {
+        // Nothing is there, outside of what can be listed (a path for the sandbox of Stryker,
+        // from the subproject itself): that it stays so is compared.
+        files[toPosix(path.relative(listRoot, target))] = 'missing';
+        continue;
+      }
+      const directory = isDirectory ? target : path.dirname(target);
+      // Nothing is there (text that only looks like a path). Should the directory appear later,
+      // it is looked at then.
+      if (fs.existsSync(directory)) {
+        enqueue(directory, file, reference, anchored && !open);
+      }
+    }
+  };
+  /**
+   * Follows the paths from its own directory in a file directly above the subproject that a file
+   * leads to (`"extends": "./configs/strict.json"` in the `tsconfig.base.json` at the root). Its
+   * paths with `..` in them are followed as those of any file that is compared.
+   */
+  const reached = new Set<string>();
+  const reach = (file: string): void => {
+    if (reached.has(file) || DOCUMENTS.includes(path.extname(file).toLowerCase())) {
       return;
     }
-    const directory = isDirectory ? target : path.dirname(target);
-    // Nothing is there (text that only looks like a path). Should the directory appear later, it
-    // is looked at then.
-    if (fs.existsSync(directory)) {
-      enqueue(directory, file, reference, anchored && !open);
+    reached.add(file);
+    let text: string;
+    try {
+      const content = fs.readFileSync(file);
+      if (content.length > SCAN_LIMIT || content.subarray(0, 8000).includes(0)) {
+        return;
+      }
+      text = content.toString('utf8').replace(/\\[\\/]/g, '/');
+    } catch {
+      return; // a link to nothing: compared as such
+    }
+    for (const match of text.matchAll(DOWNWARD)) {
+      const literal = match[2] as string;
+      const open = literal.includes('${');
+      const fixed = open
+        ? literal.slice(0, literal.lastIndexOf('/', literal.indexOf('${')) + 1)
+        : literal;
+      if (open && isUpward(literal.slice(literal.indexOf('${')))) {
+        enqueue(listRoot, file, literal);
+      } else {
+        follow(fixed, open, false, file, literal);
+      }
     }
   };
   /** Follows every path in the text of `file` that has `..` in it. */
@@ -514,8 +625,18 @@ export function snapshotOf(input: {
   };
 
   const ancestors = upTo(dir, listRoot).slice(1);
-  for (const directory of ancestors) {
-    list(directory, false).forEach(add);
+  const besideAncestors = new Set<string>();
+  const ancestorFiles = ancestors.flatMap((directory) => list(directory, false));
+  for (const relative of ancestorFiles) {
+    besideAncestors.add(path.join(listRoot, relative));
+  }
+  ancestorFiles.forEach(add);
+  // What patch-package (or pnpm) changes in node_modules: the patches, one directory down.
+  for (const directory of [dir, ...ancestors]) {
+    const patches = path.join(directory, 'patches');
+    if (fs.existsSync(patches) && fs.statSync(patches).isDirectory()) {
+      enqueue(patches, directory);
+    }
   }
   for (const directory of [dir, ...ancestors]) {
     for (const linked of linkedPackages(path.join(directory, 'node_modules'), listRoot)) {
@@ -539,12 +660,30 @@ export function snapshotOf(input: {
       }
     }
   }
-  for (let position = 0; position < regions.length; position += 1) {
-    list(regions[position] as string, true).forEach(add);
+  let position = 0;
+  const drain = (): void => {
+    for (; position < regions.length; position += 1) {
+      list(regions[position] as string, true).forEach(add);
+    }
+  };
+  drain();
+  // What the run loads but git does not list (generated code, fixtures that are downloaded): such
+  // a file is compared all the same, and the paths in it are followed.
+  for (const file of followed ?? []) {
+    const parts = path.relative(listRoot, file).split(path.sep);
+    if (
+      isInside(listRoot, file) &&
+      !parts.some((part) => NEVER.includes(part)) &&
+      fs.statSync(file, { throwIfNoEntry: false })?.isFile() === true
+    ) {
+      add(toPosix(path.relative(listRoot, file)));
+    }
   }
+  drain();
 
   const environment: Record<string, string> = {
     'Node.js': process.version,
+    ...nodeOnPath(dir),
     platform: `${process.platform} ${process.arch}`,
     'test-gates': ownVersion(),
   };

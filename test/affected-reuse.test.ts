@@ -169,7 +169,7 @@ describe.skipIf(!strykerRuns)('test-gates mutation --affected with a real Stryke
 
       // 8. (e): an import that cannot be followed makes the run one of every mutant.
       write(dir, {
-        'src/fee.spec.ts': `${fs.readFileSync(path.join(dir, 'src/fee.spec.ts'), 'utf8')}// require(name)\n`,
+        'src/fee.spec.ts': `${fs.readFileSync(path.join(dir, 'src/fee.spec.ts'), 'utf8')}export const load = (name: string) => require(name);\n`,
       });
       const unknown = await run();
       expect(unknown.stdout).toContain(
@@ -187,9 +187,162 @@ describe.skipIf(!strykerRuns)('test-gates mutation --affected with a real Stryke
   );
 });
 
+// Two gates. `rate` imports `./scale`, for which there are both scale.ts and scale.js (Vite
+// loads scale.js), and `fee` stands alone.
+function twinsFixture(): string {
+  const dir = project({
+    'package.json': { name: 'affected-twins', private: true, type: 'module' },
+    'test-gates.json': { gates: [gate('src/rate.ts'), gate('src/fee.ts')], candidates: [] },
+    'src/scale.ts': 'export const scale: number = 2;\n',
+    'src/scale.js': 'export const scale = 2;\n',
+    'src/rate.ts':
+      "import { scale } from './scale';\nexport const rate = (x: number) => x * scale;\n",
+    'src/rate.spec.ts': `${H}import { rate } from './rate';\nit('scales', () => { expect(rate(3)).toBe(6); });\n`,
+    'src/fee.ts': 'export const fee = (kg: number) => (kg > 2 ? 9 : 5);\n',
+    'src/fee.spec.ts':
+      `${H}import { fee } from './fee';\n` +
+      "it('goes by weight', () => {\n  expect(fee(2)).toBe(5);\n  expect(fee(3)).toBe(9);\n});\n",
+    'src/locales/ja.ts': "export const word = 'ja';\n",
+    'src/shims/colors.ts': 'export default { factor: 2 };\n',
+    'vitest.gates.config.ts': vitestConfig(''),
+    'stryker.gates.config.mjs':
+      `import { createStrykerGatesConfig } from ${JSON.stringify(helper('stryker'))};\n` +
+      "export default createStrykerGatesConfig({ rootDir: import.meta.url, testRunner: 'vitest', " +
+      "vitest: { configFile: 'vitest.gates.config.ts' }, concurrency: 1 });\n",
+  });
+  fs.symlinkSync(path.join(repoRoot, 'node_modules'), path.join(dir, 'node_modules'), 'dir');
+  return dir;
+}
+function vitestConfig(options: string): string {
+  return (
+    "import path from 'node:path';\nimport { fileURLToPath } from 'node:url';\n" +
+    `import { createVitestGatesConfig } from ${JSON.stringify(helper('vitest'))};\n` +
+    `export default createVitestGatesConfig({ rootDir: import.meta.url${options} });\n`
+  );
+}
+
+describe.skipIf(!strykerRuns)('what --affected cannot follow, with a real Stryker', () => {
+  it(
+    'runs again a gate whose import has two files, and every mutant for an import put together or a map of the runner',
+    { timeout: 600_000 },
+    async () => {
+      const dir = twinsFixture();
+      const run = () => testGatesAsync(['mutation', '--dir', dir, '--affected']);
+      const cannot = `${FULL}, the results of the last run are not reused: what a gate depends on cannot be told: `;
+      expect((await run()).status).toBe(0);
+
+      // scale.js is the file Vite loads for ./scale.
+      write(dir, { 'src/scale.js': 'export const scale = 2; // x\n' });
+      const twin = await run();
+      expect(twin.stdout).toContain('1 of 2 gate(s) reused, 1 run again');
+      expect(twin.stdout).toContain('  src/rate.ts: changed src/scale.js');
+      expect(twin.status).toBe(0);
+
+      // An import put together from strings: its path is not written out.
+      const feeSpec = fs.readFileSync(path.join(dir, 'src/fee.spec.ts'), 'utf8');
+      write(dir, {
+        'src/fee.spec.ts': `${feeSpec}export const load = (lang: string) => import('./locales/' + lang + '.ts');\n`,
+      });
+      const joined = await run();
+      expect(joined.stdout).toContain(
+        `${cannot}src/fee.spec.ts:7 imports a module whose path is not written out`
+      );
+      expect(joined.status).toBe(0);
+      write(dir, { 'src/fee.spec.ts': feeSpec });
+      expect((await run()).status).toBe(0);
+
+      // An installed package that the runner config maps to a file of the project: this tool
+      // would take the package, so a change of the file cannot be told gate by gate.
+      write(dir, {
+        'vitest.gates.config.ts': vitestConfig(
+          ", resolve: { alias: { picocolors: path.join(path.dirname(fileURLToPath(import.meta.url)), 'src/shims/colors.ts') } }"
+        ),
+        'src/rate.ts':
+          "import { scale } from './scale';\nimport colors from 'picocolors';\n" +
+          'export const rate = (x: number) => x * scale * (colors as unknown as { factor: number }).factor / 2;\n',
+      });
+      const mapped = `${cannot}vitest.gates.config.ts maps picocolors with alias in a way settings.importAliases does not name`;
+      const config = await run();
+      expect(config.stdout).toContain(mapped);
+      expect(config.status).toBe(0);
+      write(dir, { 'src/shims/colors.ts': 'export default { factor: 2 }; // x\n' });
+      const shim = await run();
+      expect(shim.stdout).toContain(mapped);
+      expect(shim.status).toBe(0);
+    }
+  );
+});
+
+describe.skipIf(!strykerRuns)('a run without --affected, with a real Stryker', () => {
+  it(
+    'writes down what each gate depends on for the next run with --affected, but not with --gate or in CI',
+    { timeout: 600_000 },
+    async () => {
+      const dir = fixture();
+      // Not in CI unless a step says so: a run there writes nothing about the gates.
+      const plain = (args: string[] = [], env: NodeJS.ProcessEnv = { CI: 'false' }) =>
+        testGatesAsync(['mutation', '--dir', dir, ...args], env);
+      const affected = () => testGatesAsync(['mutation', '--dir', dir, '--affected']);
+      let edits = 0;
+      const changeFee = () => {
+        edits += 1;
+        write(dir, {
+          'src/fee.ts': `export const fee = (kg: number) => (kg > 2 ? 9 : 5); // ${edits}\n`,
+        });
+      };
+      const onlyFee = async () => {
+        changeFee();
+        const run = await affected();
+        expect(run.stdout).toContain(
+          'test-gates mutation --affected: 2 of 3 gate(s) reused, 1 run again'
+        );
+        expect(run.stdout).toContain('  src/fee.ts: changed src/fee.ts');
+        expect(run.stdout).toContain(OK);
+        expect(run.status).toBe(0);
+      };
+
+      // A first run of every mutant, then a change that only `fee` depends on.
+      const first = await plain();
+      expect(first.stdout).toContain(OK);
+      expect(first.status).toBe(0);
+      await onlyFee();
+
+      // A run that takes every result over keeps what was written down about the gates.
+      const reused = await plain();
+      expect(reused.stdout).not.toContain('running every mutant again');
+      expect(reused.status).toBe(0);
+      await onlyFee();
+
+      // A full run by hand.
+      const forced = await plain(['--', '--force']);
+      expect(forced.stdout).toContain(OK);
+      expect(forced.status).toBe(0);
+      await onlyFee();
+
+      // A run of one gate leaves no record.
+      const part = await plain(['--gate', 'src/fee.ts']);
+      expect(part.status).toBe(0);
+      const afterPart = await affected();
+      expect(afterPart.stdout).toContain(
+        `${FULL}, the results of the last run are not reused: there is no record of the run that wrote the incremental file`
+      );
+
+      // A run in CI writes nothing about the gates: after a change, every mutant is run.
+      const ci = await plain([], { CI: 'true' });
+      expect(ci.status).toBe(0);
+      changeFee();
+      const afterCi = await affected();
+      expect(afterCi.stdout).toContain(
+        `${FULL}, the results of the last run are not reused: the last run did not write down what each gate depends on`
+      );
+      expect(afterCi.status).toBe(0);
+    }
+  );
+});
+
 // `countUp` has two mutants that can never end; test-gates.json lists them as expected
-// timeouts. A timeout may also come from a loaded machine, where the mutant would have
-// survived, so a timeout is never taken over from the last run.
+// timeouts, and a run after no change takes them over. Any other timeout may come from a loaded
+// machine, where the mutant would have survived, so it is never taken over from the last run.
 function timeoutsFixture(): string {
   const dir = project({
     'package.json': { name: 'timeouts-fixture', private: true, type: 'module' },
@@ -243,7 +396,7 @@ function timeoutsFixture(): string {
  * Turns the results of the comparison `kg > 2` of `fee` in the incremental file into timeouts,
  * as a loaded machine can leave them, and keeps the record of the run with it.
  */
-async function timedOutUnderLoad(dir: string): Promise<void> {
+async function timedOutUnderLoad(dir: string): Promise<number> {
   const file = path.join(dir, 'reports/stryker-incremental.json');
   const stored = JSON.parse(fs.readFileSync(file, 'utf8')) as {
     files: Record<string, { mutants: Array<{ mutatorName: string; status: string }> }>;
@@ -263,11 +416,15 @@ async function timedOutUnderLoad(dir: string): Promise<void> {
   const { createHash } = await import('node:crypto');
   kept.incremental = createHash('sha256').update(fs.readFileSync(file)).digest('hex');
   fs.writeFileSync(record, JSON.stringify(kept));
+  return changed;
 }
 
 describe.skipIf(!strykerRuns)('mutants that timed out in the last run, with a real Stryker', () => {
+  const TAKEN_OVER =
+    'mutant(s) that timed out in the last run are taken over: expectedTimeouts lists them';
+
   it(
-    'are run again also in a gate whose other results are reused, with and without --affected',
+    'are run again also in a gate whose other results are reused, unless expectedTimeouts lists them, with and without --affected',
     { timeout: 300_000 },
     async () => {
       const dir = timeoutsFixture();
@@ -279,45 +436,59 @@ describe.skipIf(!strykerRuns)('mutants that timed out in the last run, with a re
       );
       expect(first.status).toBe(0);
 
-      // Nothing changed: both gates are reused, but the two timeouts are run again.
+      // Nothing changed: both gates are reused, and so are the two timeouts that
+      // expectedTimeouts lists. Nothing is run again.
       const second = await run('--affected');
       expect(second.stdout).toContain(
         'test-gates mutation --affected: 2 of 2 gate(s) reused, 0 run again'
       );
-      expect(second.stdout).toContain(
-        '  and 2 mutant(s) of reused gates that timed out in the last run'
-      );
+      expect(second.stdout).toContain(`  2 ${TAKEN_OVER}`);
+      expect(second.stdout).not.toContain('of reused gates that timed out');
       expect(second.stdout).toContain(
         '(timeout 2) / allowed equivalent 0 / not evaluable 0 / unallowed survivors 0)'
       );
       expect(second.status).toBe(0);
 
-      // A gate that is run again for a change, next to one whose timeouts are run again.
+      // A gate that is run again for a change, next to one whose expected timeouts are reused.
       write(dir, { 'src/fee.ts': 'export const fee = (kg: number) => (kg > 2 ? 9 : 5); // x\n' });
       const both = await run('--affected');
       expect(both.stdout).toContain('1 of 2 gate(s) reused, 1 run again');
       expect(both.stdout).toContain('  src/fee.ts: changed src/fee.ts');
-      expect(both.stdout).toContain('  and 2 mutant(s) of reused gates that timed out');
+      expect(both.stdout).toContain(`  2 ${TAKEN_OVER}`);
+      expect(both.stdout).not.toContain('of reused gates that timed out');
       expect(both.stdout).toContain(
         '(timeout 2) / allowed equivalent 0 / not evaluable 0 / unallowed survivors 0)'
       );
 
       // Timeouts left by a loaded machine are not taken over: run again, the mutants are killed.
-      await timedOutUnderLoad(dir);
+      const underLoad = await timedOutUnderLoad(dir);
       const loaded = await run('--affected');
       expect(loaded.stdout).toContain('2 of 2 gate(s) reused, 0 run again');
-      expect(loaded.stdout).toMatch(/ {2}and [3-9] mutant\(s\) of reused gates that timed out/);
+      expect(loaded.stdout).toContain(
+        `  and ${underLoad} mutant(s) of reused gates that timed out in the last run`
+      );
+      expect(loaded.stdout).toContain(`  2 ${TAKEN_OVER}`);
       expect(loaded.stdout).toContain(
         '(timeout 2) / allowed equivalent 0 / not evaluable 0 / unallowed survivors 0)'
       );
       expect(loaded.status).toBe(0);
 
-      // Without --affected, a run after no change runs its timeouts again as well.
-      await timedOutUnderLoad(dir);
-      const plain = await run();
-      expect(plain.stdout).toMatch(
-        /test-gates mutation: [3-9] mutant\(s\) that timed out in the last run are run again, the other results are reused/
+      // Without --affected, a run after no change reuses the expected timeouts as well...
+      const unchanged = await run();
+      expect(unchanged.stdout).toContain(`test-gates mutation: 2 ${TAKEN_OVER}`);
+      expect(unchanged.stdout).not.toContain('are run again');
+      expect(unchanged.stdout).toContain(
+        '(timeout 2) / allowed equivalent 0 / not evaluable 0 / unallowed survivors 0)'
       );
+      expect(unchanged.status).toBe(0);
+
+      // ...and runs the other timeouts again.
+      const again = await timedOutUnderLoad(dir);
+      const plain = await run();
+      expect(plain.stdout).toContain(
+        `test-gates mutation: ${again} mutant(s) that timed out in the last run are run again, the other results are reused`
+      );
+      expect(plain.stdout).toContain(`test-gates mutation: 2 ${TAKEN_OVER}`);
       expect(plain.stdout).toContain(
         '(timeout 2) / allowed equivalent 0 / not evaluable 0 / unallowed survivors 0)'
       );

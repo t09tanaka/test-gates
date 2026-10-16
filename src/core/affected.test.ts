@@ -3,6 +3,7 @@ import {
   type AffectedPlan,
   describePlan,
   gateDependencies,
+  isNestedMock,
   kindOf,
   planAffected,
   timeoutRanges,
@@ -32,7 +33,8 @@ describe('kindOf', () => {
     'pkg/src/types/global.d.mts',
     'pkg/src/types/global.d.cts',
     'pkg/__mocks__/axios.ts',
-    'pkg/src/__mocks__/rates.ts',
+    'pkg/__mocks__/@acme/kit.ts',
+    'pkg/src/node_modules/x/index.js',
     'pkg/node_modules/.package-lock.json',
     'pkg/node_modules/x/index.js',
     'pkg/src/app.config.ts',
@@ -98,6 +100,10 @@ describe('kindOf', () => {
     'pkg/src/test-gates.jsonx',
     'pkg/src/tsconfig.jsonx',
     'pkg/src/app.config.a.b.c',
+    // a mock next to a module, which may also be used by name
+    'pkg/src/__mocks__/rates.ts',
+    'pkg/src/__mocks__/sub/rates.ts',
+    'pkg/src/__mocks__/README.md',
   ])('takes %s for another file', (key) => {
     expect(kindOf(key, 'pkg')).toBe('other');
   });
@@ -109,6 +115,22 @@ describe('kindOf', () => {
     expect(kindOf('src/.hidden/a.ts', '')).toBe('passive');
     expect(kindOf('a/b/src/a.ts', 'a/b')).toBe('passive');
     expect(kindOf('a/b/index.ts', 'a/b')).toBe('other');
+    expect(kindOf('__mocks__/axios.ts', '')).toBe('config');
+    expect(kindOf('src/__mocks__/rates.ts', '')).toBe('other');
+    expect(kindOf('a/b/__mocks__/axios.ts', 'a/b')).toBe('config');
+    expect(kindOf('a/b/src/__mocks__/rates.ts', 'a/b')).toBe('other');
+    expect(kindOf('a/__mocks__/b/rates.ts', 'a/b')).toBe('other');
+  });
+
+  it('tells a mock below the top from the mock of a package at the top', () => {
+    expect(isNestedMock('pkg/src/__mocks__/rates.ts', 'pkg')).toBe(true);
+    expect(isNestedMock('pkg/src/__mocks__/sub/rates.ts', 'pkg')).toBe(true);
+    expect(isNestedMock('pkg/__mocks__/axios.ts', 'pkg')).toBe(false);
+    expect(isNestedMock('pkg/__mocks__/@acme/kit.ts', 'pkg')).toBe(false);
+    expect(isNestedMock('pkg/src/__mocks__', 'pkg')).toBe(false);
+    expect(isNestedMock('pkg/src/rates.ts', 'pkg')).toBe(false);
+    expect(isNestedMock('src/__mocks__/rates.ts', '')).toBe(true);
+    expect(isNestedMock('__mocks__/rates.ts', '')).toBe(false);
   });
 });
 
@@ -296,6 +318,70 @@ describe('planAffected', () => {
     });
   });
 
+  describe('a mock below the top of the subproject', () => {
+    const mock = 'pkg/src/__mocks__/round.ts';
+    const withMock = { ...before, [mock]: 'k1' };
+    const loading = gates.map((gate) =>
+      gate.path === 'src/c.ts' ? gate : { ...gate, files: [...gate.files, mock] }
+    );
+    const mocked = (
+      now: Record<string, string>,
+      changes: Partial<Parameters<typeof planAffected>[0]> = {}
+    ): AffectedPlan =>
+      planAffected({
+        before: { files: withMock, affected },
+        now,
+        subproject: 'pkg',
+        config: [],
+        gates: loading,
+        ...changes,
+      });
+
+    it('runs again only the gates that load it', () => {
+      expect(mocked({ ...withMock, [mock]: 'k2' })).toEqual({
+        rerun: [
+          { gate: 'src/a.ts', changed: [mock] },
+          { gate: 'src/b.ts', changed: [mock] },
+        ],
+        reused: ['src/c.ts'],
+      });
+    });
+
+    it('runs every mutant when no gate loads it', () => {
+      expect(mocked({ ...withMock, [mock]: 'k2' }, { gates })).toEqual({
+        full: `changed since the last run, and may affect every gate: ${mock}`,
+      });
+    });
+
+    it('runs every mutant when it is named as a package', () => {
+      expect(mocked({ ...withMock, [mock]: 'k2' }, { config: [mock] })).toEqual({
+        full: `changed since the last run, and may affect every gate: ${mock}`,
+      });
+    });
+
+    it('runs every mutant when it is gone, as it may have been one of a package', () => {
+      expect(mocked(before)).toEqual({
+        full: `changed since the last run, and may affect every gate: ${mock}`,
+      });
+      // One that is new is loaded by the gates now, or named as a package.
+      expect(
+        planAffected({
+          before: { files: before, affected },
+          now: withMock,
+          subproject: 'pkg',
+          config: [],
+          gates: loading,
+        })
+      ).toEqual({
+        rerun: [
+          { gate: 'src/a.ts', changed: [mock] },
+          { gate: 'src/b.ts', changed: [mock] },
+        ],
+        reused: ['src/c.ts'],
+      });
+    });
+  });
+
   it('runs a gate again when a file it depended on in the last run changed or is gone', () => {
     // The spec of b no longer imports a; a changed as well.
     const now = { 'pkg/src/b.spec.ts': 'bs2', 'pkg/src/a.ts': 'a2' };
@@ -440,7 +526,7 @@ describe('planAffected', () => {
         gates,
       })
     ).toEqual({
-      full: 'the last run did not write down what each gate depends on (it ran without --affected)',
+      full: 'the last run did not write down what each gate depends on (it ran in CI, with an older version, or could not tell)',
     });
   });
 });
@@ -450,44 +536,122 @@ describe('timeoutRanges', () => {
     start: { line, column },
     end: { line: endLine, column: endColumn },
   });
+  const timeout = (location: ReturnType<typeof at>, status = 'Timeout') => ({
+    status,
+    mutatorName: 'BlockStatement',
+    replacement: '{}',
+    location,
+  });
   const last = {
     files: {
       'src/a.ts': {
         mutants: [
-          { status: 'Timeout', location: at(3, 10, 5, 4) },
-          { status: 'Killed', location: at(1, 1, 1, 9) },
-          { status: 'Timeout', location: at(3, 10, 5, 4) },
-          { status: 'Survived', location: at(2, 1, 2, 9) },
-          { status: 'Timeout', location: at(7, 1, 7, 2) },
+          timeout(at(3, 10, 5, 4)),
+          timeout(at(1, 1, 1, 9), 'Killed'),
+          timeout(at(3, 10, 5, 4)),
+          timeout(at(2, 1, 2, 9), 'Survived'),
+          timeout(at(7, 1, 7, 2)),
         ],
       },
-      'src/b.ts': { mutants: [{ status: 'Timeout', location: at(1, 5, 1, 6) }] },
+      'src/b.ts': { mutants: [timeout(at(1, 5, 1, 6))] },
       'src/c.ts': {},
-      constructor: { mutants: [{ status: 'Timeout', location: at(1, 1, 1, 2) }] },
+      constructor: { mutants: [timeout(at(1, 1, 1, 2))] },
     },
   };
+  const ranges = (report: Parameters<typeof timeoutRanges>[0], paths: string[]) =>
+    timeoutRanges(
+      report,
+      paths.map((path) => ({ path }))
+    );
 
   it('finds the gate named with a leading ./ under the name Stryker gives it', () => {
-    expect(timeoutRanges(last, ['./src/b.ts'])).toEqual(['src/b.ts:1:4-1:6']);
-    expect(timeoutRanges(last, ['src/./b.ts'])).toEqual(['src/b.ts:1:4-1:6']);
+    expect(ranges(last, ['./src/b.ts'])).toEqual({
+      ranges: ['src/b.ts:1:4-1:6'],
+      rerun: 1,
+      expected: 0,
+    });
+    expect(ranges(last, ['src/./b.ts']).ranges).toEqual(['src/b.ts:1:4-1:6']);
   });
 
   it('gives each timed-out mutant of the named gates once, as a range for --mutate', () => {
-    expect(timeoutRanges(last, ['src/a.ts', 'src/c.ts', 'src/gone.ts'])).toEqual([
-      'src/a.ts:3:9-5:4',
-      'src/a.ts:7:0-7:2',
-    ]);
-    expect(timeoutRanges(last, ['src/b.ts', 'src/a.ts'])).toEqual([
+    expect(ranges(last, ['src/a.ts', 'src/c.ts', 'src/gone.ts'])).toEqual({
+      ranges: ['src/a.ts:3:9-5:4', 'src/a.ts:7:0-7:2'],
+      // two of them at the same place share a range
+      rerun: 3,
+      expected: 0,
+    });
+    expect(ranges(last, ['src/b.ts', 'src/a.ts']).ranges).toEqual([
       'src/b.ts:1:4-1:6',
       'src/a.ts:3:9-5:4',
       'src/a.ts:7:0-7:2',
     ]);
-    expect(timeoutRanges(last, [])).toEqual([]);
-    expect(timeoutRanges({}, ['src/a.ts'])).toEqual([]);
-    expect(timeoutRanges({ files: {} }, ['toString'])).toEqual([]);
-    expect(timeoutRanges(last, ['constructor'])).toEqual(['constructor:1:0-1:2']);
+    expect(ranges(last, [])).toEqual({ ranges: [], rerun: 0, expected: 0 });
+    expect(ranges({}, ['src/a.ts'])).toEqual({ ranges: [], rerun: 0, expected: 0 });
+    expect(ranges({ files: {} }, ['toString'])).toEqual({ ranges: [], rerun: 0, expected: 0 });
+    expect(ranges(last, ['constructor']).ranges).toEqual(['constructor:1:0-1:2']);
     // a gate the report holds no entry for
-    expect(timeoutRanges({ files: { 'src/a.ts': undefined as never } }, ['src/a.ts'])).toEqual([]);
+    expect(ranges({ files: { 'src/a.ts': undefined as never } }, ['src/a.ts'])).toEqual({
+      ranges: [],
+      rerun: 0,
+      expected: 0,
+    });
+  });
+
+  // `while (i < n) { i += 1; }`: the loop body sits at columns 16..26 of line 2.
+  const SOURCE = 'let i = 0;\nwhile (i < n) { i += 1; }\nconst x = { a: 1 };\n';
+  const loop = (status = 'Timeout') => timeout(at(2, 15, 2, 26), status);
+  const object = (status = 'Timeout') => ({
+    status,
+    mutatorName: 'ObjectLiteral',
+    replacement: '{}',
+    location: at(3, 11, 3, 19),
+  });
+  const listed = {
+    mutator: 'BlockStatement',
+    original: '{ i += 1; }',
+    replacement: '{}',
+    reason: 'the loop no longer ends',
+  };
+
+  it('takes over a timeout that an expectedTimeouts entry of its gate points at', () => {
+    const report = { files: { 'src/a.ts': { source: SOURCE, mutants: [loop(), object()] } } };
+    expect(timeoutRanges(report, [{ path: './src/a.ts', expectedTimeouts: [listed] }])).toEqual({
+      ranges: ['src/a.ts:3:10-3:19'],
+      rerun: 1,
+      expected: 1,
+    });
+    // without the entry, both are run again
+    expect(timeoutRanges(report, [{ path: 'src/a.ts' }])).toEqual({
+      ranges: ['src/a.ts:2:14-2:26', 'src/a.ts:3:10-3:19'],
+      rerun: 2,
+      expected: 0,
+    });
+    // an entry of another gate does not count
+    const two = { files: { ...report.files, 'src/b.ts': { source: SOURCE, mutants: [] } } };
+    expect(
+      timeoutRanges(two, [{ path: 'src/a.ts' }, { path: 'src/b.ts', expectedTimeouts: [listed] }])
+        .expected
+    ).toBe(0);
+  });
+
+  it('counts only the entries that point at a mutant that timed out', () => {
+    const report = {
+      files: { 'src/a.ts': { source: SOURCE, mutants: [loop('Killed'), object()] } },
+    };
+    expect(timeoutRanges(report, [{ path: 'src/a.ts', expectedTimeouts: [listed] }])).toEqual({
+      ranges: ['src/a.ts:3:10-3:19'],
+      rerun: 1,
+      expected: 0,
+    });
+  });
+
+  it('takes nothing over from results that carry no source', () => {
+    const report = { files: { 'src/a.ts': { mutants: [loop()] } } };
+    expect(timeoutRanges(report, [{ path: 'src/a.ts', expectedTimeouts: [listed] }])).toEqual({
+      ranges: ['src/a.ts:2:14-2:26'],
+      rerun: 1,
+      expected: 0,
+    });
   });
 });
 
@@ -498,6 +662,18 @@ describe('describePlan', () => {
       '  and 2 mutant(s) of reused gates that timed out in the last run',
     ]);
     expect(describePlan({ rerun: [], reused: ['src/a.ts'] }, 5, 1)).toHaveLength(2);
+  });
+
+  it('says how many timed-out mutants are taken over because expectedTimeouts lists them', () => {
+    expect(describePlan({ rerun: [], reused: ['src/a.ts'] }, 5, 2, 3)).toEqual([
+      'test-gates mutation --affected: 1 of 1 gate(s) reused, 0 run again',
+      '  and 2 mutant(s) of reused gates that timed out in the last run',
+      '  3 mutant(s) that timed out in the last run are taken over: expectedTimeouts lists them',
+    ]);
+    expect(describePlan({ rerun: [], reused: ['src/a.ts'] }, 5, 0, 1)).toEqual([
+      'test-gates mutation --affected: 1 of 1 gate(s) reused, 0 run again',
+      '  1 mutant(s) that timed out in the last run are taken over: expectedTimeouts lists them',
+    ]);
   });
 
   it('says why every mutant is run', () => {

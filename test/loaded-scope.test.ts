@@ -211,6 +211,29 @@ describe('the paths the snapshot follows', () => {
     }
   );
 
+  it('compares where a map of the runner config leads, without following every file', () => {
+    // A map that settings.importAliases does not name: into the subproject, and out of it. The
+    // file in it is compared as every file of the subproject is; the path out of it is written in
+    // the config, which is followed.
+    const root = repository({
+      'fee-rules/vitest.gates.config.ts':
+        "import path from 'node:path';\n" +
+        "import { createVitestGatesConfig } from '@t09tanaka/test-gates/vitest';\n" +
+        'export default createVitestGatesConfig({ resolve: { alias: {\n' +
+        "  'left-pad': path.join(import.meta.dirname, 'src/shims/left-pad.ts'),\n" +
+        `  '@shared': path.resolve(import.meta.dirname, '${up(1)}', 'shared'),\n` +
+        '} } });\n',
+      'fee-rules/src/shims/left-pad.ts': 'export default () => 1;\n',
+      'shared/money.ts': 'export const money = 1;\n',
+    });
+    const { keys, followed } = snapshot(root);
+    expect(followed).not.toBeNull();
+    expect(keys).toEqual(
+      expect.arrayContaining(['fee-rules/src/shims/left-pad.ts', 'shared/money.ts'])
+    );
+    expect(keys).not.toContain(ELSEWHERE);
+  });
+
   it('follows what a component a spec loads imports', () => {
     const root = repository({
       'fee-rules/src/fee.spec.ts': `${H}import { fee } from './fee';\nimport Widget from './Widget.vue';\nit('fee', () => { expect(fee(1) && Widget).toBeTruthy(); });\n`,
@@ -317,6 +340,26 @@ describe('a path outside of what can be listed', () => {
     const { keys } = snapshot(root);
     expect(keys).toContain(`${up(1)}/no-such-sibling-of-the-repository`);
     expect(keys).not.toContain(ELSEWHERE);
+  });
+
+  it('makes every file compared where the same path from the subproject holds the repository', () => {
+    const root = repository({
+      'fee-rules/src/near.ts': "export { near } from './deep/near';\n",
+      // From the file: the subproject. From the subproject: above the repository.
+      'fee-rules/src/deep/near.ts': `export const near = (a: number, b: number) => a === b;\nexport const top = '${up(2)}';\n`,
+    });
+    expect(snapshot(root).keys).toContain(ELSEWHERE);
+  });
+
+  it('is refused also where the same path from the file leads inside', () => {
+    const sibling = path.basename(project({ 'kit.ts': 'export {};\n' }));
+    // From src/ the path leads to a directory of the repository; from the subproject, where the
+    // run starts, to the sibling of the repository.
+    const root = repository({
+      [`${sibling}/kit.ts`]: 'export {};\n',
+      'fee-rules/src/near.ts': `export const near = (a: number, b: number) => a === b;\nexport const kit = '${up(2)}/${sibling}/kit.ts';\n`,
+    });
+    expect(() => snapshot(root)).toThrow(SnapshotError);
   });
 
   it('is refused once something is there', () => {
