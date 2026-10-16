@@ -106,7 +106,7 @@ export interface Edges {
   loads: string[];
   /** Why what the file loads cannot be told, or null. */
   unknown: string | null;
-  /** Whether the file loads modules that are not followed: a path not written out, a component, a linked package. */
+  /** Whether the file loads modules that are not followed: a path not written out, or a linked package. */
   computed: boolean;
   /** Imports that are neither a file nor an installed package: aliases this tool is not told of. */
   unnamed: string[];
@@ -151,8 +151,13 @@ export function fileEdges(
   if (!SCRIPT.test(file) && !COMPONENT.test(file)) {
     return found; // data: it loads nothing
   }
-  // A component imports in its scripts (or the frontmatter of Astro): read as one text.
+  // A component imports in its scripts (or the frontmatter of Astro): read as one text. What its
+  // template uses without an import (a component registered by a plugin) is not seen, so that
+  // --affected runs every mutant for it.
   const source = fs.readFileSync(file, 'utf8');
+  if (COMPONENT.test(file)) {
+    found.unknown = `${shown(file)} is a component, which can use others that it does not import`;
+  }
   const uncheckable = findUncheckableImports(source)[0];
   const runtime = RUNTIME_PATHS.exec(source);
   if (uncheckable !== undefined) {
@@ -402,20 +407,27 @@ function isHelperResult(text: string): boolean {
   )) {
     names.add(match[1] as string);
   }
-  const escaped = [...names].map((name) => name.replace(/\$/g, '\\$'));
-  const call = `(?:defineConfig\\s*\\(\\s*)?(?:${escaped.join('|')})\\s*\\(`;
+  const escape = (name: string): string => name.replace(/\$/g, '\\$');
+  const call = `(?:defineConfig\\s*\\(\\s*)?(?:${[...names].map(escape).join('|')})\\s*\\(`;
   const exported = '(?:export\\s+default|module\\.exports\\s*=)\\s*';
+  // What is exported is reached again after it is set: `module.exports.testMatch = …`.
+  const reached = (name: string): boolean =>
+    new RegExp(`\\b${escape(name)}\\s*(?:\\.|\\[)`).test(text);
   if (new RegExp(`${exported}${call}`).test(text)) {
-    return true;
+    return (
+      !reached('module.exports') &&
+      !/\bexports\s*(?:\.|\[)/.test(text.replace(/\bmodule\.exports\s*=/g, ''))
+    );
   }
   const variable = new RegExp(`\\b(?:const|let|var)\\s+([\\w$]+)\\s*=\\s*${call}`).exec(text);
-  return (
-    variable !== null &&
-    new RegExp(`${exported}${(variable[1] as string).replace(/\$/g, '\\$')}\\s*(?:;|$)`, 'm').test(
-      text
-    ) &&
-    !new RegExp(`\\b${(variable[1] as string).replace(/\$/g, '\\$')}\\s*(?:\\.|\\[)`).test(text)
-  );
+  if (variable === null) {
+    return false;
+  }
+  // The variable is named twice and no more: where it is set, and where it is exported. Any other
+  // use (`Object.assign(config, …)`, `config = mergeConfig(config, …)`) may change it.
+  const name = escape(variable[1] as string);
+  const uses = text.match(new RegExp(`(?<![\\w$.])${name}(?![\\w$])`, 'g')) ?? [];
+  return uses.length === 2 && new RegExp(`${exported}${name}\\s*(?:;|$)`, 'm').test(text);
 }
 
 /**
