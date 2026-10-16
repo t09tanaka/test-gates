@@ -219,6 +219,16 @@ describe('affectedInputs', () => {
     expect(refusal(fixture(files))).toBe(message);
   });
 
+  it.each([['/abs/x.spec.ts'], ['../x.spec.ts']])(
+    'refuses a spec of the report that is not in the subproject: %s',
+    (file) => {
+      expect(() => inputs(fixture(), {}, [file])).toThrow(
+        new AffectedError(`the report names a spec file outside of the subproject: ${file}`)
+      );
+      expect(() => inputs(fixture(), { 'src/c.ts': [file] })).toThrow(AffectedError);
+    }
+  );
+
   it('refuses a file outside of what is compared', () => {
     const outside = project({ 'helper.ts': 'export const h = 1;\n' });
     const dir = fixture({

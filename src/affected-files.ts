@@ -111,6 +111,12 @@ export function affectedInputs(
 } {
   const dir = realpath(manifest.dir);
   const aliases = manifest.settings.importAliases;
+  // The report names its spec files relative to the subproject; anything else cannot be placed.
+  const placed = [...input.tests, ...Object.values(input.covering).flat()];
+  const absolute = placed.find((file) => path.isAbsolute(file) || file.startsWith('..'));
+  if (absolute !== undefined) {
+    throw new AffectedError(`the report names a spec file outside of the subproject: ${absolute}`);
+  }
   const keyOf = (file: string): string => {
     const relative = path.relative(input.root, realpath(file));
     if (relative.startsWith('..') || path.isAbsolute(relative)) {
