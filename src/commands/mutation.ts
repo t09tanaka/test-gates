@@ -5,7 +5,13 @@ import { pathToFileURL } from 'node:url';
 import { UsageError } from '../core/args.js';
 import { ManifestError } from '../core/manifest.js';
 import { AffectedError, affectedInputs, loadedScope, runnerConfigs } from '../affected-files.js';
-import { type AffectedPlan, describePlan, planAffected, timeoutRanges } from '../core/affected.js';
+import {
+  type AffectedPlan,
+  describePlan,
+  planAffected,
+  timeoutRanges,
+  withoutDots,
+} from '../core/affected.js';
 import type { MutationReport, MutationVerdict } from '../core/mutation-result.js';
 import {
   type AffectedRecord,
@@ -105,7 +111,9 @@ function coveringSpecs(report: MutationReport, gates: string[]): Record<string, 
   for (const gate of gates) {
     const specs = new Set<string>();
     let placed = true;
-    for (const mutant of report.files?.[gate]?.mutants ?? []) {
+    // The report names its files without `./`, which a path in test-gates.json may have.
+    const key = withoutDots(gate);
+    for (const mutant of report.files?.[key]?.mutants ?? []) {
       for (const id of [...(mutant.coveredBy ?? []), ...(mutant.killedBy ?? [])]) {
         const file = fileOf.get(id);
         if (file === undefined) {

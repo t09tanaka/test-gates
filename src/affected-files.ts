@@ -30,6 +30,29 @@ const FILE_MODULES = new Set([
   'globby',
 ]);
 const bare = (specifier: string): string => specifier.replace(/^node:/, '');
+/** Components, whose imports are read like those of a script. */
+const COMPONENT = /\.(?:vue|svelte|astro|mdx)$/;
+
+/**
+ * Where `node_modules/<package>` of the nearest node_modules that has it leads, when that is a
+ * link to a directory outside of every node_modules (a package of the same repository); else null.
+ */
+export function linkedPackage(specifier: string, from: string): string | null {
+  const name = specifier
+    .split('/')
+    .slice(0, specifier.startsWith('@') ? 2 : 1)
+    .join('/');
+  for (let current = path.dirname(from); ; current = path.dirname(current)) {
+    const candidate = path.join(current, 'node_modules', name);
+    if (fs.existsSync(candidate)) {
+      const target = realpath(candidate);
+      return target.split(path.sep).includes('node_modules') ? null : target;
+    }
+    if (current === path.dirname(current)) {
+      return null;
+    }
+  }
+}
 
 const toPosix = (file: string): string => file.split(path.sep).join('/');
 
@@ -83,7 +106,7 @@ export interface Edges {
   loads: string[];
   /** Why what the file loads cannot be told, or null. */
   unknown: string | null;
-  /** Whether the file loads a module whose path is not written out. */
+  /** Whether the file loads modules that are not followed: a path not written out, a component, a linked package. */
   computed: boolean;
   /** Imports that are neither a file nor an installed package: aliases this tool is not told of. */
   unnamed: string[];
@@ -125,9 +148,10 @@ export function fileEdges(
   if (fs.existsSync(snapshotFile)) {
     found.loads.push(realpath(snapshotFile));
   }
-  if (!SCRIPT.test(file)) {
+  if (!SCRIPT.test(file) && !COMPONENT.test(file)) {
     return found; // data: it loads nothing
   }
+  // A component imports in its scripts (or the frontmatter of Astro): read as one text.
   const source = fs.readFileSync(file, 'utf8');
   const uncheckable = findUncheckableImports(source)[0];
   const runtime = RUNTIME_PATHS.exec(source);
@@ -164,6 +188,10 @@ export function fileEdges(
       if (!installed(specifier, file)) {
         found.unknown ??= `${shown(file)} imports ${specifier}, which is neither a file nor an installed package (name an alias in settings.importAliases)`;
         found.unnamed.push(specifier);
+      } else if (linkedPackage(specifier, file) !== null) {
+        // A package of the repository, linked into node_modules: its files are not followed.
+        found.unknown ??= `${shown(file)} imports ${specifier}, a package of the repository linked into node_modules`;
+        found.computed = true;
       }
     }
   }

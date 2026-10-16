@@ -185,10 +185,20 @@ interface LastResults {
  * included). A timeout can come from a loaded machine, where the mutant would have survived:
  * it is never taken over, also not in a gate whose other results are.
  */
+/** A path in test-gates.json as Stryker names it: without its `.` parts (`./src/a.ts`). */
+export function withoutDots(file: string): string {
+  return file
+    .split('/')
+    .filter((part) => part !== '.')
+    .join('/');
+}
+
 export function timeoutRanges(last: LastResults, gates: string[]): string[] {
   const ranges: string[] = [];
   const files = last.files ?? {};
-  for (const gate of gates) {
+  for (const named of gates) {
+    // Stryker names its files without `./`, which a path in test-gates.json may have.
+    const gate = withoutDots(named);
     const mutants = Object.hasOwn(files, gate) ? files[gate]?.mutants : undefined;
     if (mutants === undefined) {
       continue;
