@@ -503,7 +503,14 @@ export function affectedInputs(
   const maps = unexplainedMaps({
     dir,
     aliases,
-    runner: [...runnerSources, ...jestInPackage(dir, input.configs)],
+    // Not what lies outside of the compared files: this package, imported by path, is installed.
+    runner: [
+      ...runnerSources.filter(({ file }) => {
+        const relative = path.relative(input.root, realpath(file));
+        return !relative.startsWith('..') && toPosix(relative) in input.files;
+      }),
+      ...jestInPackage(dir, input.configs),
+    ],
     compiler,
   });
   if (maps !== null) {
@@ -773,7 +780,12 @@ export function loadedScope(
     dir,
     aliases: manifest.settings.importAliases,
     runner: [configs.files[0] as string, ...parts]
-      .filter((file) => SCRIPT.test(file) || file.endsWith('.json'))
+      .filter(
+        (file) =>
+          (SCRIPT.test(file) || file.endsWith('.json')) &&
+          file.startsWith(`${dir}${path.sep}`) &&
+          !file.split(path.sep).includes('node_modules')
+      )
       .map((file) => ({ file, text: fs.readFileSync(file, 'utf8') })),
     compiler: named
       .filter((file) => path.basename(file) !== 'test-gates.json')

@@ -187,6 +187,92 @@ describe.skipIf(!strykerRuns)('test-gates mutation --affected with a real Stryke
   );
 });
 
+// Two gates. `rate` imports `./scale`, for which there are both scale.ts and scale.js (Vite
+// loads scale.js), and `fee` stands alone.
+function twinsFixture(): string {
+  const dir = project({
+    'package.json': { name: 'affected-twins', private: true, type: 'module' },
+    'test-gates.json': { gates: [gate('src/rate.ts'), gate('src/fee.ts')], candidates: [] },
+    'src/scale.ts': 'export const scale: number = 2;\n',
+    'src/scale.js': 'export const scale = 2;\n',
+    'src/rate.ts':
+      "import { scale } from './scale';\nexport const rate = (x: number) => x * scale;\n",
+    'src/rate.spec.ts': `${H}import { rate } from './rate';\nit('scales', () => { expect(rate(3)).toBe(6); });\n`,
+    'src/fee.ts': 'export const fee = (kg: number) => (kg > 2 ? 9 : 5);\n',
+    'src/fee.spec.ts':
+      `${H}import { fee } from './fee';\n` +
+      "it('goes by weight', () => {\n  expect(fee(2)).toBe(5);\n  expect(fee(3)).toBe(9);\n});\n",
+    'src/locales/ja.ts': "export const word = 'ja';\n",
+    'src/shims/colors.ts': 'export default { factor: 2 };\n',
+    'vitest.gates.config.ts': vitestConfig(''),
+    'stryker.gates.config.mjs':
+      `import { createStrykerGatesConfig } from ${JSON.stringify(helper('stryker'))};\n` +
+      "export default createStrykerGatesConfig({ rootDir: import.meta.url, testRunner: 'vitest', " +
+      "vitest: { configFile: 'vitest.gates.config.ts' }, concurrency: 1 });\n",
+  });
+  fs.symlinkSync(path.join(repoRoot, 'node_modules'), path.join(dir, 'node_modules'), 'dir');
+  return dir;
+}
+function vitestConfig(options: string): string {
+  return (
+    "import path from 'node:path';\nimport { fileURLToPath } from 'node:url';\n" +
+    `import { createVitestGatesConfig } from ${JSON.stringify(helper('vitest'))};\n` +
+    `export default createVitestGatesConfig({ rootDir: import.meta.url${options} });\n`
+  );
+}
+
+describe.skipIf(!strykerRuns)('what --affected cannot follow, with a real Stryker', () => {
+  it(
+    'runs again a gate whose import has two files, and every mutant for an import put together or a map of the runner',
+    { timeout: 600_000 },
+    async () => {
+      const dir = twinsFixture();
+      const run = () => testGatesAsync(['mutation', '--dir', dir, '--affected']);
+      const cannot = `${FULL}, the results of the last run are not reused: what a gate depends on cannot be told: `;
+      expect((await run()).status).toBe(0);
+
+      // scale.js is the file Vite loads for ./scale.
+      write(dir, { 'src/scale.js': 'export const scale = 2; // x\n' });
+      const twin = await run();
+      expect(twin.stdout).toContain('1 of 2 gate(s) reused, 1 run again');
+      expect(twin.stdout).toContain('  src/rate.ts: changed src/scale.js');
+      expect(twin.status).toBe(0);
+
+      // An import put together from strings: its path is not written out.
+      const feeSpec = fs.readFileSync(path.join(dir, 'src/fee.spec.ts'), 'utf8');
+      write(dir, {
+        'src/fee.spec.ts': `${feeSpec}export const load = (lang: string) => import('./locales/' + lang + '.ts');\n`,
+      });
+      const joined = await run();
+      expect(joined.stdout).toContain(
+        `${cannot}src/fee.spec.ts:7 imports a module whose path is not written out`
+      );
+      expect(joined.status).toBe(0);
+      write(dir, { 'src/fee.spec.ts': feeSpec });
+      expect((await run()).status).toBe(0);
+
+      // An installed package that the runner config maps to a file of the project: a change of
+      // the file is not even compared where the config is not looked into.
+      write(dir, {
+        'vitest.gates.config.ts': vitestConfig(
+          ", resolve: { alias: { picocolors: path.join(path.dirname(fileURLToPath(import.meta.url)), 'src/shims/colors.ts') } }"
+        ),
+        'src/rate.ts':
+          "import { scale } from './scale';\nimport colors from 'picocolors';\n" +
+          'export const rate = (x: number) => x * scale * (colors as unknown as { factor: number }).factor / 2;\n',
+      });
+      const mapped = `${cannot}vitest.gates.config.ts maps picocolors with alias in a way settings.importAliases does not name`;
+      const config = await run();
+      expect(config.stdout).toContain(mapped);
+      expect(config.status).toBe(0);
+      write(dir, { 'src/shims/colors.ts': 'export default { factor: 2 }; // x\n' });
+      const shim = await run();
+      expect(shim.stdout).toContain(mapped);
+      expect(shim.status).toBe(0);
+    }
+  );
+});
+
 describe.skipIf(!strykerRuns)('a run without --affected, with a real Stryker', () => {
   it(
     'writes down what each gate depends on for the next run with --affected, but not with --gate or in CI',
