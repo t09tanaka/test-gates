@@ -817,6 +817,19 @@ describe('test-gates mutation', () => {
         ['--', '--gate', 'src/age.ts'],
         '--gate after "--" would go to Stryker. Write it before "--"',
       ],
+      [
+        ['--affected', '--mutate', 'src/fee.ts'],
+        '--affected and --mutate cannot be combined: --affected sets --mutate itself',
+      ],
+      [
+        ['--affected', '-m=src/fee.ts'],
+        '--affected and --mutate cannot be combined: --affected sets --mutate itself',
+      ],
+      [
+        ['--affected', '--gate', 'src/age.ts'],
+        '--affected and --gate cannot be combined: --gate runs the gates it names, --affected decides which gates run',
+      ],
+      [['--', '--affected'], '--affected after "--" would go to Stryker. Write it before "--"'],
     ])('exits 2 for %j', (args, message) => {
       const dir = twoGates('Killed', 'Killed');
       const result = testGates(['mutation', '--dir', dir, ...args], { env: { CI: '' } });
