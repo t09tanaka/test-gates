@@ -251,8 +251,8 @@ describe.skipIf(!strykerRuns)('what --affected cannot follow, with a real Stryke
       write(dir, { 'src/fee.spec.ts': feeSpec });
       expect((await run()).status).toBe(0);
 
-      // An installed package that the runner config maps to a file of the project: a change of
-      // the file is not even compared where the config is not looked into.
+      // An installed package that the runner config maps to a file of the project: this tool
+      // would take the package, so a change of the file cannot be told gate by gate.
       write(dir, {
         'vitest.gates.config.ts': vitestConfig(
           ", resolve: { alias: { picocolors: path.join(path.dirname(fileURLToPath(import.meta.url)), 'src/shims/colors.ts') } }"

@@ -211,30 +211,27 @@ describe('the paths the snapshot follows', () => {
     }
   );
 
-  it('follows every file for a map of the runner config that settings.importAliases does not name', () => {
-    // The shim would not be compared at all: no text names it.
-    const helper = (alias: string) =>
-      "import path from 'node:path';\n" +
-      "import { createVitestGatesConfig } from '@t09tanaka/test-gates/vitest';\n" +
-      `export default createVitestGatesConfig({ resolve: { alias: ${alias} } });\n`;
-    const shimmed = repository({
-      'fee-rules/vitest.gates.config.ts': helper(
-        "{ 'left-pad': path.join(import.meta.dirname, 'src/shims/left-pad.ts') }"
-      ),
+  it('compares where a map of the runner config leads, without following every file', () => {
+    // A map that settings.importAliases does not name: into the subproject, and out of it. The
+    // file in it is compared as every file of the subproject is; the path out of it is written in
+    // the config, which is followed.
+    const root = repository({
+      'fee-rules/vitest.gates.config.ts':
+        "import path from 'node:path';\n" +
+        "import { createVitestGatesConfig } from '@t09tanaka/test-gates/vitest';\n" +
+        'export default createVitestGatesConfig({ resolve: { alias: {\n' +
+        "  'left-pad': path.join(import.meta.dirname, 'src/shims/left-pad.ts'),\n" +
+        `  '@shared': path.resolve(import.meta.dirname, '${up(1)}', 'shared'),\n` +
+        '} } });\n',
       'fee-rules/src/shims/left-pad.ts': 'export default () => 1;\n',
+      'shared/money.ts': 'export const money = 1;\n',
     });
-    expect(snapshot(shimmed).followed).toBeNull();
-    const named = repository({
-      'fee-rules/vitest.gates.config.ts': helper(
-        "{ '@': path.resolve(import.meta.dirname, 'src') }"
-      ),
-      'fee-rules/test-gates.json': {
-        gates: [{ path: 'src/fee.ts', decides: 'a fee', impact: 'a wrong fee' }],
-        candidates: [],
-        settings: { importAliases: [{ prefix: '@/', target: 'src/' }] },
-      },
-    });
-    expect(snapshot(named).followed).not.toBeNull();
+    const { keys, followed } = snapshot(root);
+    expect(followed).not.toBeNull();
+    expect(keys).toEqual(
+      expect.arrayContaining(['fee-rules/src/shims/left-pad.ts', 'shared/money.ts'])
+    );
+    expect(keys).not.toContain(ELSEWHERE);
   });
 
   it('follows what a component a spec loads imports', () => {

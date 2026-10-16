@@ -593,7 +593,7 @@ describe('the module maps of the runner config', () => {
     [
       'an alias settings.importAliases does not name',
       vitest("{ alias: { '~': path.resolve(__dirname, 'src') } }"),
-      'vitest.gates.config.ts maps ~ with alias in a way settings.importAliases does not name',
+      'vitest.gates.config.ts maps ~ with alias in a way settings.importAliases does not name (add { "prefix": "~/", "target": "src/" } to settings.importAliases)',
     ],
     [
       'an alias to another directory',
@@ -601,9 +601,11 @@ describe('the module maps of the runner config', () => {
       'vitest.gates.config.ts maps @ with alias in a way settings.importAliases does not name',
     ],
     [
-      'an alias found by a regular expression',
-      vitest("{ alias: [{ find: /^@\\//, replacement: path.resolve(__dirname, 'src') + '/' }] }"),
-      'vitest.gates.config.ts names alias in a way that cannot be read as a list of aliases',
+      'an alias found by a regular expression that is not a prefix',
+      vitest(
+        "{ alias: [{ find: /^(@|~)\\//, replacement: path.resolve(__dirname, 'src') + '/' }] }"
+      ),
+      'vitest.gates.config.ts maps /^(@|~)\\// with alias in a way settings.importAliases does not name',
     ],
     [
       'aliases of a variable',
@@ -718,6 +720,190 @@ describe('the module maps of the runner config', () => {
     ],
   ])('refuses tsconfig paths with %s', (_n, tsconfig, message) => {
     expect(told({ 'tsconfig.json': tsconfig })).toBe(message);
+  });
+
+  it.each([
+    [
+      'a name bound with const',
+      "const rootDir = path.dirname(fileURLToPath(import.meta.url));\nconst srcDir = path.resolve(rootDir, 'src');\n",
+      '{ alias: { "@": srcDir } }',
+    ],
+    [
+      'a regular expression with a path and a slash',
+      '',
+      "{ alias: [{ find: /^@\\//, replacement: path.resolve(__dirname, 'src') + '/' }] }",
+    ],
+  ])('tells the gates apart with a Vite alias of %s', (_n, head, resolve) => {
+    expect(
+      told({
+        'vitest.gates.config.ts': vitest(resolve).replace(
+          'export default',
+          `${head}export default`
+        ),
+      })
+    ).toEqual(C);
+  });
+
+  it('refuses a name that is bound more than once', () => {
+    expect(
+      told({
+        'vitest.gates.config.ts': vitest('{ alias: { "@": srcDir } }').replace(
+          'export default',
+          "const srcDir = path.resolve(__dirname, 'src');\nfunction other() { let srcDir = 'x'; return srcDir; }\nexport default"
+        ),
+      })
+    ).toBe(
+      'vitest.gates.config.ts maps @ with alias in a way settings.importAliases does not name'
+    );
+  });
+
+  it('refuses a Vite alias of an installed package to a directory, also where the settings name it', () => {
+    expect(
+      told(
+        {
+          'vitest.gates.config.ts': vitest("{ alias: { vitest: path.resolve(__dirname, 'src') } }"),
+        },
+        { settings: { importAliases: [{ prefix: 'vitest/', target: 'src/' }] } }
+      )
+    ).toBe(
+      'vitest.gates.config.ts maps vitest with alias in a way settings.importAliases does not name'
+    );
+  });
+
+  it.each([
+    ['a target ""', "'^~/(.*)$': '<rootDir>/$1'", [{ prefix: '~/', target: '' }]],
+    ['a target "./"', "'^~/(.*)$': '<rootDir>/$1'", [{ prefix: '~/', target: './' }]],
+    [
+      'a prefix within an alias',
+      "'^~/core/(.*)$': '<rootDir>/core/$1', '^~/(.*)$': '<rootDir>/$1'",
+      [{ prefix: '~/', target: '' }],
+    ],
+  ])(
+    'tells the gates apart with a moduleNameMapper that an alias of %s names',
+    (_n, entries, aliases) => {
+      expect(
+        told(
+          { 'jest.config.cjs': `module.exports = { moduleNameMapper: { ${entries} } };\n` },
+          { settings: { importAliases: aliases } },
+          'jest'
+        )
+      ).toEqual(C);
+    }
+  );
+
+  it('refuses a moduleNameMapper to a directory chosen when the config is loaded', () => {
+    expect(
+      told(
+        {
+          'jest.config.cjs':
+            "const commonDir = require('node:fs').existsSync('a') ? 'a' : 'b';\n" +
+            'module.exports = { moduleNameMapper: { "^@common/(.*)$": `${commonDir}/$1` } };\n',
+        },
+        ALIASES,
+        'jest'
+      )
+    ).toBe(
+      'jest.config.cjs maps ^@common/(.*)$ with moduleNameMapper in a way settings.importAliases does not name'
+    );
+  });
+
+  it('names every map that is not named, and what to add to the settings', () => {
+    expect(
+      told({
+        'vitest.gates.config.ts': vitest("{ alias: { '~': path.resolve(__dirname, 'test') } }"),
+        'tsconfig.json': { compilerOptions: { paths: { '~/*': ['./test/*'], '#x': ['./x.ts'] } } },
+      })
+    ).toBe(
+      'vitest.gates.config.ts maps ~ with alias in a way settings.importAliases does not name (add { "prefix": "~/", "target": "test/" } to settings.importAliases); ' +
+        'tsconfig.json maps ~/* with paths in a way settings.importAliases does not name (add { "prefix": "~/", "target": "test/" } to settings.importAliases); ' +
+        'tsconfig.json maps #x with paths in a way settings.importAliases does not name'
+    );
+  });
+
+  it('takes tsconfig paths of one name to an installed package', () => {
+    expect(
+      told({
+        'tsconfig.json': {
+          compilerOptions: {
+            paths: { '@acme/kit/google': ['./node_modules/@acme/kit/dist/google'] },
+          },
+        },
+      })
+    ).toEqual(C);
+  });
+
+  it('reads the paths of .swcrc also for a prefix the runner config maps, as SWC rewrites first', () => {
+    expect(
+      told(
+        {
+          'jest.config.cjs':
+            "module.exports = { moduleNameMapper: { '^@/(.*)$': '<rootDir>/src/$1' } };\n",
+          '.swcrc': { jsc: { baseUrl: '.', paths: { '@/*': ['src/*'], '@/test/*': ['test/*'] } } },
+        },
+        ALIASES,
+        'jest'
+      )
+    ).toBe(
+      '.swcrc maps @/test/* with paths in a way settings.importAliases does not name (add { "prefix": "@/test/", "target": "test/" } to settings.importAliases, before the alias of @/)'
+    );
+  });
+
+  it('reads the paths of .swcrc as those of tsconfig.json', () => {
+    const swcrc = { jsc: { baseUrl: '.', paths: { '@/*': ['src/*'], 'test/*': ['test/*'] } } };
+    expect(
+      told(
+        { '.swcrc': swcrc },
+        {
+          settings: {
+            importAliases: [
+              { prefix: '@/', target: 'src/' },
+              { prefix: 'test/', target: 'test/' },
+            ],
+          },
+        }
+      )
+    ).toEqual(C);
+    expect(told({ '.swcrc': swcrc })).toBe(
+      '.swcrc maps test/* with paths in a way settings.importAliases does not name (add { "prefix": "test/", "target": "test/" } to settings.importAliases)'
+    );
+  });
+
+  it('looks for module-resolver in the Babel config of package.json only', () => {
+    const pkg = (extra: object) => ({ name: 'fixture', private: true, type: 'module', ...extra });
+    expect(
+      told({
+        'package.json': pkg({ devDependencies: { 'babel-plugin-module-resolver': '5.0.0' } }),
+      })
+    ).toEqual(C);
+    expect(
+      told({
+        'package.json': pkg({
+          babel: { plugins: [['module-resolver', { alias: { '@': './src' } }]] },
+        }),
+      })
+    ).toBe('package.json maps modules (module-resolver), which cannot be told');
+  });
+
+  it('leaves out tsconfig paths of a prefix the runner config maps, and all of them for Jest', () => {
+    // The paths say ./, the alias of the runner, which comes first, says src/.
+    const tsconfig = { compilerOptions: { paths: { '@/*': ['./*'], '#x': ['./x.ts'] } } };
+    expect(
+      told({
+        'vitest.gates.config.ts': vitest("{ alias: { '@': path.resolve(__dirname, 'src') } }"),
+        'tsconfig.json': { compilerOptions: { paths: { '@/*': ['./*'] } } },
+      })
+    ).toEqual(C);
+    expect(
+      told(
+        { 'tsconfig.json': tsconfig, 'jest.config.cjs': 'module.exports = {};\n' },
+        ALIASES,
+        'jest'
+      )
+    ).toEqual(C);
+    expect(told({ 'tsconfig.json': tsconfig })).toBe(
+      'tsconfig.json maps @/* with paths in a way settings.importAliases does not name (add { "prefix": "@/", "target": "./" } to settings.importAliases, in place of the alias of @/); ' +
+        'tsconfig.json maps #x with paths in a way settings.importAliases does not name'
+    );
   });
 
   it('refuses a Babel config that maps modules', () => {

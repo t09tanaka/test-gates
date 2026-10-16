@@ -512,6 +512,7 @@ export function affectedInputs(
       ...jestInPackage(dir, input.configs),
     ],
     compiler,
+    ...(input.configs.runner === undefined ? {} : { testRunner: input.configs.runner }),
   });
   if (maps !== null) {
     throw new AffectedError(maps);
@@ -774,26 +775,13 @@ export function loadedScope(
     .readdirSync(dir)
     .filter((name) => READ_BY_NAME.some((pattern) => pattern.test(name)))
     .map((name) => path.join(dir, name));
-  // A map of the runner can lead to a file that no text names (an installed package mapped to a
-  // shim of the project): such a file would not be compared at all.
-  const maps = unexplainedMaps({
-    dir,
-    aliases: manifest.settings.importAliases,
-    runner: [configs.files[0] as string, ...parts]
-      .filter(
-        (file) =>
-          (SCRIPT.test(file) || file.endsWith('.json')) &&
-          file.startsWith(`${dir}${path.sep}`) &&
-          !file.split(path.sep).includes('node_modules')
-      )
-      .map((file) => ({ file, text: fs.readFileSync(file, 'utf8') })),
-    compiler: named
-      .filter((file) => path.basename(file) !== 'test-gates.json')
-      .map((file) => ({ file, text: fs.readFileSync(file, 'utf8') })),
-  });
-  if (maps !== null) {
-    return { every: maps };
-  }
+  // A map of the runner (see unexplainedMaps) does not widen what is followed. Where it leads into
+  // the subproject, the file is compared anyway: every file of the subproject is. Where it leads
+  // out of it, the config names that place as a path from where it lies (`'../shared'`,
+  // `path.resolve(__dirname, '..', 'shared')`), and the paths of a config are followed as they
+  // are (see snapshot.ts); a place that is built at run time (from an environment variable) is a
+  // path whose start cannot be told, which makes every file of the repository compared. Only
+  // --affected, which tells the gates apart by what each loads, needs the map itself.
   const mocks = path.join(dir, '__mocks__');
   const seeds = [
     ...configs.files,
@@ -939,7 +927,8 @@ function withoutComments(text: string): string {
       }
       out += text.slice(at, end + 1);
       at = end;
-    } else if (char === '/' && text[at + 1] === '/') {
+      // Not the end of a regular expression literal that ends with a slash: `/^@\//`.
+    } else if (char === '/' && text[at + 1] === '/' && text[at - 1] !== '\\') {
       const end = text.indexOf('\n', at);
       at = end === -1 ? text.length : end - 1;
     } else if (char === '/' && text[at + 1] === '*') {
@@ -1017,24 +1006,71 @@ function property(part: string): { key: string; value: string } | null {
 }
 
 /**
- * The directory a value of a Vite alias names, built from where the config lies:
- * `path.resolve(__dirname, 'src')`, `path.join(import.meta.dirname, 'src')`,
- * `fileURLToPath(new URL('./src', import.meta.url))`. Null for anything else.
+ * The directory a path expression of a config names, built from where the config lies:
+ * `__dirname`, `import.meta.dirname`, `dirname(fileURLToPath(import.meta.url))`,
+ * `path.resolve(<one of these>, 'src')` (or `join`), `fileURLToPath(new URL('./src',
+ * import.meta.url))`, and a name that the same file binds once, with `const`, to one of these
+ * (`const appDir = resolve(rootDir, 'app')`). Null for anything else.
  */
-function aliasPath(value: string, file: string): string | null {
+function aliasPath(expression: string, file: string, text: string, depth = 0): string | null {
+  const value = expression.trim();
   const here = path.dirname(file);
-  const call = new RegExp(
-    `^(?:path\\.)?(?:resolve|join)\\(\\s*(?:__dirname|import\\.meta\\.dirname)\\s*((?:,\\s*(?:${STRING_LITERAL})\\s*)*)\\)$`
-  ).exec(value);
-  if (call !== null) {
-    const parts = [...(call[1] as string).matchAll(new RegExp(STRING_LITERAL, 'g'))];
-    return path.resolve(here, ...parts.map((part) => stringValue(part[0]) as string));
+  if (
+    value === '__dirname' ||
+    value === 'import.meta.dirname' ||
+    /^(?:path\.)?dirname\(\s*(?:url\.)?fileURLToPath\(\s*import\.meta\.url\s*\)\s*\)$/.test(value)
+  ) {
+    return here;
   }
   const url = new RegExp(
     `^(?:(?:url\\.)?fileURLToPath\\(\\s*new URL\\(\\s*(${STRING_LITERAL})\\s*,\\s*import\\.meta\\.url\\s*\\)\\s*\\)|new URL\\(\\s*(${STRING_LITERAL})\\s*,\\s*import\\.meta\\.url\\s*\\)\\.pathname)$`
   ).exec(value);
-  const relative = url === null ? null : (url[1] ?? url[2] ?? null);
-  return relative === null ? null : path.resolve(here, stringValue(relative) as string);
+  if (url !== null) {
+    return path.resolve(here, stringValue((url[1] ?? url[2]) as string) as string);
+  }
+  const call = /^(?:path\.)?(?:resolve|join)\s*\(/.exec(value);
+  if (call !== null) {
+    const found = partsOf(value, call[0].length - 1);
+    if (found === null || value.slice(found.end + 1).trim() !== '' || found.parts.length === 0) {
+      return null;
+    }
+    const [first, ...rest] = found.parts;
+    const base = aliasPath(first as string, file, text, depth + 1);
+    const parts = rest.map(stringValue);
+    return base === null || parts.some((part) => part === null)
+      ? null
+      : path.resolve(base, ...(parts as string[]));
+  }
+  if (/^[A-Za-z_$][\w$]*$/.test(value) && depth < 4) {
+    // Bound once, with const: it holds that value wherever it is used.
+    const declarations = text.match(
+      new RegExp(`\\b(?:const|let|var|function|class)\\s+${value.replace(/\$/g, '\\$')}\\b`, 'g')
+    );
+    const bound = new RegExp(`\\bconst\\s+${value.replace(/\$/g, '\\$')}\\s*=\\s*([^;\\n]+)`).exec(
+      text
+    );
+    return declarations?.length === 1 && bound !== null
+      ? aliasPath(bound[1] as string, file, text, depth + 1)
+      : null;
+  }
+  return null;
+}
+
+/** A name a package can have (`lodash`, `@acme/shared`); not `@`, `~` or `#config`. */
+const PACKAGE_NAME = /^(?:@[\w-][\w.-]*\/)?[\w-][\w.-]*$/;
+
+function isDirectory(file: string): boolean {
+  try {
+    return fs.statSync(file).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/** The prefix a regular expression literal of a Vite alias maps: `/^@\//` is `@/`. */
+function regexPrefix(literal: string): string | null {
+  const match = /^\/\^((?:[\w@~#%-]|\\[./@~#-])*)\\\/\/$/.exec(literal.trim());
+  return match === null ? null : `${(match[1] as string).replace(/\\(.)/g, '$1')}/`;
 }
 
 /** The prefix of a pattern of moduleNameMapper that maps a prefix: `^@/(.*)$` is `@/`. */
@@ -1069,10 +1105,12 @@ const ROOT_DIR_HERE = new Set([
  * through the lock file). Anything else, also what cannot be read from the text (a variable, a
  * regular expression, a spread), makes what a gate depends on unknown.
  *
- * tsconfig `paths` are read whether or not the run applies them (Vite 7 and Jest do not without a
- * plugin, newer versions may): which plugin applies them is not told reliably from the text. A
- * repository whose base tsconfig.json lists every package in `paths` has to name them all in
- * settings.importAliases to be told gate by gate.
+ * tsconfig `paths` are read for Vitest whether or not the run applies them (Vite 7 does not
+ * without a plugin, newer versions may): which plugin applies them is not told reliably from the
+ * text. A repository whose base tsconfig.json lists every package in `paths` has to name them all
+ * in settings.importAliases to be told gate by gate. Not where the runner config maps the same
+ * prefix itself, as settings.importAliases does (its map comes first), and not for Jest, which
+ * reads none of them.
  *
  * @param input.runner The runner configs and the files they import, read for `alias` and
  *   `moduleNameMapper`; `mapperOnly` for package.json, where only Jest is read.
@@ -1083,19 +1121,49 @@ export function unexplainedMaps(input: {
   aliases: ImportAlias[];
   runner: Array<Source & { mapperOnly?: boolean }>;
   compiler: Array<{ file: string; text: string | null }>;
+  /** The test runner, when it is known. */
+  testRunner?: 'jest' | 'vitest';
 }): string | null {
   const { dir, aliases } = input;
+  const reasons: string[] = [];
+  // Prefixes the runner config maps as settings.importAliases does: what tsconfig paths say of
+  // them does not matter, as the map of the runner comes before a plugin that applies them.
+  const mapped: string[] = [];
   const shown = (file: string): string => toPosix(path.relative(dir, file));
   // `src/` for the target `src/$1`, `src` + `/` for `src$1` after `src`: what the rest is put after.
   const under = (base: string, rest: string): string =>
     rest === '' ? `${base}/` : path.join(base, rest);
-  const named = (prefix: string, target: string): boolean =>
-    aliases.some(
-      (alias) =>
-        alias.prefix === prefix &&
-        path.resolve(dir, alias.target) === path.resolve(target) &&
-        alias.target.endsWith('/') === target.endsWith('/')
-    );
+  // Whether the alias settings.importAliases takes for what starts with the prefix leads it where
+  // the map does: the alias itself (`~/` to `./`, a target `""` is `./`), or one it is part of
+  // (`~/core/` to `./core/` under `~/` to `./`). The first alias that fits is the one followed.
+  const named = (prefix: string, target: string): boolean => {
+    const alias = aliases.find((candidate) => prefix.startsWith(candidate.prefix));
+    if (alias === undefined) {
+      return false;
+    }
+    const full = alias.target + prefix.slice(alias.prefix.length);
+    const slash = full === '' || full.endsWith('/');
+    return path.resolve(dir, full) === path.resolve(target) && slash === target.endsWith('/');
+  };
+  /** What to add to settings.importAliases so that the map is named, as text. */
+  const advice = (prefix: string, target: string): string => {
+    const relative = toPosix(path.relative(dir, target));
+    const shownTarget = relative === '' ? './' : `${relative}/`;
+    // The first alias that fits is followed: a longer prefix goes before a shorter one.
+    const shorter = aliases.find((alias) => prefix.startsWith(alias.prefix));
+    const before =
+      shorter === undefined
+        ? ''
+        : shorter.prefix === prefix
+          ? `, in place of the alias of ${prefix}`
+          : `, before the alias of ${shorter.prefix}`;
+    return ` (add { "prefix": "${prefix}", "target": "${shownTarget}" } to settings.importAliases${before})`;
+  };
+  const missing = (file: string, key: string, word: string, prefix?: string, target?: string) =>
+    `${shown(file)} maps ${key} with ${word} in a way settings.importAliases does not name` +
+    (prefix !== undefined && target !== undefined && isDirectory(target)
+      ? advice(prefix, target)
+      : '');
   for (const { file, text: raw, mapperOnly } of input.runner) {
     const text = withoutComments(raw);
     const words = mapperOnly === true ? /\bmoduleNameMapper\b/g : /\b(?:alias|moduleNameMapper)\b/g;
@@ -1106,62 +1174,108 @@ export function unexplainedMaps(input: {
       const found = at === -1 ? null : partsOf(text, at);
       const unreadable = `${shown(file)} names ${word} in a way that cannot be read as a list of aliases`;
       if (found === null || (text[at] !== '{' && !(word === 'alias' && text[at] === '['))) {
-        return unreadable;
+        reasons.push(unreadable);
+        continue;
       }
-      const missing = (key: string) =>
-        `${shown(file)} maps ${key} with ${word} in a way settings.importAliases does not name`;
       for (const part of found.parts) {
-        let entry: { key: string; value: string } | null;
-        if (text[at] === '[') {
-          // `[{ find: '@', replacement: path.resolve(__dirname, 'src') }]`
-          const object = /^\s*\{/.exec(part) === null ? null : partsOf(part, part.indexOf('{'));
-          const fields = Object.fromEntries(
-            (object?.parts ?? []).map(property).map((one) => [one?.key ?? '', one?.value ?? ''])
-          );
-          const key = stringValue(fields.find ?? '');
-          entry =
-            object === null ||
-            key === null ||
-            Object.keys(fields).sort().join() !== 'find,replacement' ||
-            part.slice(object.end + 1).trim() !== ''
-              ? null
-              : { key, value: fields.replacement as string };
-        } else {
-          entry = property(part);
-        }
-        if (entry === null) {
-          return unreadable;
-        }
         if (word === 'alias') {
-          // Vite maps `@` and what starts with `@/`: the alias `@/` of settings.importAliases.
-          const target = aliasPath(entry.value, file);
-          if (target === null || entry.key.endsWith('/') || !named(`${entry.key}/`, `${target}/`)) {
-            return missing(entry.key);
+          const reason = viteAlias(part, text[at] === '[');
+          if (reason !== null) {
+            reasons.push(reason);
           }
+          continue;
+        }
+        const entry = property(part);
+        if (entry === null) {
+          reasons.push(unreadable);
           continue;
         }
         const value = stringValue(entry.value);
         // <rootDir> is taken for where the config lies (also where the config names a stub by
         // it), unless it is set to another directory.
-        for (const root of text.matchAll(/\brootDir\b['"]?\s*:\s*([^,}\n]+)/g)) {
-          const set = (root[1] as string).trim();
-          if (!ROOT_DIR_HERE.has(set) && (value === null || value.includes('<rootDir>'))) {
-            return `${shown(file)} sets rootDir to a directory that cannot be told: ${set}`;
-          }
+        const root = [...text.matchAll(/\brootDir\b['"]?\s*:\s*([^,}\n]+)/g)]
+          .map((one) => (one[1] as string).trim())
+          .find((set) => !ROOT_DIR_HERE.has(set));
+        if (root !== undefined && (value === null || value.includes('<rootDir>'))) {
+          reasons.push(`${shown(file)} sets rootDir to a directory that cannot be told: ${root}`);
+          continue;
         }
         if (value !== null && !value.includes('$')) {
           continue; // one fixed module, which the config names
         }
+        // `${commonDir}/$1` (a directory chosen when the config is loaded) is not read.
         const prefix = mapperPrefix(entry.key);
         const target = value === null ? null : /^<rootDir>\/(.*)\$1$/.exec(value);
-        if (
-          prefix === null ||
-          target === null ||
-          !named(prefix, under(path.dirname(file), target[1] as string))
-        ) {
-          return missing(entry.key);
+        const to = target === null ? null : under(path.dirname(file), target[1] as string);
+        if (prefix === null || to === null) {
+          reasons.push(missing(file, entry.key, word));
+        } else if (!named(prefix, to)) {
+          reasons.push(missing(file, entry.key, word, prefix, to));
+        } else {
+          mapped.push(prefix);
         }
       }
+    }
+
+    /** Why an entry of a Vite alias is not named, or null. */
+    function viteAlias(part: string, list: boolean): string | null {
+      // `{ '@': path.resolve(__dirname, 'src') }`: Vite maps `@` and what starts with `@/`, the
+      // alias `@/` of settings.importAliases. In a list, `{ find: '@', replacement: … }`, or
+      // `{ find: /^@\//, replacement: path.resolve(__dirname, 'src') + '/' }`.
+      let key: string | null = null;
+      let prefix: string | null = null;
+      let to: string | null = null;
+      if (list) {
+        const object = /^\s*\{/.test(part) ? partsOf(part, part.indexOf('{')) : null;
+        const fields = Object.fromEntries(
+          (object?.parts ?? []).map(property).map((one) => [one?.key ?? '', one?.value ?? ''])
+        );
+        if (
+          object === null ||
+          Object.keys(fields).sort().join() !== 'find,replacement' ||
+          part.slice(object.end + 1).trim() !== ''
+        ) {
+          return unreadableAlias();
+        }
+        const find = fields.find as string;
+        const replacement = fields.replacement as string;
+        key = stringValue(find);
+        if (key !== null) {
+          prefix = key.endsWith('/') ? null : `${key}/`;
+          const target = aliasPath(replacement, file, text);
+          to = target === null ? null : `${target}/`;
+        } else {
+          key = find.trim();
+          prefix = regexPrefix(find);
+          const slashed = new RegExp(`^([\\s\\S]+?)\\s*\\+\\s*(?:'/'|"/")$`).exec(replacement);
+          const target = slashed === null ? null : aliasPath(slashed[1] as string, file, text);
+          to = target === null ? null : `${target}/`;
+          if (prefix === null && to === null) {
+            return unreadableAlias();
+          }
+        }
+      } else {
+        const entry = property(part);
+        if (entry === null) {
+          return unreadableAlias();
+        }
+        key = entry.key;
+        prefix = key.endsWith('/') ? null : `${key}/`;
+        const target = aliasPath(entry.value, file, text);
+        to = target === null ? null : `${target}/`;
+      }
+      // `{ lodash: … }` maps `lodash` itself as well, which this tool takes for the package.
+      if (prefix === null || to === null || (PACKAGE_NAME.test(key) && installed(key, file))) {
+        return missing(file, key, 'alias');
+      }
+      if (!named(prefix, to)) {
+        return missing(file, key, 'alias', prefix, to);
+      }
+      mapped.push(prefix);
+      return null;
+    }
+    function unreadableAlias(): string {
+      return `${shown(file)} names alias in a way that cannot be read as a list of aliases`;
     }
   }
   const tsconfigs = input.compiler.filter(({ file }) => /^[jt]sconfig/.test(path.basename(file)));
@@ -1171,47 +1285,80 @@ export function unexplainedMaps(input: {
       continue;
     }
     const plain = withoutComments(text);
-    if (!/^[jt]sconfig/.test(path.basename(file))) {
-      // Babel (module-resolver) and SWC (jsc.paths) map modules too. In package.json, which
-      // holds more than a Babel config, only the plugin is looked for.
-      const maps =
-        path.basename(file) === 'package.json'
-          ? /module-resolver/.exec(plain)
-          : /module-resolver|\balias\b|"paths"/.exec(plain);
+    const name = path.basename(file);
+    const swc = name === '.swcrc';
+    if (!/^[jt]sconfig/.test(name) && !swc) {
+      // Babel maps modules with module-resolver. In package.json, which holds more than a Babel
+      // config (the plugin is also the name of a dependency), only its "babel" is looked into.
+      const babel = /"babel"\s*:\s*/.exec(plain);
+      const own =
+        name !== 'package.json'
+          ? plain
+          : babel === null
+            ? ''
+            : (() => {
+                const found = partsOf(plain, babel.index + babel[0].length);
+                return found === null ? plain : found.parts.join(',');
+              })();
+      const maps = /module-resolver|\balias\b/.exec(own);
       if (maps !== null) {
-        return `${shown(file)} maps modules (${maps[0].replace(/"/g, '')}), which cannot be told`;
+        reasons.push(`${shown(file)} maps modules (${maps[0]}), which cannot be told`);
       }
       continue;
     }
+    // tsconfig.json `compilerOptions.paths`, and `jsc.paths` of .swcrc, read by the same rules.
+    // Jest does not read tsconfig paths (only moduleNameMapper, read above), but SWC, which
+    // @swc/jest runs, rewrites imports by its paths.
     const paths = /"paths"\s*:\s*/.exec(plain);
-    if (paths === null) {
+    if (paths === null || (!swc && input.testRunner === 'jest')) {
       continue;
     }
     const at = paths.index + paths[0].length;
     const found = plain[at] === '{' ? partsOf(plain, at) : null;
     if (found === null) {
-      return `${shown(file)} names paths in a way that cannot be read as a list of aliases`;
+      reasons.push(`${shown(file)} names paths in a way that cannot be read as a list of aliases`);
+      continue;
     }
-    // Paths are relative to baseUrl, else to the tsconfig.json that names them; a baseUrl of
-    // another file of the chain is not looked into.
+    // Paths are relative to baseUrl, else to the file that names them; a baseUrl of another
+    // tsconfig.json of the chain is not looked into.
     const own = /"baseUrl"\s*:\s*"([^"]*)"/.exec(plain);
-    if (own === null && withBase.length > 0) {
-      return `${shown(file)} names paths, and baseUrl is set in another file`;
+    if (own === null && !swc && withBase.length > 0) {
+      reasons.push(`${shown(file)} names paths, and baseUrl is set in another file`);
+      continue;
     }
     const base = path.resolve(path.dirname(file), own?.[1] ?? '.');
     for (const part of found.parts) {
       const entry = property(part);
-      const list = entry === null || !entry.value.startsWith('[') ? null : partsOf(entry.value, 0);
-      const target = list?.parts.length === 1 ? stringValue(list.parts[0] as string) : null;
       if (entry === null) {
-        return `${shown(file)} names paths in a way that cannot be read as a list of aliases`;
+        reasons.push(
+          `${shown(file)} names paths in a way that cannot be read as a list of aliases`
+        );
+        continue;
       }
+      const list = entry.value.startsWith('[') ? partsOf(entry.value, 0) : null;
+      const target = list?.parts.length === 1 ? stringValue(list.parts[0] as string) : null;
       const prefix = entry.key.endsWith('*') ? entry.key.slice(0, -1) : null;
+      // `"@next/third-parties/google": ["./node_modules/@next/third-parties/dist/google"]`: an
+      // installed package, compared through the lock file.
+      if (
+        prefix === null &&
+        target !== null &&
+        !target.includes('*') &&
+        path.resolve(base, target).split(path.sep).includes('node_modules')
+      ) {
+        continue;
+      }
       const directory = target?.endsWith('*') ? target.slice(0, -1) : null;
-      if (prefix === null || directory === null || !named(prefix, under(base, directory))) {
-        return `${shown(file)} maps ${entry.key} with paths in a way settings.importAliases does not name`;
+      // SWC rewrites the import before the runner sees it: its paths count all the same.
+      if (!swc && prefix !== null && mapped.some((one) => prefix.startsWith(one))) {
+        continue;
+      }
+      if (prefix === null || directory === null) {
+        reasons.push(missing(file, entry.key, 'paths'));
+      } else if (!named(prefix, under(base, directory))) {
+        reasons.push(missing(file, entry.key, 'paths', prefix, under(base, directory)));
       }
     }
   }
-  return null;
+  return reasons.length === 0 ? null : [...new Set(reasons)].join('; ');
 }
