@@ -300,6 +300,24 @@ describe('affectedInputs', () => {
     }
   );
 
+  it('takes from a runner config only the scripts it names, not a component it excludes', () => {
+    const dir = fixture({
+      'vitest.gates.config.ts':
+        "export default { test: { setupFiles: ['./test/setup.ts'], coverage: { exclude: ['src/components/Widget.vue', 'src/data/rates.json'] } }, root: import.meta.dirname };\n",
+      'src/components/Widget.vue': '<template><p /></template>\n',
+      'src/data/rates.json': '{ "one": 1 }\n',
+    });
+    const found = inputs(dir);
+    // the setup file is still taken, with what it imports
+    expect(found.config).toEqual([
+      'stryker.gates.config.mjs',
+      'test/prepare.ts',
+      'test/setup.ts',
+      'vitest.gates.config.ts',
+    ]);
+    expect(found.gates['src/c.ts']?.files).toEqual(['src/c.spec.ts', 'src/c.ts']);
+  });
+
   it('refuses a package of the repository that is linked into node_modules', () => {
     const dir = fixture({
       'src/a.ts':

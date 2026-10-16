@@ -313,7 +313,9 @@ export function affectedInputs(
         const found =
           resolveFile(path.resolve(path.dirname(loaded), text), false) ??
           resolveFile(path.resolve(dir, text), false);
-        if (found !== null && !text.includes('*') && isCompared(found)) {
+        // Only a script is run for every spec (a setup file, an environment, a reporter). Other
+        // paths a config names are not loaded by the run: `coverage.exclude: ['src/Widget.vue']`.
+        if (found !== null && SCRIPT.test(found) && !text.includes('*') && isCompared(found)) {
           named.push(realpath(found));
         }
       }
