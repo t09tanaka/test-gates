@@ -130,12 +130,106 @@ function keyOf(mutator: string, original: string, replacement: string): string {
   return JSON.stringify([mutator, normalizeCode(original), normalizeCode(replacement)]);
 }
 
-interface LocatedMutant {
+/** A mutant with the source text it replaces, and where it stands among those of its key. */
+export interface LocatedMutant {
   mutant: ReportMutant;
   original: string;
   replacement: string;
   occurrence: number;
   sameKeyCount: number;
+}
+
+/** The mutants of one file, grouped by mutator + original + replacement. */
+export interface LocatedMutants {
+  /** In the order of their start in the file. */
+  located: LocatedMutant[];
+  byKey: Map<string, LocatedMutant[]>;
+  /** The mutants whose location is outside the source; they are in neither list. */
+  outside: ReportMutant[];
+}
+
+/**
+ * Cuts the original text of each mutant from the source and numbers the mutants that share a
+ * key in the order of their start, as `occurrence` counts them.
+ */
+export function locateMutants(source: string, mutants: ReportMutant[]): LocatedMutants {
+  const located: LocatedMutant[] = [];
+  const byKey = new Map<string, LocatedMutant[]>();
+  const outside: ReportMutant[] = [];
+  const sorted = [...mutants].sort(
+    (a, b) =>
+      a.location.start.line - b.location.start.line ||
+      a.location.start.column - b.location.start.column
+  );
+  for (const mutant of sorted) {
+    const original = sliceByLocation(normalizeNewlines(source), mutant.location);
+    if (original === null) {
+      outside.push(mutant);
+      continue;
+    }
+    const replacement = mutant.replacement ?? '';
+    const key = keyOf(mutant.mutatorName, original, replacement);
+    const group = byKey.get(key) ?? [];
+    const entry = { mutant, original, replacement, occurrence: group.length + 1, sameKeyCount: 0 };
+    group.push(entry);
+    byKey.set(key, group);
+    located.push(entry);
+  }
+  for (const group of byKey.values()) {
+    for (const entry of group) {
+      entry.sameKeyCount = group.length;
+    }
+  }
+  return { located, byKey, outside };
+}
+
+/**
+ * The mutant an entry of `equivalentMutants` or `expectedTimeouts` points at. Without
+ * `occurrence` the entry has to match one mutant only. `target` is undefined when it matches
+ * none (a stale entry).
+ */
+export function resolveEntry(
+  entry: EquivalentMutant,
+  byKey: Map<string, LocatedMutant[]>
+): { target: LocatedMutant | undefined } | { ambiguous: number } {
+  const group = byKey.get(keyOf(entry.mutator, entry.original, entry.replacement)) ?? [];
+  if (entry.occurrence === undefined && group.length > 1) {
+    return { ambiguous: group.length };
+  }
+  return { target: group[(entry.occurrence ?? 1) - 1] };
+}
+
+/**
+ * The mutants of a gate that its `expectedTimeouts` entries point at, matched as
+ * judgeMutationReport matches them. An entry that matches several mutants without
+ * `occurrence`, or none, points at nothing; so does every entry when the source cannot be read
+ * or a location is outside it.
+ *
+ * @param source The source of the gate, or undefined when it cannot be read.
+ */
+export function expectedTimeoutMutants(
+  gate: Pick<Gate, 'expectedTimeouts'>,
+  source: string | undefined,
+  mutants: ReportMutant[]
+): Set<ReportMutant> {
+  const pointed = new Set<ReportMutant>();
+  if (source === undefined || !Array.isArray(gate.expectedTimeouts)) {
+    return pointed;
+  }
+  const { byKey, outside } = locateMutants(source, mutants);
+  if (outside.length > 0) {
+    return pointed;
+  }
+  for (const entry of gate.expectedTimeouts as unknown[]) {
+    if (!isUsableEquivalentMutant(entry)) {
+      continue;
+    }
+    const found = resolveEntry(entry, byKey);
+    if ('target' in found && found.target !== undefined) {
+      pointed.add(found.target.mutant);
+    }
+  }
+  return pointed;
 }
 
 /** A mutant as it is listed for the reader, with the entry that would cover it. */
@@ -246,45 +340,15 @@ export function judgeMutationReport(input: {
       continue;
     }
 
-    const located: LocatedMutant[] = [];
-    const byKey = new Map<string, LocatedMutant[]>();
-    const sorted = [...result.mutants].sort(
-      (a, b) =>
-        a.location.start.line - b.location.start.line ||
-        a.location.start.column - b.location.start.column
-    );
-    let locationsValid = true;
-    for (const mutant of sorted) {
-      const original = sliceByLocation(normalizeNewlines(source), mutant.location);
-      if (original === null) {
-        violations.push({
-          file: gate.path,
-          line: mutant.location.start.line,
-          message: `the report location of a ${mutant.mutatorName} mutant is outside the source`,
-        });
-        locationsValid = false;
-        continue;
-      }
-      const replacement = mutant.replacement ?? '';
-      const key = keyOf(mutant.mutatorName, original, replacement);
-      const group = byKey.get(key) ?? [];
-      const entry = {
-        mutant,
-        original,
-        replacement,
-        occurrence: group.length + 1,
-        sameKeyCount: 0,
-      };
-      group.push(entry);
-      byKey.set(key, group);
-      located.push(entry);
+    const { located, byKey, outside } = locateMutants(source, result.mutants);
+    for (const mutant of outside) {
+      violations.push({
+        file: gate.path,
+        line: mutant.location.start.line,
+        message: `the report location of a ${mutant.mutatorName} mutant is outside the source`,
+      });
     }
-    for (const group of byKey.values()) {
-      for (const entry of group) {
-        entry.sameKeyCount = group.length;
-      }
-    }
-    if (!locationsValid) {
+    if (outside.length > 0) {
       continue;
     }
 
@@ -305,15 +369,15 @@ export function judgeMutationReport(input: {
           return; // already reported by validateEquivalentMutants
         }
         const at = `${gate.path}: ${field}[${index}] (${describeAllowance(entry)})`;
-        const group = byKey.get(keyOf(entry.mutator, entry.original, entry.replacement)) ?? [];
-        if (entry.occurrence === undefined && group.length > 1) {
+        const found = resolveEntry(entry, byKey);
+        if ('ambiguous' in found) {
           violations.push({
             file: MANIFEST_FILE,
-            message: `${at}: matches ${group.length} mutants in the file. Add "occurrence" (1-based) to pick one`,
+            message: `${at}: matches ${found.ambiguous} mutants in the file. Add "occurrence" (1-based) to pick one`,
           });
           return;
         }
-        const target = group[(entry.occurrence ?? 1) - 1];
+        const target = found.target;
         const refusal = target
           ? accept(target.mutant.status)
           : `stale ${noun} (no such mutant in this run). Remove it`;

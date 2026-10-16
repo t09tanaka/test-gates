@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  expectedTimeoutMutants,
   formatSummary,
   formatSurvivor,
   judgeMutationReport,
@@ -980,5 +981,65 @@ describe('judgeMutationReport: timeouts', () => {
       GATE_PATH,
       'src/b.ts',
     ]);
+  });
+});
+
+describe('expectedTimeoutMutants', () => {
+  const entry = (overrides: Partial<EquivalentMutant> = {}): EquivalentMutant =>
+    allowance({ reason: 'the loop never ends, so the run always times out', ...overrides });
+  const pointed = (
+    expectedTimeouts: unknown,
+    mutants: ReportMutant[],
+    source: string | null = SOURCE
+  ) =>
+    [
+      ...expectedTimeoutMutants(
+        { expectedTimeouts: expectedTimeouts as EquivalentMutant[] },
+        source ?? undefined,
+        mutants
+      ),
+    ].map((one) => mutants.indexOf(one));
+
+  it('gives the mutants the entries point at, matched as the verdict matches them', () => {
+    const mutants = [yesLiteral('Timeout'), secondComparison('Timeout'), firstComparison('Killed')];
+    expect(pointed([entry({ occurrence: 2 })], mutants)).toEqual([1]);
+    expect(pointed([entry({ occurrence: 1 })], mutants)).toEqual([2]);
+    expect(
+      pointed(
+        [entry({ occurrence: 1 }), entry({ occurrence: 2 }), entry({ occurrence: 1 })],
+        mutants
+      )
+    ).toEqual([2, 1]);
+    expect(
+      pointed([entry({ mutator: 'StringLiteral', original: '"yes"', replacement: '""' })], mutants)
+    ).toEqual([0]);
+    // whitespace is not part of the key
+    expect(pointed([entry({ original: 'age  >=\n18' })], [firstComparison('Timeout')])).toEqual([
+      0,
+    ]);
+  });
+
+  it('points at nothing for an entry the verdict would not apply', () => {
+    const both = [firstComparison('Timeout'), secondComparison('Timeout')];
+    // several mutants and no occurrence
+    expect(pointed([entry()], both)).toEqual([]);
+    // no such mutant, an occurrence beyond them, another replacement
+    expect(pointed([entry()], [yesLiteral('Timeout')])).toEqual([]);
+    expect(pointed([entry({ occurrence: 3 })], both)).toEqual([]);
+    expect(pointed([entry({ replacement: 'age < 18' })], [firstComparison('Timeout')])).toEqual([]);
+    // no reason, not a list, no list
+    expect(pointed([entry({ reason: '' })], [firstComparison('Timeout')])).toEqual([]);
+    expect(pointed('x', [firstComparison('Timeout')])).toEqual([]);
+    expect(pointed(undefined, [firstComparison('Timeout')])).toEqual([]);
+  });
+
+  it('points at nothing when the source cannot be read or a location is outside it', () => {
+    expect(pointed([entry()], [firstComparison('Timeout')], null)).toEqual([]);
+    expect(
+      pointed(
+        [entry()],
+        [firstComparison('Timeout'), mutant('Killed', 'StringLiteral', '""', 9, 1, 2)]
+      )
+    ).toEqual([]);
   });
 });

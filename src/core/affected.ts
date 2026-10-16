@@ -8,7 +8,13 @@
  * of its mutants, and every file those import. Anything that may change the results of every
  * gate (a config, a lock file, a tool, an argument) makes the run one of every mutant.
  */
+import {
+  expectedTimeoutMutants,
+  type MutationReport,
+  type ReportMutant,
+} from './mutation-result.js';
 import { type AffectedRecord, differingKeys, listed } from './reuse-guard.js';
+import type { Gate } from './types.js';
 
 /** What a change of a file can affect. */
 export type FileKind =
@@ -163,28 +169,6 @@ export function planAffected(input: {
   return { rerun, reused };
 }
 
-/** A result of the last run, as far as the ranges below need it. */
-interface LastResults {
-  files?: Record<
-    string,
-    {
-      mutants?: Array<{
-        status: string;
-        location: {
-          start: { line: number; column: number };
-          end: { line: number; column: number };
-        };
-      }>;
-    }
-  >;
-}
-
-/**
- * The mutants of the given gates that timed out in the last run, as ranges for Stryker's
- * `--mutate` (`file:line:column-line:column`; the start column counted from 0, the end column
- * included). A timeout can come from a loaded machine, where the mutant would have survived:
- * it is never taken over, also not in a gate whose other results are.
- */
 /** A path in test-gates.json as Stryker names it: without its `.` parts (`./src/a.ts`). */
 export function withoutDots(file: string): string {
   return file
@@ -193,28 +177,66 @@ export function withoutDots(file: string): string {
     .join('/');
 }
 
-export function timeoutRanges(last: LastResults, gates: string[]): string[] {
+/** The mutants that timed out in the last run, split by whether they are run again. */
+export interface TimeoutRanges {
+  /** As ranges for Stryker's `--mutate`. Mutants at the same place share one. */
+  ranges: string[];
+  /** How many are run again. */
+  rerun: number;
+  /** How many are taken over because an `expectedTimeouts` entry of their gate points at them. */
+  expected: number;
+}
+
+/**
+ * The mutants of the given gates that timed out in the last run, as ranges for Stryker's
+ * `--mutate` (`file:line:column-line:column`; the start column counted from 0, the end column
+ * included). A timeout can come from a loaded machine, where the mutant would have survived:
+ * it is not taken over, also not in a gate whose other results are. Only a mutant that an
+ * `expectedTimeouts` entry of its gate points at (matched as the verdict matches it) is taken
+ * over: it times out on every run, and running it again only costs the time of its timeout.
+ *
+ * @param readSource Source of a gate on disk, for a result that carries none.
+ */
+export function timeoutRanges(
+  last: MutationReport,
+  gates: Array<Pick<Gate, 'path' | 'expectedTimeouts'>>,
+  readSource: (gatePath: string) => string | undefined
+): TimeoutRanges {
   const ranges: string[] = [];
+  const rerun = new Set<ReportMutant>();
+  const taken = new Set<ReportMutant>();
   const files = last.files ?? {};
   for (const named of gates) {
     // Stryker names its files without `./`, which a path in test-gates.json may have.
-    const gate = withoutDots(named);
-    const mutants = Object.hasOwn(files, gate) ? files[gate]?.mutants : undefined;
-    if (mutants === undefined) {
+    const gate = withoutDots(named.path);
+    const result = Object.hasOwn(files, gate) ? files[gate] : undefined;
+    if (result?.mutants === undefined) {
       continue;
     }
+    const { mutants } = result;
+    const expected = expectedTimeoutMutants(
+      named,
+      result.source ?? readSource(named.path),
+      mutants
+    );
     for (const mutant of mutants) {
-      if (mutant.status === 'Timeout') {
-        const { start, end } = mutant.location;
-        ranges.push(`${gate}:${start.line}:${start.column - 1}-${end.line}:${end.column}`);
+      if (mutant.status !== 'Timeout') {
+        continue;
       }
+      if (expected.has(mutant)) {
+        taken.add(mutant);
+        continue;
+      }
+      rerun.add(mutant);
+      const { start, end } = mutant.location;
+      ranges.push(`${gate}:${start.line}:${start.column - 1}-${end.line}:${end.column}`);
     }
   }
-  return [...new Set(ranges)];
+  return { ranges: [...new Set(ranges)], rerun: rerun.size, expected: taken.size };
 }
 
 /** Lines that say what a run with `--affected` does: one, and one more per gate run again. */
-export function describePlan(plan: AffectedPlan, shown = 5, timeouts = 0): string[] {
+export function describePlan(plan: AffectedPlan, shown = 5, timeouts = 0, expected = 0): string[] {
   if ('full' in plan) {
     return [
       `test-gates mutation --affected: running every mutant again (--force), the results of the last run are not reused: ${plan.full}`,
@@ -237,5 +259,13 @@ export function describePlan(plan: AffectedPlan, shown = 5, timeouts = 0): strin
   if (timeouts > 0) {
     lines.push(`  and ${timeouts} mutant(s) of reused gates that timed out in the last run`);
   }
+  if (expected > 0) {
+    lines.push(`  ${describeExpected(expected)}`);
+  }
   return lines;
+}
+
+/** What is said about the timed-out mutants that are taken over (see timeoutRanges). */
+export function describeExpected(expected: number): string {
+  return `${expected} mutant(s) that timed out in the last run are taken over: expectedTimeouts lists them`;
 }

@@ -7,6 +7,7 @@ import { ManifestError } from '../core/manifest.js';
 import { AffectedError, affectedInputs, loadedScope, runnerConfigs } from '../affected-files.js';
 import {
   type AffectedPlan,
+  describeExpected,
   describePlan,
   planAffected,
   timeoutRanges,
@@ -384,20 +385,32 @@ function guardIncremental(
     (rerun !== null && rerun.length > 0 && rerun.length === manifest.gates.length
       ? 'every gate is affected'
       : null);
-  // Results that are taken over: never those of a mutant that timed out (see timeoutRanges).
+  // Results that are taken over: never those of a mutant that timed out, unless expectedTimeouts
+  // lists it (see timeoutRanges).
   let ranges: string[] = [];
+  let timedOut = 0;
+  let expected = 0;
   if (everyGate === null && incremental !== null && !options.force) {
     const kept =
-      rerun === null
-        ? manifest.gates.map((gate) => gate.path)
-        : manifest.gates.map((gate) => gate.path).filter((gate) => !rerun.includes(gate));
+      rerun === null ? manifest.gates : manifest.gates.filter((gate) => !rerun.includes(gate.path));
     try {
-      ranges = timeoutRanges(
-        JSON.parse(fs.readFileSync(incrementalFile, 'utf8')) as Parameters<typeof timeoutRanges>[0],
-        kept
-      );
+      ({
+        ranges,
+        rerun: timedOut,
+        expected,
+      } = timeoutRanges(
+        JSON.parse(fs.readFileSync(incrementalFile, 'utf8')) as MutationReport,
+        kept,
+        (gatePath) => {
+          try {
+            return fs.readFileSync(path.join(manifest.dir, gatePath), 'utf8');
+          } catch {
+            return undefined;
+          }
+        }
+      ));
     } catch {
-      ranges = [];
+      // no incremental file to read: Stryker takes nothing over either
     }
   }
   const subset = rerun !== null && rerun.length > 0 && everyGate === null ? rerun : [];
@@ -413,19 +426,25 @@ function guardIncremental(
     if (force !== null) {
       said = describePlan({ full: force });
     } else if (plan !== null) {
-      said = describePlan(plan, 5, ranges.length);
+      said = describePlan(plan, 5, timedOut, expected);
     } else if (decision.unchanged !== null) {
       said = [
         `test-gates mutation --affected: nothing changed since the last run, every result is reused (gate by gate, ${decision.unchanged.replace(/^what a gate/, 'what each gate')})`,
         ...(ranges.length > 0
-          ? [`  and ${ranges.length} mutant(s) that timed out in the last run are run again`]
+          ? [`  and ${timedOut} mutant(s) that timed out in the last run are run again`]
           : []),
+        ...(expected > 0 ? [`  ${describeExpected(expected)}`] : []),
       ];
     }
-  } else if (ranges.length > 0) {
-    said = [
-      `test-gates mutation: ${ranges.length} mutant(s) that timed out in the last run are run again, the other results are reused`,
-    ];
+  } else {
+    if (ranges.length > 0) {
+      said.push(
+        `test-gates mutation: ${timedOut} mutant(s) that timed out in the last run are run again, the other results are reused`
+      );
+    }
+    if (expected > 0) {
+      said.push(`test-gates mutation: ${describeExpected(expected)}`);
+    }
   }
   return {
     // Every gate is run again: the same as a run of every mutant.

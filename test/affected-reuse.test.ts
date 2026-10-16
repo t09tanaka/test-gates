@@ -255,8 +255,8 @@ describe.skipIf(!strykerRuns)('a run without --affected, with a real Stryker', (
 });
 
 // `countUp` has two mutants that can never end; test-gates.json lists them as expected
-// timeouts. A timeout may also come from a loaded machine, where the mutant would have
-// survived, so a timeout is never taken over from the last run.
+// timeouts, and a run after no change takes them over. Any other timeout may come from a loaded
+// machine, where the mutant would have survived, so it is never taken over from the last run.
 function timeoutsFixture(): string {
   const dir = project({
     'package.json': { name: 'timeouts-fixture', private: true, type: 'module' },
@@ -310,7 +310,7 @@ function timeoutsFixture(): string {
  * Turns the results of the comparison `kg > 2` of `fee` in the incremental file into timeouts,
  * as a loaded machine can leave them, and keeps the record of the run with it.
  */
-async function timedOutUnderLoad(dir: string): Promise<void> {
+async function timedOutUnderLoad(dir: string): Promise<number> {
   const file = path.join(dir, 'reports/stryker-incremental.json');
   const stored = JSON.parse(fs.readFileSync(file, 'utf8')) as {
     files: Record<string, { mutants: Array<{ mutatorName: string; status: string }> }>;
@@ -330,11 +330,15 @@ async function timedOutUnderLoad(dir: string): Promise<void> {
   const { createHash } = await import('node:crypto');
   kept.incremental = createHash('sha256').update(fs.readFileSync(file)).digest('hex');
   fs.writeFileSync(record, JSON.stringify(kept));
+  return changed;
 }
 
 describe.skipIf(!strykerRuns)('mutants that timed out in the last run, with a real Stryker', () => {
+  const TAKEN_OVER =
+    'mutant(s) that timed out in the last run are taken over: expectedTimeouts lists them';
+
   it(
-    'are run again also in a gate whose other results are reused, with and without --affected',
+    'are run again also in a gate whose other results are reused, unless expectedTimeouts lists them, with and without --affected',
     { timeout: 300_000 },
     async () => {
       const dir = timeoutsFixture();
@@ -346,45 +350,59 @@ describe.skipIf(!strykerRuns)('mutants that timed out in the last run, with a re
       );
       expect(first.status).toBe(0);
 
-      // Nothing changed: both gates are reused, but the two timeouts are run again.
+      // Nothing changed: both gates are reused, and so are the two timeouts that
+      // expectedTimeouts lists. Nothing is run again.
       const second = await run('--affected');
       expect(second.stdout).toContain(
         'test-gates mutation --affected: 2 of 2 gate(s) reused, 0 run again'
       );
-      expect(second.stdout).toContain(
-        '  and 2 mutant(s) of reused gates that timed out in the last run'
-      );
+      expect(second.stdout).toContain(`  2 ${TAKEN_OVER}`);
+      expect(second.stdout).not.toContain('of reused gates that timed out');
       expect(second.stdout).toContain(
         '(timeout 2) / allowed equivalent 0 / not evaluable 0 / unallowed survivors 0)'
       );
       expect(second.status).toBe(0);
 
-      // A gate that is run again for a change, next to one whose timeouts are run again.
+      // A gate that is run again for a change, next to one whose expected timeouts are reused.
       write(dir, { 'src/fee.ts': 'export const fee = (kg: number) => (kg > 2 ? 9 : 5); // x\n' });
       const both = await run('--affected');
       expect(both.stdout).toContain('1 of 2 gate(s) reused, 1 run again');
       expect(both.stdout).toContain('  src/fee.ts: changed src/fee.ts');
-      expect(both.stdout).toContain('  and 2 mutant(s) of reused gates that timed out');
+      expect(both.stdout).toContain(`  2 ${TAKEN_OVER}`);
+      expect(both.stdout).not.toContain('of reused gates that timed out');
       expect(both.stdout).toContain(
         '(timeout 2) / allowed equivalent 0 / not evaluable 0 / unallowed survivors 0)'
       );
 
       // Timeouts left by a loaded machine are not taken over: run again, the mutants are killed.
-      await timedOutUnderLoad(dir);
+      const underLoad = await timedOutUnderLoad(dir);
       const loaded = await run('--affected');
       expect(loaded.stdout).toContain('2 of 2 gate(s) reused, 0 run again');
-      expect(loaded.stdout).toMatch(/ {2}and [3-9] mutant\(s\) of reused gates that timed out/);
+      expect(loaded.stdout).toContain(
+        `  and ${underLoad} mutant(s) of reused gates that timed out in the last run`
+      );
+      expect(loaded.stdout).toContain(`  2 ${TAKEN_OVER}`);
       expect(loaded.stdout).toContain(
         '(timeout 2) / allowed equivalent 0 / not evaluable 0 / unallowed survivors 0)'
       );
       expect(loaded.status).toBe(0);
 
-      // Without --affected, a run after no change runs its timeouts again as well.
-      await timedOutUnderLoad(dir);
-      const plain = await run();
-      expect(plain.stdout).toMatch(
-        /test-gates mutation: [3-9] mutant\(s\) that timed out in the last run are run again, the other results are reused/
+      // Without --affected, a run after no change reuses the expected timeouts as well...
+      const unchanged = await run();
+      expect(unchanged.stdout).toContain(`test-gates mutation: 2 ${TAKEN_OVER}`);
+      expect(unchanged.stdout).not.toContain('are run again');
+      expect(unchanged.stdout).toContain(
+        '(timeout 2) / allowed equivalent 0 / not evaluable 0 / unallowed survivors 0)'
       );
+      expect(unchanged.status).toBe(0);
+
+      // ...and runs the other timeouts again.
+      const again = await timedOutUnderLoad(dir);
+      const plain = await run();
+      expect(plain.stdout).toContain(
+        `test-gates mutation: ${again} mutant(s) that timed out in the last run are run again, the other results are reused`
+      );
+      expect(plain.stdout).toContain(`test-gates mutation: 2 ${TAKEN_OVER}`);
       expect(plain.stdout).toContain(
         '(timeout 2) / allowed equivalent 0 / not evaluable 0 / unallowed survivors 0)'
       );
