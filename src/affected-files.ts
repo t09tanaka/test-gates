@@ -29,6 +29,29 @@ const FILE_MODULES = new Set([
   'globby',
 ]);
 const bare = (specifier: string): string => specifier.replace(/^node:/, '');
+/** Modules whose imports are in a block of their own: the change of what they import is not seen. */
+const COMPONENT = /\.(?:vue|svelte|astro|mdx)$/;
+
+/**
+ * Where `node_modules/<package>` of the nearest node_modules that has it leads, when that is a
+ * link to a directory outside of every node_modules (a package of the same repository); else null.
+ */
+export function linkedPackage(specifier: string, from: string): string | null {
+  const name = specifier
+    .split('/')
+    .slice(0, specifier.startsWith('@') ? 2 : 1)
+    .join('/');
+  for (let current = path.dirname(from); ; current = path.dirname(current)) {
+    const candidate = path.join(current, 'node_modules', name);
+    if (fs.existsSync(candidate)) {
+      const target = realpath(candidate);
+      return target.split(path.sep).includes('node_modules') ? null : target;
+    }
+    if (current === path.dirname(current)) {
+      return null;
+    }
+  }
+}
 
 const toPosix = (file: string): string => file.split(path.sep).join('/');
 
@@ -152,6 +175,11 @@ export function affectedInputs(
     if (fs.existsSync(snapshotFile)) {
       found.loads.push(realpath(snapshotFile));
     }
+    if (COMPONENT.test(file)) {
+      // A component imports in a block of its own, which is not read here.
+      found.unknown = `${shown(file)} is a component whose imports are not followed`;
+      return found;
+    }
     if (!SCRIPT.test(file)) {
       return found; // data: it loads nothing
     }
@@ -189,6 +217,9 @@ export function affectedInputs(
       } else if (!specifier.startsWith('node:') && !builtinModules.includes(specifier)) {
         if (!installed(specifier, file)) {
           found.unknown ??= `${shown(file)} imports ${specifier}, which is neither a file nor an installed package (name an alias in settings.importAliases)`;
+        } else if (linkedPackage(specifier, file) !== null) {
+          // A package of the repository, linked into node_modules: its files are not followed.
+          found.unknown ??= `${shown(file)} imports ${specifier}, a package of the repository linked into node_modules`;
         }
       }
     }

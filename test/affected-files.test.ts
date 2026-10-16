@@ -275,6 +275,38 @@ describe('affectedInputs', () => {
     );
   });
 
+  it('refuses a component a spec loads, whose imports are not followed', () => {
+    const dir = fixture({
+      'src/a.spec.ts': `${H}import { a } from './a';\nimport Widget from './Widget.vue';\nit('a', () => { expect(a(1) && Widget).toBeTruthy(); });\n`,
+      'src/Widget.vue': "<script setup>\nimport { round } from './round';\n</script>\n",
+    });
+    expect(refusal(dir)).toBe('src/Widget.vue is a component whose imports are not followed');
+  });
+
+  it('refuses a package of the repository that is linked into node_modules', () => {
+    const dir = fixture({
+      'src/a.ts':
+        "import { round } from '@acme/shared';\nexport const a = (x: number) => round(x) + 1;\n",
+      'packages/shared/index.ts': 'export const round = (x: number) => Math.round(x);\n',
+    });
+    fs.mkdirSync(path.join(dir, 'node_modules/@acme'), { recursive: true });
+    fs.symlinkSync(path.join(dir, 'packages/shared'), path.join(dir, 'node_modules/@acme/shared'));
+    expect(refusal(dir)).toBe(
+      'src/a.ts imports @acme/shared, a package of the repository linked into node_modules'
+    );
+  });
+
+  it('takes an installed package for what the lock file says it is', () => {
+    const dir = fixture({
+      'src/a.ts':
+        "import { round } from '@acme/shared';\nexport const a = (x: number) => round(x) + 1;\n",
+      'node_modules/@acme/shared/index.js': 'exports.round = Math.round;\n',
+    });
+    expect(inputs(dir).gates['src/a.ts']?.files).not.toContain(
+      'node_modules/@acme/shared/index.js'
+    );
+  });
+
   it('does not take a spec or a gate the config names for a file of every spec', () => {
     const dir = fixture({
       'vitest.gates.config.ts':

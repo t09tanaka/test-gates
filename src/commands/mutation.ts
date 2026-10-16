@@ -105,7 +105,9 @@ function coveringSpecs(report: MutationReport, gates: string[]): Record<string, 
   for (const gate of gates) {
     const specs = new Set<string>();
     let placed = true;
-    for (const mutant of report.files?.[gate]?.mutants ?? []) {
+    // The report names its files without a leading `./`, which test-gates.json may have.
+    const key = gate.replace(/^(?:\.\/)+/, '');
+    for (const mutant of report.files?.[key]?.mutants ?? []) {
       for (const id of [...(mutant.coveredBy ?? []), ...(mutant.killedBy ?? [])]) {
         const file = fileOf.get(id);
         if (file === undefined) {

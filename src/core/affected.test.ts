@@ -467,6 +467,10 @@ describe('timeoutRanges', () => {
     },
   };
 
+  it('finds the gate named with a leading ./ under the name Stryker gives it', () => {
+    expect(timeoutRanges(last, ['./src/b.ts', '././src/b.ts'])).toEqual(['src/b.ts:1:4-1:6']);
+  });
+
   it('gives each timed-out mutant of the named gates once, as a range for --mutate', () => {
     expect(timeoutRanges(last, ['src/a.ts', 'src/c.ts', 'src/gone.ts'])).toEqual([
       'src/a.ts:3:9-5:4',

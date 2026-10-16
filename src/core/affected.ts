@@ -188,7 +188,9 @@ interface LastResults {
 export function timeoutRanges(last: LastResults, gates: string[]): string[] {
   const ranges: string[] = [];
   const files = last.files ?? {};
-  for (const gate of gates) {
+  for (const named of gates) {
+    // Stryker names its files without a leading `./`, which test-gates.json may have.
+    const gate = named.replace(/^(?:\.\/)+/, '');
     const mutants = Object.hasOwn(files, gate) ? files[gate]?.mutants : undefined;
     if (mutants === undefined) {
       continue;
