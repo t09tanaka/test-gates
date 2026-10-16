@@ -424,5 +424,84 @@ export function jobsTests(only: 'vitest' | 'jest'): void {
         expect(Number(again?.[1])).toBeGreaterThanOrEqual(2);
       }
     );
+
+    it(
+      'runs on its own only the control of a gate that a spec reaching outside loads, and says what one at a time says',
+      { timeout: 600_000 },
+      async () => {
+        // `covered`: the spec of `two` covers all of it. `watched`: the spec of `three` covers
+        // all of it and reads files. `clock`: its own spec reads the clock.
+        const names = ['two', 'three', 'covered', 'watched', 'clock'];
+        const src = (name: string) => `src/${name}.${dialect.ext}`;
+        const prices =
+          "it('prices', () => {\n  expect(price(1)).toBe(10);\n  expect(price(0)).toBe(5);\n});\n";
+        const own = (name: string) => dialect.use(['price'], name);
+        const also = (name: string) =>
+          dialect.use([dialect.ext === 'ts' ? 'price as other' : 'price: other'], name) +
+          "it('prices the other', () => {\n  expect(other(1)).toBe(10);\n  expect(other(0)).toBe(5);\n});\n";
+        const files =
+          (dialect.ext === 'ts'
+            ? "import fs from 'node:fs';\n"
+            : "const fs = require('node:fs');\n") +
+          "it('reads', () => {\n  expect(fs.existsSync('.')).toBe(true);\n});\n";
+        const specs: Record<string, string> = {
+          two: own('two') + prices + also('covered'),
+          three: own('three') + prices + also('watched') + files,
+          clock:
+            own('clock') +
+            prices +
+            "it('reads the clock', () => {\n  expect(Date.now()).toBeGreaterThan(0);\n});\n",
+        };
+        const dir = project({
+          ...dialect.files,
+          'test-gates.json': {
+            gates: names.map((name) => ({ path: src(name), decides: 'd', impact: 'i' })),
+            candidates: [],
+          },
+          ...Object.fromEntries(
+            names.flatMap((name) => [
+              [src(name), dialect.module({ price: 'return value ? 10 : 5;' })],
+              [
+                `src/${name}.spec.${dialect.ext}`,
+                dialect.specHead + (specs[name] ?? own(name) + prices),
+              ],
+            ])
+          ),
+        });
+        fs.symlinkSync(path.join(repoRoot, 'node_modules'), path.join(dir, 'node_modules'), 'dir');
+        const config = fs
+          .readdirSync(dir)
+          .find((name) => name.includes('.gates.config.')) as string;
+        fs.writeFileSync(
+          path.join(dir, config),
+          fs.readFileSync(path.join(dir, config), 'utf8').replace(/setupFiles: \[[^\]]*\],? ?/, '')
+        );
+        const verdicts = (result: { stdout: string; stderr: string }) =>
+          `${result.stdout}${result.stderr}`
+            .split('\n')
+            .filter((line) => /^ {2}[✓✗] |^test-gates selfcheck: (?:OK|FAILED)/.test(line));
+
+        const perGate = await testGatesAsync(['selfcheck', '--dir', dir]);
+        expect(perGate.status).toBe(1);
+        expect(verdicts(perGate).filter((line) => line.startsWith('  ✗'))).toEqual([
+          expect.stringContaining(`  ✗ ${src('covered')}: the gate passed although the spec`),
+          expect.stringContaining(`  ✗ ${src('watched')}: the gate passed although the spec`),
+        ]);
+
+        const atOnce = await testGatesAsync(['selfcheck', '--jobs', '4', '--dir', dir]);
+        expect(verdicts(atOnce)).toEqual(verdicts(perGate));
+        expect(atOnce.status).toBe(1);
+        const said = atOnce.stdout.split('\n');
+        expect(said.slice(0, 2)).toEqual([
+          'test-gates selfcheck: 1 of 5 negative control(s) run one at a time, since in their runs something that loads the gate also loads a file that may meet what another run is doing:',
+          `  ${src('watched')}: loaded by src/three.spec.${dialect.ext}, in which src/three.spec.${dialect.ext} imports node:fs`,
+        ]);
+        // The four others ran next to each other. The control of `covered` did not hold there,
+        // so it ran again on its own, and that run is the one reported.
+        expect(said[2]).toBe(
+          'test-gates selfcheck: 1 of 4 negative control(s) did not hold cleanly next to others and run again on their own'
+        );
+      }
+    );
   });
 }
