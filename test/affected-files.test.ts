@@ -617,6 +617,30 @@ describe('comments', () => {
     expect(refusal(dir)).toBe('src/c.ts imports ./missing, which leads to no file');
   });
 
+  it.each([
+    [
+      'a regular expression with /* after a word that divides',
+      "const n = (s: string) => (s.length) /\\/*/.exec(s)?.length;\nexport const c = () => readFileSync('x');\n/* */\n",
+    ],
+    [
+      'a URL in the text of JSX',
+      'export const Link = () => <a href="/x">https://example.com</a>; export const c = () => readFileSync(\'x\');\n',
+    ],
+  ])('keeps what follows %s', (_name, source) => {
+    const dir = fixture({ 'src/c.ts': source });
+    expect(refusal(dir)).toBe(
+      'src/c.ts uses readFileSync, which can reach files that no import names'
+    );
+  });
+
+  it('still takes out a comment after a /', () => {
+    const dir = fixture({
+      'src/c.ts':
+        'export const c = (x: number) => x / 2; // readFileSync is not used\nexport const d = (x: number) => x / 2 /* nor readFileSync */;\nexport const e = (url: string) => url; // see https://example.com, readFileSync\n',
+    });
+    expect(inputs(dir).gates['src/c.ts']?.files).toEqual(['src/c.spec.ts', 'src/c.ts']);
+  });
+
   it('does not take a regular expression for the start of a comment before readFileSync', () => {
     const dir = fixture({
       'src/c.ts':

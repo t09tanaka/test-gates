@@ -962,49 +962,84 @@ function valuesOf(text: string, key: string): string[] {
  * The text without its comments. Strings, templates (also of several lines) and regular
  * expressions are read past, so that a glob, a URL or a pattern in one is not taken for the start
  * of a comment; a comment ends a line or at its closing mark. The lines of a comment are kept, so
- * that a line of the text is still the same line. Where a `/` may start a regular expression or
- * divide is not always told: it is then taken for a regular expression, which keeps the text.
+ * that a line of the text is still the same line. Only what is surely a comment is taken out:
+ * where a `/` may start a regular expression or divide is not always told, and a `/` that is
+ * closed on its line before a comment could start is then read as a regular expression. A `//`
+ * right after a scheme (`https://`, in the text of JSX) is kept.
  */
 function withoutComments(text: string): string {
-  let out = '';
+  const out: string[] = [];
+  // What a `/` follows, for mayStartPattern: the last character that is not a space, the word
+  // it ends (or ''), and whether a space came after it.
+  const before: Before = { last: '', word: '' };
+  let space = false;
+  const keep = (part: string): void => {
+    out.push(part);
+    for (const one of part) {
+      if (/\s/.test(one)) {
+        space = true;
+        continue;
+      }
+      const word = /[\w$]/.test(one);
+      before.word = !word ? '' : space || !/[\w$]/.test(before.last) ? one : before.word + one;
+      before.last = one;
+      space = false;
+    }
+  };
   for (let at = 0; at < text.length; at += 1) {
     const char = text[at] as string;
     const next = text[at + 1];
     if (char === "'" || char === '"' || char === '`') {
       const end = stringEnd(text, at);
-      out += text.slice(at, end + 1);
+      keep(text.slice(at, end + 1));
       at = end;
-    } else if (char === '/' && next === '/') {
+    } else if (char === '/' && next === '/' && !SCHEME.test(text.slice(Math.max(0, at - 40), at))) {
       const end = text.indexOf('\n', at);
       at = end === -1 ? text.length : end - 1;
     } else if (char === '/' && next === '*') {
       const end = text.indexOf('*/', at + 2);
       const stop = end === -1 ? text.length : end + 2;
       // A space keeps the words on both sides apart: `import/* c */type`.
-      out += ` ${text.slice(at, stop).replace(/[^\n]/g, '')}`;
+      keep(` ${text.slice(at, stop).replace(/[^\n]/g, '')}`);
       at = stop - 1;
-    } else if (char === '/' && mayStartPattern(out)) {
-      let end = at + 1;
-      for (let inClass = false; end < text.length && text[end] !== '\n'; end += 1) {
-        if (text[end] === '\\') {
-          end += 1;
-        } else if (text[end] === '[') {
-          inClass = true;
-        } else if (text[end] === ']') {
-          inClass = false;
-        } else if (text[end] === '/' && !inClass) {
-          break;
-        }
-      }
-      out += text.slice(at, end + 1);
+    } else if (char === '/' && next !== '/') {
+      const end = patternEnd(text, at, mayStartPattern(before));
+      keep(text.slice(at, end + 1));
       at = end;
     } else {
-      out += char;
+      keep(char);
     }
   }
-  return out;
+  return out.join('');
 }
 
+/** A scheme of a URL right before `//`: `https:`. */
+const SCHEME = /(?:^|[^\w$.+-])[A-Za-z][\w+.-]*:$/;
+
+/**
+ * Where a regular expression that may open at `at` closes: at its `/`, on the same line. One
+ * where a `/` may only divide is taken for a regular expression only when it closes before a
+ * comment could start (`a / b // c` divides). Otherwise the `/` stands alone: `at`.
+ */
+function patternEnd(text: string, at: number, pattern: boolean): number {
+  let inClass = false;
+  let end = at + 1;
+  for (; end < text.length && text[end] !== '\n'; end += 1) {
+    const char = text[end];
+    if (char === '\\') {
+      end += 1;
+    } else if (char === '[') {
+      inClass = true;
+    } else if (char === ']') {
+      inClass = false;
+    } else if (char === '/' && !inClass) {
+      const comment = text[end + 1] === '/' || text[end + 1] === '*';
+      return pattern || !comment ? end : at;
+    }
+  }
+  // Not closed on its line: a regular expression keeps the rest of the line, and its end.
+  return pattern ? end : at;
+}
 /** Where the string or template that opens at `at` closes: its quote, or the end of its line. */
 function stringEnd(text: string, at: number): number {
   const quote = text[at];
@@ -1058,20 +1093,18 @@ const BEFORE_PATTERN = new Set([
   'await',
 ]);
 
-/** Whether a `/` after this text may start a regular expression rather than divide. */
-function mayStartPattern(before: string): boolean {
-  let end = before.length;
-  while (end > 0 && /\s/.test(before[end - 1] as string)) {
-    end -= 1;
+/** What a `/` follows: the last character that is not a space, and the word it ends, or ''. */
+interface Before {
+  last: string;
+  word: string;
+}
+
+/** Whether a `/` after this may start a regular expression rather than divide. */
+function mayStartPattern(before: Before): boolean {
+  if (before.word !== '') {
+    return BEFORE_PATTERN.has(before.word);
   }
-  let start = end;
-  while (start > 0 && /[\w$]/.test(before[start - 1] as string)) {
-    start -= 1;
-  }
-  if (start < end) {
-    return BEFORE_PATTERN.has(before.slice(start, end));
-  }
-  return end === 0 || !')]'.includes(before[end - 1] as string);
+  return before.last === '' || !')]'.includes(before.last);
 }
 
 /** package.json, where Jest reads its config from when no other config file is there. */
