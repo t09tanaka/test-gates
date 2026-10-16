@@ -573,6 +573,24 @@ describe.each(['git', 'walk'] as const)(
           'a way up from the directory of the file with an unknown part after it',
           `export const kit = (name: string) => join(__dirname, '${up(2)}', name);\n`,
         ],
+        [
+          'a way up from the directory of the file whose result is added to',
+          `export const kit = (name: string) => join(resolve(__dirname, '${up(2)}'), name);\n`,
+        ],
+        [
+          'a way up from the directory of the file in a template that is added to',
+          'export const kit = (name: string) => `${join(__dirname, ' +
+            `'${up(2)}'` +
+            ')}/${name}`;\n',
+        ],
+        [
+          'a way up after a placeholder',
+          'export const kit = (name: string) => `${__dirname}/${name}/' + `${up(3)}` + '`;\n',
+        ],
+        [
+          'a relative path with a way up after a placeholder',
+          'export const kit = (name: string) => `' + `${up(1)}` + '/${name}/' + `${up(2)}` + '`;\n',
+        ],
       ])('looks at every file of the repository when a file holds %s', (_name, source) => {
         const root = monorepo({ 'fee-rules/src/paths.ts': source });
         mutation(sub(root));

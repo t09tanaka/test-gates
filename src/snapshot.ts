@@ -367,9 +367,13 @@ export function takeSnapshot(input: { dir: string; written: string[]; args: stri
       }
       const start = (match.index ?? 0) + match[0].indexOf(literals);
       taken.push([start, start + literals.length]);
-      // Anything but the closing parenthesis after them: the end of the path is not known.
+      // Anything but the closing parenthesis after them, or something added to what the call
+      // returns (`join(join(__dirname, '..'), name)`, `` `${join(__dirname, '..')}/x` ``,
+      // `+ '/x'`): the end of the path is not known.
+      const end = (match.index ?? 0) + match[0].length;
+      const open = match[3] === undefined || /^\s*[,+.}[]/.test(text.slice(end, end + 200));
       const reference = match[0].slice(0, match[0].length - (match[3]?.length ?? 0));
-      follow(path.posix.join(...segments), match[3] === undefined, true, file, reference);
+      follow(path.posix.join(...segments), open, true, file, reference);
     }
     for (const match of text.matchAll(UPWARD)) {
       const at = match.index ?? 0;
@@ -385,8 +389,12 @@ export function takeSnapshot(input: { dir: string; written: string[]; args: stri
       const fixed = open
         ? relative.slice(0, relative.lastIndexOf('/', relative.indexOf('${')) + 1)
         : relative;
-      if (here === null && !fixed.startsWith('../')) {
-        // `<rootDir>/../shared`, or a lone `..` handed to path.join: where it leads is not known.
+      if (
+        (here === null && !fixed.startsWith('../')) ||
+        (open && isUpward(relative.slice(relative.indexOf('${'))))
+      ) {
+        // `<rootDir>/../shared`, a lone `..` handed to path.join, or a way up after a
+        // placeholder (`${__dirname}/${name}/../..`): where it leads is not known.
         enqueue(listRoot, file);
       } else {
         follow(fixed, open, here !== null, file, literal);
