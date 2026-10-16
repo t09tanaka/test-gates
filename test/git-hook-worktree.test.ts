@@ -18,7 +18,7 @@ describe('gitEnvironment', () => {
   });
 });
 
-const outside = { ...process.env, CI: '' };
+const outside: NodeJS.ProcessEnv = { ...process.env, CI: '' };
 delete outside.GIT_DIR;
 delete outside.GIT_WORK_TREE;
 const git = (cwd: string, ...args: string[]) => {

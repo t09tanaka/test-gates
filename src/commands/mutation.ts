@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { UsageError } from '../core/args.js';
 import { ManifestError } from '../core/manifest.js';
 import { AffectedError, affectedInputs, runnerConfigs } from '../affected-files.js';
-import { type AffectedPlan, describePlan, planAffected } from '../core/affected.js';
+import { type AffectedPlan, describePlan, planAffected, timeoutRanges } from '../core/affected.js';
 import type { MutationReport, MutationVerdict } from '../core/mutation-result.js';
 import {
   type AffectedRecord,
@@ -251,24 +251,45 @@ function guardIncremental(
   const before = modifiedAt(incrementalFile);
 
   const rerun = plan !== null && 'rerun' in plan ? plan.rerun.map((entry) => entry.gate) : null;
-  const said =
-    !affected || options.force
-      ? []
-      : force !== null
-        ? describePlan({ full: force })
-        : plan !== null
-          ? describePlan(plan)
-          : [];
+  const everyGate =
+    force ??
+    (rerun !== null && rerun.length > 0 && rerun.length === manifest.gates.length
+      ? 'every gate is affected'
+      : null);
+  // Results that are taken over: never those of a mutant that timed out (see timeoutRanges).
+  let ranges: string[] = [];
+  if (everyGate === null && incremental !== null && !options.force) {
+    const kept =
+      rerun === null
+        ? manifest.gates.map((gate) => gate.path)
+        : manifest.gates.map((gate) => gate.path).filter((gate) => !rerun.includes(gate));
+    try {
+      ranges = timeoutRanges(
+        JSON.parse(fs.readFileSync(incrementalFile, 'utf8')) as Parameters<typeof timeoutRanges>[0],
+        kept
+      );
+    } catch {
+      ranges = [];
+    }
+  }
+  const subset = rerun !== null && rerun.length > 0 && everyGate === null ? rerun : [];
+  let said: string[] = [];
+  if (affected && !options.force) {
+    if (force !== null) {
+      said = describePlan({ full: force });
+    } else if (plan !== null) {
+      said = describePlan(plan, 5, ranges.length);
+    }
+  } else if (ranges.length > 0) {
+    said = [
+      `test-gates mutation: ${ranges.length} mutant(s) that timed out in the last run are run again, the other results are reused`,
+    ];
+  }
   return {
     // Every gate is run again: the same as a run of every mutant.
-    force:
-      force ??
-      (rerun !== null && rerun.length > 0 && rerun.length === manifest.gates.length
-        ? 'every gate is affected'
-        : null),
-    mutate:
-      rerun !== null && rerun.length > 0 && rerun.length < manifest.gates.length ? rerun : null,
-    said: affected ? said : [],
+    force: everyGate,
+    mutate: subset.length + ranges.length > 0 ? [...subset, ...ranges] : null,
+    said,
     record: (judged) => {
       // Only for an incremental file this run wrote. Stryker can end without writing one
       // (a dry run, no tests): what is on disk then still belongs to an earlier state.

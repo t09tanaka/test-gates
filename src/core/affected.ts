@@ -163,8 +163,48 @@ export function planAffected(input: {
   return { rerun, reused };
 }
 
+/** A result of the last run, as far as the ranges below need it. */
+interface LastResults {
+  files?: Record<
+    string,
+    {
+      mutants?: Array<{
+        status: string;
+        location: {
+          start: { line: number; column: number };
+          end: { line: number; column: number };
+        };
+      }>;
+    }
+  >;
+}
+
+/**
+ * The mutants of the given gates that timed out in the last run, as ranges for Stryker's
+ * `--mutate` (`file:line:column-line:column`; the start column counted from 0, the end column
+ * included). A timeout can come from a loaded machine, where the mutant would have survived:
+ * it is never taken over, also not in a gate whose other results are.
+ */
+export function timeoutRanges(last: LastResults, gates: string[]): string[] {
+  const ranges: string[] = [];
+  const files = last.files ?? {};
+  for (const gate of gates) {
+    const mutants = Object.hasOwn(files, gate) ? files[gate]?.mutants : undefined;
+    if (mutants === undefined) {
+      continue;
+    }
+    for (const mutant of mutants) {
+      if (mutant.status === 'Timeout') {
+        const { start, end } = mutant.location;
+        ranges.push(`${gate}:${start.line}:${start.column - 1}-${end.line}:${end.column}`);
+      }
+    }
+  }
+  return [...new Set(ranges)];
+}
+
 /** Lines that say what a run with `--affected` does: one, and one more per gate run again. */
-export function describePlan(plan: AffectedPlan, shown = 5): string[] {
+export function describePlan(plan: AffectedPlan, shown = 5, timeouts = 0): string[] {
   if ('full' in plan) {
     return [
       `test-gates mutation --affected: running every mutant again (--force), the results of the last run are not reused: ${plan.full}`,
@@ -183,6 +223,9 @@ export function describePlan(plan: AffectedPlan, shown = 5): string[] {
   }
   if (plan.rerun.length > shown) {
     lines.push(`  and ${plan.rerun.length - shown} more`);
+  }
+  if (timeouts > 0) {
+    lines.push(`  and ${timeouts} mutant(s) of reused gates that timed out in the last run`);
   }
   return lines;
 }

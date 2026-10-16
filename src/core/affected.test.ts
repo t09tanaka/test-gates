@@ -5,6 +5,7 @@ import {
   gateDependencies,
   kindOf,
   planAffected,
+  timeoutRanges,
 } from './affected';
 
 describe('kindOf', () => {
@@ -444,7 +445,56 @@ describe('planAffected', () => {
   });
 });
 
+describe('timeoutRanges', () => {
+  const at = (line: number, column: number, endLine: number, endColumn: number) => ({
+    start: { line, column },
+    end: { line: endLine, column: endColumn },
+  });
+  const last = {
+    files: {
+      'src/a.ts': {
+        mutants: [
+          { status: 'Timeout', location: at(3, 10, 5, 4) },
+          { status: 'Killed', location: at(1, 1, 1, 9) },
+          { status: 'Timeout', location: at(3, 10, 5, 4) },
+          { status: 'Survived', location: at(2, 1, 2, 9) },
+          { status: 'Timeout', location: at(7, 1, 7, 2) },
+        ],
+      },
+      'src/b.ts': { mutants: [{ status: 'Timeout', location: at(1, 5, 1, 6) }] },
+      'src/c.ts': {},
+      constructor: { mutants: [{ status: 'Timeout', location: at(1, 1, 1, 2) }] },
+    },
+  };
+
+  it('gives each timed-out mutant of the named gates once, as a range for --mutate', () => {
+    expect(timeoutRanges(last, ['src/a.ts', 'src/c.ts', 'src/gone.ts'])).toEqual([
+      'src/a.ts:3:9-5:4',
+      'src/a.ts:7:0-7:2',
+    ]);
+    expect(timeoutRanges(last, ['src/b.ts', 'src/a.ts'])).toEqual([
+      'src/b.ts:1:4-1:6',
+      'src/a.ts:3:9-5:4',
+      'src/a.ts:7:0-7:2',
+    ]);
+    expect(timeoutRanges(last, [])).toEqual([]);
+    expect(timeoutRanges({}, ['src/a.ts'])).toEqual([]);
+    expect(timeoutRanges({ files: {} }, ['toString'])).toEqual([]);
+    expect(timeoutRanges(last, ['constructor'])).toEqual(['constructor:1:0-1:2']);
+    // a gate the report holds no entry for
+    expect(timeoutRanges({ files: { 'src/a.ts': undefined as never } }, ['src/a.ts'])).toEqual([]);
+  });
+});
+
 describe('describePlan', () => {
+  it('says how many timed-out mutants of reused gates run again', () => {
+    expect(describePlan({ rerun: [], reused: ['src/a.ts'] }, 5, 2)).toEqual([
+      'test-gates mutation --affected: 1 of 1 gate(s) reused, 0 run again',
+      '  and 2 mutant(s) of reused gates that timed out in the last run',
+    ]);
+    expect(describePlan({ rerun: [], reused: ['src/a.ts'] }, 5, 1)).toHaveLength(2);
+  });
+
   it('says why every mutant is run', () => {
     expect(describePlan({ full: 'a reason' })).toEqual([
       'test-gates mutation --affected: running every mutant again (--force), the results of the last run are not reused: a reason',

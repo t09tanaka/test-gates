@@ -4,6 +4,7 @@ import { defineConfig } from 'vitest/config';
 // two minutes together and run with `npm run test:heavy`, which CI always does.
 export const HEAVY_TESTS = [
   'test/affected-reuse.test.ts',
+  'test/affected-timeouts.test.ts',
   'test/incremental-reuse.test.ts',
   'test/incremental-stale.test.ts',
   'test/reuse-guard.test.ts',
