@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { cleanup, project, testGates, write } from './helpers';
@@ -101,14 +102,44 @@ describe('test-gates doctor', () => {
     expect(result.status).toBe(1);
   });
 
-  it('changes nothing on disk', () => {
+  it('changes nothing on disk, also with the record of a run there', () => {
     const root = repository();
-    write(root, { 'fee-rules/reports/stryker-incremental.json': '{}' });
+    const written = {
+      'fee-rules/reports/stryker-incremental.json': '{}',
+      'fee-rules/reports/stryker-incremental.json.test-gates.json': '{"format":2}',
+      'fee-rules/reports/mutation/mutation.json': '{}',
+      'fee-rules/.stryker-tmp/x': 'x',
+    };
+    write(root, written);
     doctor(root);
-    const status = spawnSync('git', ['status', '--porcelain', '--ignored'], {
-      cwd: root,
-      encoding: 'utf8',
-    }).stdout;
-    expect(status).toBe('!! fee-rules/reports/\n');
+    for (const [file, content] of Object.entries(written)) {
+      expect(fs.readFileSync(path.join(root, file), 'utf8')).toBe(content);
+    }
+  });
+
+  it('takes no hook for a problem of the subproject when it runs another one, or only a judgement', () => {
+    const root = repository({
+      '.husky/pre-push':
+        'cd catalog-site && npx test-gates mutation\nnpx test-gates mutation-result --dir fee-rules\n',
+    });
+    const result = doctor(root);
+    expect(result.stdout).toContain(
+      'note: no git hook runs test-gates mutation for this subproject'
+    );
+    expect(result.stdout).toContain('test-gates doctor: OK');
+    expect(result.status).toBe(0);
+  });
+
+  it('names a Stryker config that sets force', () => {
+    const root = repository({
+      '.husky/pre-push': 'cd fee-rules && npx test-gates mutation --affected\n',
+      'fee-rules/stryker.gates.config.mjs':
+        "export default { incremental: true, force: true, testRunner: 'vitest', vitest: { configFile: 'vitest.gates.config.ts' } };\n",
+    });
+    write(root, { 'fee-rules/reports/stryker-incremental.json': '{}' });
+    const result = doctor(root);
+    expect(result.stdout).toContain('next run: every mutant, the Stryker config sets force');
+    expect(result.stdout).toContain('problem: the Stryker config sets force');
+    expect(result.status).toBe(1);
   });
 });

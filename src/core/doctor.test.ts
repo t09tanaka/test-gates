@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { diagnose, type DoctorFacts, formatFindings } from './doctor';
+import { diagnose, type DoctorFacts, formatFindings, hookUses } from './doctor';
 
 const healthy: DoctorFacts = {
   incremental: true,
+  forced: false,
   failure: null,
   widened: [],
   scope: { files: 12 },
@@ -20,6 +21,26 @@ describe('diagnose', () => {
         level: 'problem',
         text: 'Stryker does not run in incremental mode: every run is one of every mutant',
         fix: 'make the Stryker config with createStrykerGatesConfig, or set incremental: true',
+      },
+    ]);
+  });
+
+  it('names a Stryker config that sets force', () => {
+    expect(diagnose({ ...healthy, forced: true })).toEqual([
+      {
+        level: 'problem',
+        text: 'the Stryker config sets force: every run is one of every mutant',
+        fix: 'remove force from the Stryker config; pass -- --force where a full run is meant (CI)',
+      },
+    ]);
+  });
+
+  it('gives no fix for a listing that fails for another reason than a path outside', () => {
+    expect(diagnose({ ...healthy, failure: 'the Stryker config could not be loaded' })).toEqual([
+      {
+        level: 'problem',
+        text: 'the results of a run are never reused: the Stryker config could not be loaded',
+        fix: null,
       },
     ]);
   });
@@ -120,5 +141,73 @@ describe('formatFindings', () => {
       ],
       status: 1,
     });
+  });
+});
+
+describe('hookUses', () => {
+  const uses = (text: string, subproject = 'fee', script = 'test-gates mutation') =>
+    hookUses({ file: '.husky/pre-push', text, subproject, script });
+  const plain = { file: '.husky/pre-push', affected: false };
+  const given = { file: '.husky/pre-push', affected: true };
+
+  it('finds a run of the subproject the line names, and whether it is given --affected', () => {
+    expect(uses('cd fee && npx test-gates mutation\n')).toEqual([plain]);
+    expect(uses('npx test-gates mutation --dir ./fee/ --affected\n')).toEqual([given]);
+    expect(uses('npm run test:gates:mutation --prefix=fee\n')).toEqual([plain]);
+    expect(uses("npm -w 'fee' run test:gates:mutation\n", 'fee', 'x --affected')).toEqual([given]);
+    expect(uses('node dist/test-gates.js mutation --workspace fee\n')).toEqual([plain]);
+  });
+
+  it('leaves out a run of another subproject', () => {
+    expect(uses('cd tax && npx test-gates mutation\n')).toEqual([]);
+    expect(uses('npx test-gates mutation --dir tax\n')).toEqual([]);
+  });
+
+  it('takes the nearest cd before the line, and a variable or none for any subproject', () => {
+    expect(uses('cd fee\nnpm test\nnpm run test:gates:mutation\ncd ..\n')).toEqual([plain]);
+    expect(uses('cd tax\ncd fee\nnpm run test:gates:mutation\n')).toEqual([plain]);
+    expect(uses('cd fee\ncd tax\nnpm run test:gates:mutation\n')).toEqual([]);
+    expect(uses('(cd "$project" && npm run test:gates:mutation)\n')).toEqual([plain]);
+    expect(uses('cd ../fee && npx test-gates mutation\n')).toEqual([plain]);
+    expect(uses('npx test-gates mutation\n')).toEqual([plain]);
+  });
+
+  it('takes --affected of the npm script only for a run through it', () => {
+    expect(uses('npm run test:gates:mutation\n', 'fee', 'test-gates mutation --affected')).toEqual([
+      given,
+    ]);
+    expect(uses('npx test-gates mutation\n', 'fee', 'test-gates mutation --affected')).toEqual([
+      plain,
+    ]);
+  });
+
+  it('counts each run, and reads no comment and no other command', () => {
+    expect(
+      uses('npx test-gates mutation --affected\nnpx test-gates mutation # later: --affected\n')
+    ).toEqual([given, plain]);
+    expect(uses('# npx test-gates mutation\n  # npm run test:gates:mutation\n')).toEqual([]);
+    expect(uses('npx test-gates mutation-result\nnpm run test:gates:mutation-ci\n')).toEqual([]);
+    expect(uses('npm run test:gates:mutation:quick\nnpx test-gates mutations\n')).toEqual([]);
+    expect(uses('npx my-test-gates mutation\n')).toEqual([]);
+  });
+
+  it('reads the names as they are written: with more spaces, in quotes, in a directory below', () => {
+    expect(uses('npx test-gates  mutation\n')).toEqual([plain]);
+    expect(uses('npx test-gates mutation --dir  tax\n')).toEqual([]);
+    expect(uses("npx test-gates mutation --dir 'tax'\n")).toEqual([]);
+    expect(uses('cd  tax && npx test-gates mutation\n')).toEqual([]);
+    expect(uses('cd "tax" && npx test-gates mutation\n')).toEqual([]);
+    expect(uses('cd pkg/fee && npx test-gates mutation\n', 'pkg/fee')).toEqual([plain]);
+  });
+
+  it('looks for the cd only before the line, from the first line on', () => {
+    expect(uses('cd tax\nnpx test-gates mutation\n')).toEqual([]);
+    expect(uses('cd tax\nnpm test\nnpx test-gates mutation\n')).toEqual([]);
+    expect(uses('npx test-gates mutation\ncd tax\n')).toEqual([plain]);
+    expect(uses('cd fee # go there\nnpx test-gates mutation\n')).toEqual([plain]);
+  });
+
+  it('takes the top of the repository for a subproject there', () => {
+    expect(uses('npx test-gates mutation --dir .\n', '')).toEqual([plain]);
   });
 });

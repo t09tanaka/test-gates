@@ -15,6 +15,8 @@ export interface HookUse {
 export interface DoctorFacts {
   /** Stryker runs in incremental mode. */
   incremental: boolean;
+  /** The Stryker config, or its arguments, give --force. */
+  forced: boolean;
   /** Why the files the run depends on could not be listed, or null. */
   failure: string | null;
   /** The files and paths that made every file of the repository part of the comparison. */
@@ -46,11 +48,20 @@ export function diagnose(facts: DoctorFacts): Finding[] {
     });
     return findings;
   }
+  if (facts.forced) {
+    findings.push({
+      level: 'problem',
+      text: 'the Stryker config sets force: every run is one of every mutant',
+      fix: 'remove force from the Stryker config; pass -- --force where a full run is meant (CI)',
+    });
+  }
   if (facts.failure !== null) {
     findings.push({
       level: 'problem',
       text: `the results of a run are never reused: ${facts.failure}`,
-      fix: 'remove the path, or let it lead into the repository. A path that leads outside of it to nothing is compared as missing',
+      fix: facts.failure.includes('points outside')
+        ? 'remove the path, or let it lead into the repository. A path that leads outside of it to nothing is compared as missing'
+        : null,
     });
   }
   if (facts.widened.length > 0) {
@@ -102,4 +113,64 @@ export function formatFindings(findings: Finding[]): { lines: string[]; status: 
       : `test-gates doctor: ${problems} problem(s) that make runs full ones`
   );
   return { lines, status: problems === 0 ? 0 : 1 };
+}
+
+/** A run of `test-gates mutation`, also through the npm script, but not of `mutation-result`. */
+const RUNS_MUTATION =
+  /(?<![\w-])test-gates(?:\.js)?\s+mutation(?![\w-])|(?<![\w:-])test:gates:mutation(?![\w:-])/;
+const TARGET = /(?:--dir|--prefix|--workspace|-w)(?:=|\s+)(['"]?)([^\s'";&|)]+)\1/;
+const CD = /\bcd\s+(['"]?)([^\s'";&|)]+)\1/;
+
+/**
+ * The runs of `test-gates mutation` in the text of a hook that may be ones of `subproject`, and
+ * whether each is given `--affected`.
+ *
+ * A run is taken to be one of the subproject that the same line names (`--dir`, `--prefix`,
+ * `-w`, `cd`), else the nearest `cd` on a line before it. A name with a variable in it
+ * (`cd "$project"`), or none, may be any subproject. Comments (`#` at the start or after a space)
+ * are left out.
+ *
+ * @param subproject The subproject, relative to the top of the repository; `''` for the top.
+ * @param script The `test:gates:mutation` script of the subproject: a run through it is given
+ *   `--affected` when the script is.
+ */
+export function hookUses(input: {
+  file: string;
+  text: string;
+  subproject: string;
+  script: string;
+}): HookUse[] {
+  const lines = input.text.split('\n').map((line) => line.replace(/(?:^|\s)#.*/, ''));
+  const uses: HookUse[] = [];
+  lines.forEach((line, index) => {
+    if (!RUNS_MUTATION.test(line)) {
+      return;
+    }
+    const named = TARGET.exec(line) ?? CD.exec(line);
+    const target =
+      named?.[2] ??
+      lines
+        .slice(0, index)
+        .reverse()
+        .map((before) => CD.exec(before)?.[2])
+        .find((found) => found !== undefined);
+    const normalized = target
+      ?.split('/')
+      .filter((part) => part !== '.' && part !== '')
+      .join('/');
+    const ours =
+      normalized === undefined ||
+      normalized.includes('$') ||
+      normalized.includes('..') ||
+      normalized === input.subproject;
+    if (ours) {
+      uses.push({
+        file: input.file,
+        affected:
+          /--affected\b/.test(line) ||
+          (/test:gates:mutation\b/.test(line) && input.script.includes('--affected')),
+      });
+    }
+  });
+  return uses;
 }

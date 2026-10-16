@@ -2,15 +2,13 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { describePlan } from '../core/affected.js';
-import { diagnose, formatFindings, type HookUse } from '../core/doctor.js';
+import { diagnose, formatFindings, type HookUse, hookUses } from '../core/doctor.js';
 import { ManifestError } from '../core/manifest.js';
 import { readManifest } from '../load.js';
 import { gitEnvironment } from '../snapshot.js';
 import { findStrykerConfig } from './check.js';
 import { decideReuse } from './mutation.js';
 import type { Io } from './output.js';
-
-const RUNS_MUTATION = /test-gates(?:\.js)?\s+mutation\b|test:gates:mutation\b/;
 
 function read(file: string): string | null {
   try {
@@ -20,14 +18,19 @@ function read(file: string): string | null {
   }
 }
 
-/** The hooks of the repository that run a mutation run, and whether they pass --affected. */
-function hooksOf(root: string, dir: string): HookUse[] {
-  const result = spawnSync('git', ['rev-parse', '--path-format=absolute', '--git-path', 'hooks'], {
+function git(dir: string, args: string[]): string | null {
+  const result = spawnSync('git', args, {
     cwd: dir,
     env: gitEnvironment(process.env),
     encoding: 'utf8',
   });
-  const hooksDir = result.status === 0 ? result.stdout.trim() : null;
+  return result.status === 0 ? result.stdout.trim() : null;
+}
+
+/** The runs of a mutation run of the subproject in the hooks of the repository (see hookUses). */
+function hooksOf(dir: string): HookUse[] {
+  const root = git(dir, ['rev-parse', '--show-toplevel']) ?? dir;
+  const hooksDir = git(dir, ['rev-parse', '--path-format=absolute', '--git-path', 'hooks']);
   const candidates = [
     ...['pre-push', 'pre-commit'].map((name) => path.join(root, '.husky', name)),
     ...(hooksDir === null
@@ -44,11 +47,12 @@ function hooksOf(root: string, dir: string): HookUse[] {
   } catch {
     // no scripts to look at
   }
+  const subproject = path.relative(fs.realpathSync(root), dir).split(path.sep).join('/');
   const seen = new Set<string>();
-  const hooks: HookUse[] = [];
+  const uses: HookUse[] = [];
   for (const file of candidates) {
     const text = read(file);
-    if (text === null || !RUNS_MUTATION.test(text)) {
+    if (text === null) {
       continue;
     }
     const real = fs.realpathSync(file);
@@ -56,14 +60,10 @@ function hooksOf(root: string, dir: string): HookUse[] {
       continue;
     }
     seen.add(real);
-    hooks.push({
-      file: path.relative(root, file).split(path.sep).join('/'),
-      affected:
-        text.includes('--affected') ||
-        (/test:gates:mutation\b/.test(text) && script.includes('--affected')),
-    });
+    const shown = path.relative(root, file).split(path.sep).join('/');
+    uses.push(...hookUses({ file: shown, text, subproject, script }));
   }
-  return hooks;
+  return uses;
 }
 
 /**
@@ -95,9 +95,10 @@ export function runDoctor(dir: string, io: Io): number {
     io.out(`  compared: ${keys.length} files, ${outside} outside the subproject${followed}`);
   }
   if (plain.incremental) {
-    const reuse =
-      plain.force ??
-      (plain.incrementalHash === null ? 'there is no incremental file of an earlier run' : null);
+    const reuse = plain.forced
+      ? 'the Stryker config sets force'
+      : (plain.force ??
+        (plain.incrementalHash === null ? 'there is no incremental file of an earlier run' : null));
     io.out(
       reuse === null
         ? '  next run: reuses the results of the last run'
@@ -112,18 +113,18 @@ export function runDoctor(dir: string, io: Io): number {
       );
       rest.forEach((line) => io.out(`  ${line}`));
     } else {
-      io.out(
-        `  next run with --affected: every mutant, ${affected.force ?? 'there is nothing to reuse'}`
-      );
+      const why = affected.forced ? 'the Stryker config sets force' : affected.force;
+      io.out(`  next run with --affected: every mutant, ${why ?? 'there is nothing to reuse'}`);
     }
   }
   const { lines, status } = formatFindings(
     diagnose({
       incremental: plain.incremental,
+      forced: plain.forced,
       failure: plain.failure,
       widened: plain.widened,
       scope: plain.scope,
-      hooks: hooksOf(plain.root, fs.realpathSync(manifest.dir)),
+      hooks: hooksOf(fs.realpathSync(manifest.dir)),
     })
   );
   lines.forEach((line) => io.out(line));
