@@ -386,6 +386,18 @@ describe('scanSpecSource: mocking the module under test', () => {
     ]);
   });
 
+  it('does not take a module above the root for the gate', () => {
+    expect(
+      spec("\nvi.mock('../../../src/common/shipping-fee');", defaults, GATE, 'src/common/a.spec.ts')
+    ).toEqual([]);
+    expect(
+      spec(
+        "\nvi.mock('@up/src/common/shipping-fee');",
+        resolveSettings({ importAliases: [{ prefix: '@up/', target: '../' }] })
+      )
+    ).toEqual([]);
+  });
+
   it('resolves a spec at the project root', () => {
     expect(
       spec("\njest.mock('./shipping-fee');", defaults, 'shipping-fee.ts', 'shipping-fee.spec.ts')
@@ -529,6 +541,29 @@ describe('scanGateSource: allowlist mode', () => {
         file: GATE,
         line: 2,
         message: 'runtime import of "@/parcels/parcel.service" (NestJS class file)',
+      },
+    ]);
+  });
+
+  it('judges an import above the root by the path it points at', () => {
+    const settings = allowlist({
+      impurePaths: {
+        add: [
+          { pattern: '\\.service\\.ts$', reason: 'NestJS class file' },
+          { pattern: '^shared/', reason: 'shared services' },
+        ],
+      },
+    });
+    // From src/common/, `../../../shared/x` is a sibling of the project, not its shared/.
+    expect(gate("import { x } from '../../../shared/x';", settings)).toEqual([]);
+    expect(gate("import { x } from '../../shared/x';", settings)).toEqual([
+      { file: GATE, line: 1, message: 'runtime import of "../../shared/x" (shared services)' },
+    ]);
+    expect(gate("import { y } from '../../../shared/y.service';", settings)).toEqual([
+      {
+        file: GATE,
+        line: 1,
+        message: 'runtime import of "../../../shared/y.service" (NestJS class file)',
       },
     ]);
   });

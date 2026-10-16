@@ -63,6 +63,12 @@ describe('resolveSpecifier', () => {
     ['./shipping-fee', 'a.ts', 'shipping-fee'],
     ['./Card.vue', 'src/a.ts', 'src/Card.vue'],
     ['./data.json', 'src/a.ts', 'src/data.json'],
+    // Above the root the `..` stays: a sibling of the subproject is not a directory inside it.
+    ['../../shared/x', 'src/a.ts', '../shared/x'],
+    ['./../../shared/./x', 'src/a.ts', '../shared/x'],
+    ['../../x', 'a.ts', '../../x'],
+    ['../../..', 'src/a.ts', '../..'],
+    ['../x/../y', 'a.ts', '../y'],
   ])('resolves %s from %s to %s', (specifier, fromFile, expected) => {
     expect(resolveSpecifier(specifier, fromFile, [])).toBe(expected);
   });
@@ -80,6 +86,12 @@ describe('resolveSpecifier', () => {
         { prefix: '~', target: 'never/' },
       ])
     ).toBe('x');
+  });
+
+  it('keeps the `..` of an alias whose target is above the root', () => {
+    const outside = [{ prefix: '@shared/', target: '../shared/' }];
+    expect(resolveSpecifier('@shared/x', 'src/a.ts', outside)).toBe('../shared/x');
+    expect(resolveSpecifier('@shared/../../x', 'src/a.ts', outside)).toBe('../../x');
   });
 
   it('returns null for a package, with or without aliases', () => {
