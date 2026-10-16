@@ -5,6 +5,7 @@ import { gateDependencies, kindOf } from './core/affected.js';
 import { isProjectImport } from './core/import-policy.js';
 import { findUncheckableImports, parseImports } from './core/imports.js';
 import { installed, QUOTED, resolveFile, RUNNER_LOAD, SCRIPT } from './commands/loaded-files.js';
+import type { ImportAlias } from './core/types.js';
 import type { LoadedManifest } from './load.js';
 
 /** Thrown when what a gate depends on cannot be told from the text of the files. */
@@ -29,7 +30,7 @@ const FILE_MODULES = new Set([
   'globby',
 ]);
 const bare = (specifier: string): string => specifier.replace(/^node:/, '');
-/** Modules whose imports are in a block of their own: the change of what they import is not seen. */
+/** Components, whose imports are read like those of a script. */
 const COMPONENT = /\.(?:vue|svelte|astro|mdx)$/;
 
 /**
@@ -55,9 +56,10 @@ export function linkedPackage(specifier: string, from: string): string | null {
 
 const toPosix = (file: string): string => file.split(path.sep).join('/');
 
+/** The path as it is on disk, also in the case of its letters (what git and a listing show). */
 function realpath(file: string): string {
   try {
-    return fs.realpathSync(file);
+    return fs.realpathSync.native(file);
   } catch {
     return file;
   }
@@ -99,11 +101,116 @@ export function runnerConfigs(
   return { files: files.filter((file) => fs.existsSync(file)).map(realpath) };
 }
 
-interface Edges {
+export interface Edges {
   /** Project files the file loads. */
   loads: string[];
   /** Why what the file loads cannot be told, or null. */
   unknown: string | null;
+  /** Whether the file loads modules that are not followed: a path not written out, or a linked package. */
+  computed: boolean;
+  /** Imports that are neither a file nor an installed package: aliases this tool is not told of. */
+  unnamed: string[];
+}
+
+/**
+ * What a file loads, as far as its text shows: its imports, paths it hands to the runner as text
+ * (`vi.mock('./rates')`), and its snapshot file.
+ *
+ * @param context.dir The subproject, the start of the paths of aliases.
+ * @param context.cache What is known of each file already.
+ */
+export function fileEdges(
+  file: string,
+  context: { dir: string; aliases: ImportAlias[]; cache: Map<string, Edges> }
+): Edges {
+  const { dir, aliases, cache } = context;
+  const known = cache.get(file);
+  if (known !== undefined) {
+    return known;
+  }
+  const shown = (one: string): string => toPosix(path.relative(dir, one));
+  const target = (specifier: string, from: string): string | null => {
+    if (specifier.startsWith('.')) {
+      return resolveFile(path.resolve(path.dirname(from), specifier));
+    }
+    const alias = aliases.find((candidate) => specifier.startsWith(candidate.prefix));
+    return alias === undefined
+      ? null
+      : resolveFile(path.resolve(dir, alias.target + specifier.slice(alias.prefix.length)));
+  };
+  const found: Edges = { loads: [], unknown: null, computed: false, unnamed: [] };
+  cache.set(file, found);
+  const snapshotFile = path.join(
+    path.dirname(file),
+    '__snapshots__',
+    `${path.basename(file)}.snap`
+  );
+  if (fs.existsSync(snapshotFile)) {
+    found.loads.push(realpath(snapshotFile));
+  }
+  if (!SCRIPT.test(file) && !COMPONENT.test(file)) {
+    return found; // data: it loads nothing
+  }
+  // A component imports in its scripts (or the frontmatter of Astro): read as one text. What its
+  // template uses without an import (a component registered by a plugin) is not seen, so that
+  // --affected runs every mutant for it.
+  const source = fs.readFileSync(file, 'utf8');
+  if (COMPONENT.test(file)) {
+    found.unknown = `${shown(file)} is a component, which can use others that it does not import`;
+  }
+  const uncheckable = findUncheckableImports(source)[0];
+  const runtime = RUNTIME_PATHS.exec(source);
+  if (uncheckable !== undefined) {
+    found.unknown = `${shown(file)}:${uncheckable} imports a module whose path is not written out`;
+    found.computed = true;
+  } else if (runtime !== null) {
+    found.unknown = `${shown(file)} uses ${runtime[0]}, which can reach files that no import names`;
+  }
+  const specifiers = new Set([
+    ...parseImports(source).map((ref) => ref.module),
+    ...[...source.matchAll(RUNNER_LOAD)].map((match) => match[2] as string),
+  ]);
+  for (const specifier of specifiers) {
+    if (path.isAbsolute(specifier) || specifier.startsWith('file:')) {
+      const resolved = resolveFile(
+        specifier.startsWith('file:') ? new URL(specifier).pathname : specifier
+      );
+      if (resolved === null) {
+        found.unknown ??= `${shown(file)} imports ${specifier}, which leads to no file`;
+      } else {
+        found.loads.push(realpath(resolved));
+      }
+    } else if (isProjectImport(specifier, aliases)) {
+      const resolved = target(specifier, file);
+      if (resolved === null) {
+        found.unknown ??= `${shown(file)} imports ${specifier}, which leads to no file`;
+      } else {
+        found.loads.push(realpath(resolved));
+      }
+    } else if (FILE_MODULES.has(bare(specifier))) {
+      found.unknown ??= `${shown(file)} imports ${specifier}, which can reach files that no import names`;
+    } else if (!specifier.startsWith('node:') && !builtinModules.includes(specifier)) {
+      if (!installed(specifier, file)) {
+        found.unknown ??= `${shown(file)} imports ${specifier}, which is neither a file nor an installed package (name an alias in settings.importAliases)`;
+        found.unnamed.push(specifier);
+      } else if (linkedPackage(specifier, file) !== null) {
+        // A package of the repository, linked into node_modules: its files are not followed.
+        found.unknown ??= `${shown(file)} imports ${specifier}, a package of the repository linked into node_modules`;
+        found.computed = true;
+      }
+    }
+  }
+  // A path given to the runner as text: vi.mock('./rates', …).
+  for (const match of source.matchAll(QUOTED)) {
+    const text = match[2] as string;
+    if (text.startsWith('.') && !specifiers.has(text)) {
+      const resolved = resolveFile(path.resolve(path.dirname(file), text));
+      if (resolved !== null) {
+        found.loads.push(realpath(resolved));
+      }
+    }
+  }
+  return found;
 }
 
 /**
@@ -148,93 +255,8 @@ export function affectedInputs(
     return toPosix(relative);
   };
   const shown = (file: string): string => toPosix(path.relative(dir, file));
-  const target = (specifier: string, from: string): string | null => {
-    if (specifier.startsWith('.')) {
-      return resolveFile(path.resolve(path.dirname(from), specifier));
-    }
-    const alias = aliases.find((candidate) => specifier.startsWith(candidate.prefix));
-    return alias === undefined
-      ? null
-      : resolveFile(path.resolve(dir, alias.target + specifier.slice(alias.prefix.length)));
-  };
-
   const edges = new Map<string, Edges>();
-  /** What `file` loads; `strict`: whether a way of loading that the text does not show counts. */
-  const edgesOf = (file: string): Edges => {
-    const known = edges.get(file);
-    if (known !== undefined) {
-      return known;
-    }
-    const found: Edges = { loads: [], unknown: null };
-    edges.set(file, found);
-    const snapshotFile = path.join(
-      path.dirname(file),
-      '__snapshots__',
-      `${path.basename(file)}.snap`
-    );
-    if (fs.existsSync(snapshotFile)) {
-      found.loads.push(realpath(snapshotFile));
-    }
-    if (COMPONENT.test(file)) {
-      // A component imports in a block of its own, which is not read here.
-      found.unknown = `${shown(file)} is a component whose imports are not followed`;
-      return found;
-    }
-    if (!SCRIPT.test(file)) {
-      return found; // data: it loads nothing
-    }
-    const source = fs.readFileSync(file, 'utf8');
-    const uncheckable = findUncheckableImports(source)[0];
-    const runtime = RUNTIME_PATHS.exec(source);
-    if (uncheckable !== undefined) {
-      found.unknown = `${shown(file)}:${uncheckable} imports a module whose path is not written out`;
-    } else if (runtime !== null) {
-      found.unknown = `${shown(file)} uses ${runtime[0]}, which can reach files that no import names`;
-    }
-    const specifiers = new Set([
-      ...parseImports(source).map((ref) => ref.module),
-      ...[...source.matchAll(RUNNER_LOAD)].map((match) => match[2] as string),
-    ]);
-    for (const specifier of specifiers) {
-      if (path.isAbsolute(specifier) || specifier.startsWith('file:')) {
-        const resolved = resolveFile(
-          specifier.startsWith('file:') ? new URL(specifier).pathname : specifier
-        );
-        if (resolved === null) {
-          found.unknown ??= `${shown(file)} imports ${specifier}, which leads to no file`;
-        } else {
-          found.loads.push(realpath(resolved));
-        }
-      } else if (isProjectImport(specifier, aliases)) {
-        const resolved = target(specifier, file);
-        if (resolved === null) {
-          found.unknown ??= `${shown(file)} imports ${specifier}, which leads to no file`;
-        } else {
-          found.loads.push(realpath(resolved));
-        }
-      } else if (FILE_MODULES.has(bare(specifier))) {
-        found.unknown ??= `${shown(file)} imports ${specifier}, which can reach files that no import names`;
-      } else if (!specifier.startsWith('node:') && !builtinModules.includes(specifier)) {
-        if (!installed(specifier, file)) {
-          found.unknown ??= `${shown(file)} imports ${specifier}, which is neither a file nor an installed package (name an alias in settings.importAliases)`;
-        } else if (linkedPackage(specifier, file) !== null) {
-          // A package of the repository, linked into node_modules: its files are not followed.
-          found.unknown ??= `${shown(file)} imports ${specifier}, a package of the repository linked into node_modules`;
-        }
-      }
-    }
-    // A path given to the runner as text: vi.mock('./rates', …).
-    for (const match of source.matchAll(QUOTED)) {
-      const text = match[2] as string;
-      if (text.startsWith('.') && !specifiers.has(text)) {
-        const resolved = resolveFile(path.resolve(path.dirname(file), text));
-        if (resolved !== null) {
-          found.loads.push(realpath(resolved));
-        }
-      }
-    }
-    return found;
-  };
+  const edgesOf = (file: string): Edges => fileEdges(file, { dir, aliases, cache: edges });
   /** The file and what it loads, directly or not. */
   const closure = (start: string, strict: boolean): string[] => {
     const seen = new Set([start]);
@@ -365,4 +387,263 @@ export function affectedInputs(
     };
   }
   return { subproject, config: keysOf([...config]).sort(), gates };
+}
+
+/** A runner config made with the helpers of this tool. */
+const OWN = /@t09tanaka\/test-gates\/(?:jest|vitest)\b/;
+/** Options that make a runner config of the helpers run more than the specs of the gates. */
+const PROJECTS = /\b(?:projects|workspace)\b/;
+const HELPERS = ['createJestGatesConfig', 'createVitestGatesConfig'];
+
+/**
+ * Whether what a runner config exports is what a helper returns: `export default helper(…)`,
+ * `module.exports = helper(…)`, also inside `defineConfig(…)`, by another name it is imported
+ * under, or through a variable that is exported as it is.
+ */
+function isHelperResult(text: string): boolean {
+  const names = new Set(HELPERS);
+  for (const match of text.matchAll(
+    /\b(?:createJestGatesConfig|createVitestGatesConfig)\s*(?::|\bas\b)\s*([\w$]+)/g
+  )) {
+    names.add(match[1] as string);
+  }
+  const escape = (name: string): string => name.replace(/\$/g, '\\$');
+  const call = `(?:defineConfig\\s*\\(\\s*)?(?:${[...names].map(escape).join('|')})\\s*\\(`;
+  const exported = '(?:export\\s+default|module\\.exports\\s*=)\\s*';
+  // What is exported is reached again after it is set: `module.exports.testMatch = …`.
+  const reached = (name: string): boolean =>
+    new RegExp(`\\b${escape(name)}\\s*(?:\\.|\\[)`).test(text);
+  if (new RegExp(`${exported}${call}`).test(text)) {
+    return (
+      !reached('module.exports') &&
+      !/\bexports\s*(?:\.|\[)/.test(text.replace(/\bmodule\.exports\s*=/g, ''))
+    );
+  }
+  const variable = new RegExp(`\\b(?:const|let|var)\\s+([\\w$]+)\\s*=\\s*${call}`).exec(text);
+  if (variable === null) {
+    return false;
+  }
+  // The variable is named twice and no more: where it is set, and where it is exported. Any other
+  // use (`Object.assign(config, …)`, `config = mergeConfig(config, …)`) may change it.
+  const name = escape(variable[1] as string);
+  const uses = text.match(new RegExp(`(?<![\\w$.])${name}(?![\\w$])`, 'g')) ?? [];
+  return uses.length === 2 && new RegExp(`${exported}${name}\\s*(?:;|$)`, 'm').test(text);
+}
+
+/**
+ * Files the tools of a run read by their names, at the top of the subproject. Not package.json:
+ * with a runner config of the helpers, what it holds for the runner is not read, and its scripts
+ * name paths that the run does not use.
+ */
+const READ_BY_NAME = [
+  /^test-gates\.json$/,
+  /^[jt]sconfig(?:\..+)?\.json$/,
+  /^babel\.config\.[cm]?[jt]s(?:on)?$/,
+  /^\.babelrc(?:\.[cm]?js(?:on)?)?$/,
+  /^\.swcrc$/,
+];
+
+/**
+ * The files of the subproject that a mutation run loads, as far as their text shows: the
+ * configs, the gates and their specs, what tools read by name, and everything those load. The
+ * snapshot follows the paths in these files only (see snapshot.ts); the other files of the
+ * subproject are compared, but cannot point the run anywhere.
+ *
+ * An import of an alias that settings.importAliases does not name (one a runner config maps)
+ * leads to every file of the subproject whose path ends as the import does: `@shared/money/fee`
+ * to `src/money/fee.ts`, `lib/money/fee/index.ts`. Where none does, it leads out of the
+ * subproject, to a place that the config that maps it names.
+ *
+ * @param configs The Stryker config and the config of the test runner.
+ * @param listed The files of the subproject, as absolute paths.
+ * @returns null when the specs the run starts are not known, or when a file loads a module whose
+ *   path is not written out: then every file is followed.
+ */
+export function loadedScope(
+  manifest: LoadedManifest,
+  configs: RunConfigs,
+  listed: string[]
+): Set<string> | null {
+  const dir = realpath(manifest.dir);
+  const cache = new Map<string, Edges>();
+  const context = { dir, aliases: manifest.settings.importAliases, cache };
+  // Only a config that is what a helper of this tool returns runs the specs of the gates and no
+  // others: the helper sets them after the options it is given. Not one that changes what the
+  // helper returns (merged with another config, spread with more after it), and not one given
+  // projects of its own, which the helper passes on, also from a file it is put together from.
+  const runner = configs.files.slice(1);
+  const texts = runner.map((file) => withoutComments(fs.readFileSync(file, 'utf8')));
+  if (runner.length === 0 || !texts.every((text) => OWN.test(text) && isHelperResult(text))) {
+    return null;
+  }
+  const parts = new Set(runner.map(realpath));
+  for (const file of [...parts]) {
+    if (SCRIPT.test(file)) {
+      fileEdges(file, context).loads.forEach((loaded) => parts.add(loaded));
+    }
+  }
+  if ([...parts].some((file) => PROJECTS.test(withoutComments(fs.readFileSync(file, 'utf8'))))) {
+    return null;
+  }
+  const named = fs
+    .readdirSync(dir)
+    .filter((name) => READ_BY_NAME.some((pattern) => pattern.test(name)))
+    .map((name) => path.join(dir, name));
+  const mocks = path.join(dir, '__mocks__');
+  const seeds = [
+    ...configs.files,
+    ...named,
+    ...manifest.gates
+      .flatMap((gate) => [gate.path, ...gate.existingSpecs])
+      .map((file) => path.join(dir, file)),
+    ...listed.filter((file) => file.startsWith(`${mocks}${path.sep}`)),
+  ]
+    .filter((file) => fs.existsSync(file))
+    .map(realpath);
+  // Files whose text names further files: the configs, those read by name, and what they name.
+  const naming = new Set(
+    [...configs.files, ...named].filter((file) => fs.existsSync(file)).map(realpath)
+  );
+  const seen = new Set(seeds);
+  const queue = [...seeds];
+  const add = (file: string): void => {
+    const real = realpath(file);
+    if (!seen.has(real)) {
+      seen.add(real);
+      queue.push(real);
+    }
+  };
+  for (let file = queue.shift(); file !== undefined; file = queue.shift()) {
+    if (fs.statSync(file).isDirectory()) {
+      continue;
+    }
+    const edges = fileEdges(file, context);
+    if (edges.computed) {
+      return null;
+    }
+    edges.loads.forEach(add);
+    for (const specifier of edges.unnamed) {
+      endingAs(specifier, listed).forEach(add);
+    }
+    // The mock that `jest.mock('./rates')` takes in place of the file.
+    const mock = path.join(path.dirname(file), '__mocks__', path.basename(file));
+    if (fs.existsSync(mock)) {
+      add(mock);
+    }
+    // What a config names as text: a setup file, an environment, `<rootDir>/test/setup.ts`.
+    if (naming.has(file) || (SCRIPT.test(file) && path.dirname(file) === dir)) {
+      for (const named of namedIn(file)) {
+        const text = named.replace(/^<rootDir>\//, '');
+        const found =
+          resolveFile(path.resolve(path.dirname(file), text), false) ??
+          resolveFile(path.resolve(dir, text), false);
+        if (found !== null && !text.includes('*')) {
+          // `"extends": "./config/tsconfig.shared.json"` names a file that names others.
+          if (!SCRIPT.test(found)) {
+            naming.add(realpath(found));
+          }
+          add(found);
+        }
+      }
+    }
+  }
+  return seen;
+}
+
+/**
+ * The files whose path ends as the import after its first part does, both without their
+ * extensions (`@shared/fee.js` and `src/fee.ts`). An import of one part (`@helper`, `#config`)
+ * leads to the files of that name.
+ */
+function endingAs(specifier: string, files: string[]): string[] {
+  const parts = specifier.split('/');
+  const rest = (
+    parts.length > 1 ? parts.slice(1).join('/') : specifier.replace(/^[@#~$]+/, '')
+  ).replace(/\.[cm]?[jt]sx?$/, '');
+  if (rest === '') {
+    return [];
+  }
+  return files.filter((file) => {
+    const bare = toPosix(file).replace(/\.[^./]+$/, '');
+    return [bare, bare.replace(/\/index$/, '')].some((one) => one.endsWith(`/${rest}`));
+  });
+}
+
+/**
+ * The paths a config names as text. In a script, every string. In data (`tsconfig.json`, a
+ * `.babelrc`), only what the tools of a run take from it: what it extends, and the plugins and
+ * presets it names. Its `files`, `include` and `exclude` are inputs of the compiler, not of a run.
+ */
+function namedIn(file: string): string[] {
+  const text = fs.readFileSync(file, 'utf8');
+  if (SCRIPT.test(file)) {
+    return [...text.matchAll(QUOTED)].map((match) => match[2] as string);
+  }
+  return ['extends', 'plugins', 'presets'].flatMap((key) => valuesOf(text, key));
+}
+
+/**
+ * The strings of the value of `"key":` in JSON (also with comments, as tsconfig.json has them): a
+ * string, or every string in an array that follows it. Read from the text, so that a file JSON
+ * cannot parse is read as well.
+ */
+function valuesOf(text: string, key: string): string[] {
+  const found: string[] = [];
+  for (const match of text.matchAll(new RegExp(`"${key}"\\s*:\\s*`, 'g'))) {
+    let at = (match.index ?? 0) + match[0].length;
+    if (text[at] === '"') {
+      const end = text.indexOf('"', at + 1);
+      found.push(text.slice(at + 1, end === -1 ? undefined : end));
+      continue;
+    }
+    if (text[at] !== '[') {
+      continue;
+    }
+    // To the bracket that closes the array, past the strings in it.
+    let depth = 0;
+    for (; at < text.length; at += 1) {
+      const char = text[at];
+      if (char === '"') {
+        const end = text.indexOf('"', at + 1);
+        found.push(text.slice(at + 1, end === -1 ? undefined : end));
+        at = end === -1 ? text.length : end;
+      } else if (char === '[') {
+        depth += 1;
+      } else if (char === ']') {
+        depth -= 1;
+        if (depth === 0) {
+          break;
+        }
+      }
+    }
+  }
+  return found;
+}
+
+/**
+ * The text without its comments. Strings are read past, so that a glob or a URL in
+ * one is not taken for the start of a comment; a comment ends a line or at its closing mark.
+ */
+function withoutComments(text: string): string {
+  let out = '';
+  for (let at = 0; at < text.length; at += 1) {
+    const char = text[at] as string;
+    if (char === "'" || char === '"' || char === '`') {
+      let end = at + 1;
+      while (end < text.length && text[end] !== char && text[end] !== '\n') {
+        end += text[end] === '\\' ? 2 : 1;
+      }
+      out += text.slice(at, end + 1);
+      at = end;
+    } else if (char === '/' && text[at + 1] === '/') {
+      const end = text.indexOf('\n', at);
+      at = end === -1 ? text.length : end - 1;
+    } else if (char === '/' && text[at + 1] === '*') {
+      const end = text.indexOf('*/', at + 2);
+      at = end === -1 ? text.length : end + 1;
+    } else {
+      out += char;
+    }
+  }
+  return out;
 }

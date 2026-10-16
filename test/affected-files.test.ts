@@ -275,13 +275,30 @@ describe('affectedInputs', () => {
     );
   });
 
-  it('refuses a component a spec loads, whose imports are not followed', () => {
-    const dir = fixture({
-      'src/a.spec.ts': `${H}import { a } from './a';\nimport Widget from './Widget.vue';\nit('a', () => { expect(a(1) && Widget).toBeTruthy(); });\n`,
-      'src/Widget.vue': "<script setup>\nimport { round } from './round';\n</script>\n",
-    });
-    expect(refusal(dir)).toBe('src/Widget.vue is a component whose imports are not followed');
-  });
+  it.each([
+    [
+      'Vue',
+      'src/Widget.vue',
+      '<template><p /></template>\n<script setup lang="ts">\nimport { format } from \'./format\';\n</script>\n',
+    ],
+    [
+      'Astro',
+      'src/Widget.astro',
+      "---\nimport { format } from './format';\n---\n<p>{format(1)}</p>\n",
+    ],
+  ])(
+    'refuses a %s component a spec loads: it can use others it does not import',
+    (_name, file, source) => {
+      const dir = fixture({
+        'src/a.spec.ts': `${H}import { a } from './a';\nimport Widget from './${file.slice(4)}';\nit('a', () => { expect(a(1) && Widget).toBeTruthy(); });\n`,
+        [file]: source,
+        'src/format.ts': 'export const format = (x: number) => String(x);\n',
+      });
+      expect(refusal(dir)).toBe(
+        `${file} is a component, which can use others that it does not import`
+      );
+    }
+  );
 
   it('refuses a package of the repository that is linked into node_modules', () => {
     const dir = fixture({

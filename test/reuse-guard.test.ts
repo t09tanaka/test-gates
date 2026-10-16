@@ -600,6 +600,34 @@ describe.each(['git', 'walk'] as const)(
         expect(mutation(sub(root))).toEqual(REUSED);
       });
 
+      it('follows no path in a file the run does not load, when the runner config is made by this tool', () => {
+        const root = monorepo({
+          'fee-rules/stryker.gates.config.mjs':
+            "export default { incremental: true, testRunner: 'vitest', vitest: { configFile: 'vitest.gates.config.ts' } };\n",
+          'fee-rules/vitest.gates.config.ts':
+            "import { createVitestGatesConfig } from '@t09tanaka/test-gates/vitest';\nexport default createVitestGatesConfig();\n",
+          'fee-rules/eslint.config.js': `export default { patterns: ['${up(1)}/'] };\n`,
+          // A path for the sandbox of Stryker: from the subproject it leads above the repository.
+          'fee-rules/jest.paths.cjs': `module.exports = require('path').resolve(__dirname, '${up(2)}/kit');\n`,
+        });
+        mutation(sub(root));
+        write(root, { 'catalog-site/src/listing.ts': 'export const listing = 1;\n' });
+        expect(mutation(sub(root))).toEqual(REUSED);
+        write(root, { 'fee-rules/eslint.config.js': 'export default {};\n' });
+        expect(mutation(sub(root))).toEqual(forcedBy(`${CHANGED}fee-rules/eslint.config.js`));
+        // Loaded by the runner config, the file is followed: where its path leads, nothing is
+        // there, and that is compared.
+        write(root, {
+          'fee-rules/vitest.gates.config.ts':
+            "import { createVitestGatesConfig } from '@t09tanaka/test-gates/vitest';\nimport kit from './jest.paths.cjs';\nexport default createVitestGatesConfig({ kit });\n",
+        });
+        mutation(sub(root));
+        const record = JSON.parse(fs.readFileSync(path.join(sub(root), RECORD), 'utf8'));
+        expect(record.snapshot.files[`${up(1)}/kit`]).toBe('missing');
+        write(root, { 'catalog-site/src/listing.ts': 'export const listing = 2;\n' });
+        expect(mutation(sub(root))).toEqual(REUSED);
+      });
+
       it('looks at every file of the repository when a config extends one above the subproject', () => {
         const root = monorepo({ 'fee-rules/tsconfig.json': { extends: '../tsconfig.base.json' } });
         mutation(sub(root));
