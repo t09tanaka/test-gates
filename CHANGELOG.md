@@ -19,6 +19,8 @@
   - A plain relative path to a file or a directory above the subproject (`'../tsconfig.base.json'`), a path whose start is not known, and `'..'` after anything but the directory of the file still make every file of the repository part of the comparison.
 - In a project where the comparison is now smaller, the first run after the update is one of every mutant: the record of the last run holds files that are no longer compared, and the message lists them as changed.
 - When a path leads outside of the repository and the results are therefore not reused, the message names the path as it is written, next to the file it is in.
+- With a runner config made by `createJestGatesConfig` or `createVitestGatesConfig`, `test-gates mutation` follows the paths only in the files of the subproject that the run loads: the configs and the files they name, the gates, their specs, the configs that the tools read by name (`tsconfig*.json`, Babel, SWC), mocks, and everything those import. The other files are still compared, but a `'../'` in a lint config, `$PROJECT_DIR$/..` in the settings of an editor or `<rootDir>/../shared` in the config of another test run no longer makes every file of the repository part of the comparison. An alias that `settings.importAliases` does not name loads the files of the subproject whose paths end as the import does. A loaded file that imports a module whose path is not written out, and a runner config made otherwise, keep the search in every file.
+- A path that leads outside of the repository to nothing (one meant for the sandbox of Stryker, such as `path.resolve(__dirname, '../../../shared')` in a runner config) is compared as missing, instead of turning reuse off. Once something is there, reuse is off as before.
 
 ## 0.3.4
 

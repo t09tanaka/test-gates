@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
+import { resolveFile } from './commands/loaded-files.js';
 import type { Snapshot } from './core/reuse-guard.js';
 
 /** Thrown when the files a run depends on cannot be listed. The results are then not reused. */
@@ -281,10 +282,18 @@ function ownVersion(): string {
  * @param input.dir Absolute path of the subproject.
  * @param input.written Paths the run writes (reports, the sandbox), as files or directories,
  *   absolute or relative to `dir`.
+ * @param input.scope Given the files of the subproject, those whose paths are followed, as real
+ *   paths (see loadedScope in affected-files.ts); the others are compared, but not searched.
+ *   Every file when it is not given or returns null.
  * @throws SnapshotError when the files cannot be listed, or a path leads out of what can be
  *   listed.
  */
-export function takeSnapshot(input: { dir: string; written: string[]; args: string[] }): Snapshot {
+export function takeSnapshot(input: {
+  dir: string;
+  written: string[];
+  args: string[];
+  scope?: (listed: string[]) => Set<string> | null;
+}): Snapshot {
   return snapshotOf(input).snapshot;
 }
 
@@ -293,7 +302,12 @@ export function takeSnapshot(input: { dir: string; written: string[]; args: stri
  *
  * @throws SnapshotError as takeSnapshot does.
  */
-export function snapshotOf(input: { dir: string; written: string[]; args: string[] }): {
+export function snapshotOf(input: {
+  dir: string;
+  written: string[];
+  args: string[];
+  scope?: (listed: string[]) => Set<string> | null;
+}): {
   snapshot: Snapshot;
   root: string;
 } {
@@ -312,6 +326,10 @@ export function snapshotOf(input: { dir: string; written: string[]; args: string
 
   const listRoot = root;
   const list = lister;
+  const followed =
+    input.scope === undefined
+      ? null
+      : input.scope(list(dir, true).map((file) => path.join(listRoot, file)));
   const walk = walkLister(listRoot);
   const written = input.written.map((file) => {
     const target = path.resolve(dir, file);
@@ -378,6 +396,12 @@ export function snapshotOf(input: { dir: string; written: string[]; args: string
       isDirectory = fs.statSync(target).isDirectory();
     } catch {
       // An import without its extension, or a file that is not there: take its directory.
+    }
+    if (!isDirectory && !isInside(listRoot, target) && resolveFile(target) === null) {
+      // Nothing is there, outside of what can be listed (a path for the sandbox of Stryker, from
+      // the subproject itself): that it stays so is compared.
+      files[toPosix(path.relative(listRoot, target))] = 'missing';
+      return;
     }
     const directory = isDirectory ? target : path.dirname(target);
     // Nothing is there (text that only looks like a path). Should the directory appear later, it
@@ -464,7 +488,13 @@ export function snapshotOf(input: { dir: string; written: string[]; args: string
       const content = fs.readFileSync(file);
       files[relative] = hashOf(content);
       const document = DOCUMENTS.includes(path.extname(file).toLowerCase());
-      if (!document && content.length <= SCAN_LIMIT && !content.subarray(0, 8000).includes(0)) {
+      const loaded = followed === null || !isInside(dir, file) || followed.has(file);
+      if (
+        loaded &&
+        !document &&
+        content.length <= SCAN_LIMIT &&
+        !content.subarray(0, 8000).includes(0)
+      ) {
         // `..\/` in JSON and `..\\` on Windows are the same path.
         scan(content.toString('utf8').replace(/\\[\\/]/g, '/'), file);
       }

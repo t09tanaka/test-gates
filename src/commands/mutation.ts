@@ -4,7 +4,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { UsageError } from '../core/args.js';
 import { ManifestError } from '../core/manifest.js';
-import { AffectedError, affectedInputs, runnerConfigs } from '../affected-files.js';
+import { AffectedError, affectedInputs, loadedScope, runnerConfigs } from '../affected-files.js';
 import { type AffectedPlan, describePlan, planAffected, timeoutRanges } from '../core/affected.js';
 import type { MutationReport, MutationVerdict } from '../core/mutation-result.js';
 import {
@@ -152,13 +152,23 @@ function guardIncremental(
   const base = fs.realpathSync(manifest.dir);
   const incrementalFile = path.resolve(base, options.incrementalFile);
   const recordFile = guardRecordPath(incrementalFile);
+  const configs = (): ReturnType<typeof runnerConfigs> =>
+    runnerConfigs(base, config, (loaded ?? {}) as Record<string, unknown>);
 
   let snapshot: Snapshot | null = null;
   let root = base;
   let failure = 'the Stryker config could not be loaded to see where the incremental file is';
   if (loaded !== undefined) {
+    const scope = (listed: string[]): Set<string> | null => {
+      try {
+        return loadedScope(manifest, configs(), listed);
+      } catch {
+        return null; // what the run loads cannot be told: every path is followed
+      }
+    };
     try {
       ({ snapshot, root } = snapshotOf({
+        scope,
         dir: manifest.dir,
         written: [
           incrementalFile,
@@ -193,8 +203,6 @@ function guardIncremental(
     stored = undefined;
   }
   const ci = affected ? affectedRefused(process.env) : null;
-  const configs = (): ReturnType<typeof runnerConfigs> =>
-    runnerConfigs(base, config, (loaded ?? {}) as Record<string, unknown>);
 
   let force: string | null = null;
   let plan: AffectedPlan | null = null;
