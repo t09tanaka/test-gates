@@ -409,7 +409,8 @@ export function snapshotOf(input: {
     } catch {
       // An import without its extension, or a file that is not there: take its directory.
     }
-    if (!isDirectory && !isInside(listRoot, target) && resolveFile(target) === null) {
+    // Declaration files are left out here, so that what counts as missing stays as it was.
+    if (!isDirectory && !isInside(listRoot, target) && resolveFile(target, true, false) === null) {
       // Nothing is there, outside of what can be listed (a path for the sandbox of Stryker, from
       // the subproject itself): that it stays so is compared.
       files[toPosix(path.relative(listRoot, target))] = 'missing';

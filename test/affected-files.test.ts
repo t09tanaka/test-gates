@@ -156,6 +156,39 @@ describe('affectedInputs', () => {
     ]);
   });
 
+  it.each([
+    ['an alias', "import { Schema } from '@/types/schema';", 'src/types/schema.d.ts'],
+    ['an alias of a directory', "import { Schema } from '@/types';", 'src/types/index.d.ts'],
+    ['a relative path', "import { Schema } from './types/schema';", 'src/types/schema.d.ts'],
+    ['a path with .js', "import { Schema } from './types/schema.js';", 'src/types/schema.d.ts'],
+  ])('follows %s that leads to a declaration file', (_name, line, declaration) => {
+    const dir = fixture(
+      {
+        'src/c.ts': `${line}\nexport const c = (x: number): Schema => x - 1;\n`,
+        [declaration]: 'export type Schema = number;\n',
+      },
+      { settings: { importAliases: [{ prefix: '@/', target: 'src/' }] } }
+    );
+    expect(inputs(dir).gates['src/c.ts']?.files).toEqual([
+      'src/c.spec.ts',
+      'src/c.ts',
+      declaration,
+    ]);
+  });
+
+  it('takes a script over a declaration file of the same name', () => {
+    const dir = fixture({
+      'src/c.ts': "import { rate } from './rate';\nexport const c = (x: number) => x - rate;\n",
+      'src/rate.js': 'export const rate = 1;\n',
+      'src/rate.d.ts': 'export declare const rate: number;\n',
+    });
+    expect(inputs(dir).gates['src/c.ts']?.files).toEqual([
+      'src/c.spec.ts',
+      'src/c.ts',
+      'src/rate.js',
+    ]);
+  });
+
   it('takes a spec of the last run that is gone for itself', () => {
     const found = inputs(fixture(), { 'src/c.ts': ['src/gone.spec.ts'] });
     expect(found.gates['src/c.ts']?.files).toEqual([

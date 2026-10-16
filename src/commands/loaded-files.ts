@@ -23,14 +23,24 @@ function isFile(file: string): boolean {
   }
 }
 
-/** The file a path without (or with a compiled) extension stands for, or null. */
-export function resolveFile(base: string, directory = true): string | null {
+/** What the compiler takes for a module that has no script: `schema.d.ts` for `./schema`. */
+const DECLARATIONS = ['.d.ts', '.d.mts', '.d.cts'];
+
+/**
+ * The file a path without (or with a compiled) extension stands for, or null.
+ *
+ * @param directory Whether a directory stands for its index file.
+ * @param declarations Whether a declaration file stands for the module when no script does
+ *   (`@/types/schema` for `src/types/schema.d.ts`). A script of the same name comes first.
+ */
+export function resolveFile(base: string, directory = true, declarations = true): string | null {
+  const extensions = declarations ? [...EXTENSIONS, ...DECLARATIONS] : EXTENSIONS;
   const candidates = [
     base,
-    ...EXTENSIONS.map((extension) => base + extension),
+    ...extensions.map((extension) => base + extension),
     // `./fee.js` written in a TypeScript file is `./fee.ts`
-    ...EXTENSIONS.map((extension) => base.replace(/\.[cm]?jsx?$/, extension)),
-    ...(directory ? EXTENSIONS.map((extension) => path.join(base, `index${extension}`)) : []),
+    ...extensions.map((extension) => base.replace(/\.[cm]?jsx?$/, extension)),
+    ...(directory ? extensions.map((extension) => path.join(base, `index${extension}`)) : []),
   ];
   return candidates.find(isFile) ?? null;
 }
