@@ -342,6 +342,26 @@ describe('a path outside of what can be listed', () => {
     expect(keys).not.toContain(ELSEWHERE);
   });
 
+  it('makes every file compared where the same path from the subproject holds the repository', () => {
+    const root = repository({
+      'fee-rules/src/near.ts': "export { near } from './deep/near';\n",
+      // From the file: the subproject. From the subproject: above the repository.
+      'fee-rules/src/deep/near.ts': `export const near = (a: number, b: number) => a === b;\nexport const top = '${up(2)}';\n`,
+    });
+    expect(snapshot(root).keys).toContain(ELSEWHERE);
+  });
+
+  it('is refused also where the same path from the file leads inside', () => {
+    const sibling = path.basename(project({ 'kit.ts': 'export {};\n' }));
+    // From src/ the path leads to a directory of the repository; from the subproject, where the
+    // run starts, to the sibling of the repository.
+    const root = repository({
+      [`${sibling}/kit.ts`]: 'export {};\n',
+      'fee-rules/src/near.ts': `export const near = (a: number, b: number) => a === b;\nexport const kit = '${up(2)}/${sibling}/kit.ts';\n`,
+    });
+    expect(() => snapshot(root)).toThrow(SnapshotError);
+  });
+
   it('is refused once something is there', () => {
     const sibling = path.basename(project({ 'kit.ts': 'export {};\n' }));
     const root = repository({

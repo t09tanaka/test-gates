@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
-import { resolveFile } from './commands/loaded-files.js';
+import { resolveFile, resolveFiles } from './commands/loaded-files.js';
 import type { Snapshot } from './core/reuse-guard.js';
 
 /** Thrown when the files a run depends on cannot be listed. The results are then not reused. */
@@ -452,21 +452,28 @@ export function snapshotOf(input: {
       // in, the subproject; one that is imported starts in the directory of the file. Which one
       // is meant cannot be told, so both are followed where something is there. When nothing is
       // there from either, a file that appears later at one of them is followed then, and its
-      // files change the snapshot. A path that is there from the file and leads out of what can
-      // be listed from the subproject is taken for an import.
+      // files change the snapshot. Where what is there from the subproject lies out of what can
+      // be listed, the snapshot is refused, as for any path there; where it is a directory that
+      // holds all that can be listed (a way up to the top in a nested file), where the path leads is not
+      // known, and every file that can be listed is compared.
       const fromRun = from(dir);
       if (fromRun.found && !fromFile.found) {
         targets[0] = fromRun;
-      } else if (fromRun.found && isInside(listRoot, fromRun.target)) {
+      } else if (fromRun.found && isInside(fromRun.target, listRoot)) {
+        enqueue(listRoot, file, reference);
+      } else if (fromRun.found) {
         targets.push(fromRun);
       }
     }
     for (const { target, isDirectory } of targets) {
       // A file directly in a directory above the subproject is compared anyway
       // (`"extends": "../../tsconfig.base.json"`). What it points at in turn is followed.
-      const beside = isDirectory || open ? null : resolveFile(target, false, false);
-      if (beside !== null && besideAncestors.has(beside)) {
-        reach(beside);
+      // Each file the path may stand for (`base.json` and `base.ts`): either may be the one read.
+      const beside = (isDirectory || open ? [] : resolveFiles(target, false, false)).filter((one) =>
+        besideAncestors.has(one)
+      );
+      if (beside.length > 0) {
+        beside.forEach(reach);
         continue;
       }
       // Declaration files are left out here, so that what counts as missing stays as it was.
