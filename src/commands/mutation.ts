@@ -400,14 +400,7 @@ function guardIncremental(
         expected,
       } = timeoutRanges(
         JSON.parse(fs.readFileSync(incrementalFile, 'utf8')) as MutationReport,
-        kept,
-        (gatePath) => {
-          try {
-            return fs.readFileSync(path.join(manifest.dir, gatePath), 'utf8');
-          } catch {
-            return undefined;
-          }
-        }
+        kept
       ));
     } catch {
       // no incremental file to read: Stryker takes nothing over either

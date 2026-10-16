@@ -472,12 +472,10 @@ describe('timeoutRanges', () => {
       constructor: { mutants: [timeout(at(1, 1, 1, 2))] },
     },
   };
-  const none = () => undefined;
   const ranges = (report: Parameters<typeof timeoutRanges>[0], paths: string[]) =>
     timeoutRanges(
       report,
-      paths.map((path) => ({ path })),
-      none
+      paths.map((path) => ({ path }))
     );
 
   it('finds the gate named with a leading ./ under the name Stryker gives it', () => {
@@ -531,11 +529,13 @@ describe('timeoutRanges', () => {
 
   it('takes over a timeout that an expectedTimeouts entry of its gate points at', () => {
     const report = { files: { 'src/a.ts': { source: SOURCE, mutants: [loop(), object()] } } };
-    expect(
-      timeoutRanges(report, [{ path: './src/a.ts', expectedTimeouts: [listed] }], none)
-    ).toEqual({ ranges: ['src/a.ts:3:10-3:19'], rerun: 1, expected: 1 });
+    expect(timeoutRanges(report, [{ path: './src/a.ts', expectedTimeouts: [listed] }])).toEqual({
+      ranges: ['src/a.ts:3:10-3:19'],
+      rerun: 1,
+      expected: 1,
+    });
     // without the entry, both are run again
-    expect(timeoutRanges(report, [{ path: 'src/a.ts' }], none)).toEqual({
+    expect(timeoutRanges(report, [{ path: 'src/a.ts' }])).toEqual({
       ranges: ['src/a.ts:2:14-2:26', 'src/a.ts:3:10-3:19'],
       rerun: 2,
       expected: 0,
@@ -543,11 +543,8 @@ describe('timeoutRanges', () => {
     // an entry of another gate does not count
     const two = { files: { ...report.files, 'src/b.ts': { source: SOURCE, mutants: [] } } };
     expect(
-      timeoutRanges(
-        two,
-        [{ path: 'src/a.ts' }, { path: 'src/b.ts', expectedTimeouts: [listed] }],
-        none
-      ).expected
+      timeoutRanges(two, [{ path: 'src/a.ts' }, { path: 'src/b.ts', expectedTimeouts: [listed] }])
+        .expected
     ).toBe(0);
   });
 
@@ -555,26 +552,20 @@ describe('timeoutRanges', () => {
     const report = {
       files: { 'src/a.ts': { source: SOURCE, mutants: [loop('Killed'), object()] } },
     };
-    expect(timeoutRanges(report, [{ path: 'src/a.ts', expectedTimeouts: [listed] }], none)).toEqual(
-      { ranges: ['src/a.ts:3:10-3:19'], rerun: 1, expected: 0 }
-    );
+    expect(timeoutRanges(report, [{ path: 'src/a.ts', expectedTimeouts: [listed] }])).toEqual({
+      ranges: ['src/a.ts:3:10-3:19'],
+      rerun: 1,
+      expected: 0,
+    });
   });
 
-  it('reads the source from disk when the last results carry none, by the path of the gate', () => {
+  it('takes nothing over from results that carry no source', () => {
     const report = { files: { 'src/a.ts': { mutants: [loop()] } } };
-    const asked: string[] = [];
-    const read = (gatePath: string) => {
-      asked.push(gatePath);
-      return SOURCE;
-    };
-    expect(
-      timeoutRanges(report, [{ path: './src/a.ts', expectedTimeouts: [listed] }], read)
-    ).toEqual({ ranges: [], rerun: 0, expected: 1 });
-    expect(asked).toEqual(['./src/a.ts']);
-    // nothing to match against: the timeout is run again
-    expect(timeoutRanges(report, [{ path: 'src/a.ts', expectedTimeouts: [listed] }], none)).toEqual(
-      { ranges: ['src/a.ts:2:14-2:26'], rerun: 1, expected: 0 }
-    );
+    expect(timeoutRanges(report, [{ path: 'src/a.ts', expectedTimeouts: [listed] }])).toEqual({
+      ranges: ['src/a.ts:2:14-2:26'],
+      rerun: 1,
+      expected: 0,
+    });
   });
 });
 

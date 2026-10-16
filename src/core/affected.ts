@@ -194,13 +194,12 @@ export interface TimeoutRanges {
  * it is not taken over, also not in a gate whose other results are. Only a mutant that an
  * `expectedTimeouts` entry of its gate points at (matched as the verdict matches it) is taken
  * over: it times out on every run, and running it again only costs the time of its timeout.
- *
- * @param readSource Source of a gate on disk, for a result that carries none.
+ * A result that carries no source of its gate takes nothing over: the file on disk may have
+ * changed since the result was made.
  */
 export function timeoutRanges(
   last: MutationReport,
-  gates: Array<Pick<Gate, 'path' | 'expectedTimeouts'>>,
-  readSource: (gatePath: string) => string | undefined
+  gates: Array<Pick<Gate, 'path' | 'expectedTimeouts'>>
 ): TimeoutRanges {
   const ranges: string[] = [];
   const rerun = new Set<ReportMutant>();
@@ -214,11 +213,7 @@ export function timeoutRanges(
       continue;
     }
     const { mutants } = result;
-    const expected = expectedTimeoutMutants(
-      named,
-      result.source ?? readSource(named.path),
-      mutants
-    );
+    const expected = expectedTimeoutMutants(named, result.source, mutants);
     for (const mutant of mutants) {
       if (mutant.status !== 'Timeout') {
         continue;
