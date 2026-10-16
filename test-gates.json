@@ -47,6 +47,12 @@
           "original": "next + 1",
           "replacement": "next - 1",
           "reason": "After an option with a separate value the parser would return to the option itself and read it again forever"
+        },
+        {
+          "mutator": "ArithmeticOperator",
+          "original": "index + 1",
+          "replacement": "index - 1",
+          "reason": "The value of an option given apart from it would be read from the argument before the option, and the parser would return to the option and read it again forever"
         }
       ]
     },
