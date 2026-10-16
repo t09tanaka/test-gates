@@ -33,9 +33,10 @@ const bare = (specifier: string): string => specifier.replace(/^node:/, '');
 
 const toPosix = (file: string): string => file.split(path.sep).join('/');
 
+/** The path as it is on disk, also in the case of its letters (what git and a listing show). */
 function realpath(file: string): string {
   try {
-    return fs.realpathSync(file);
+    return fs.realpathSync.native(file);
   } catch {
     return file;
   }
@@ -355,6 +356,11 @@ export function affectedInputs(
   return { subproject, config: keysOf([...config]).sort(), gates };
 }
 
+/** A runner config made with the helpers of this tool. */
+const OWN = /@t09tanaka\/test-gates\/(?:jest|vitest)\b/;
+/** What can make a runner config of the helpers run more than the specs of the gates. */
+const WIDENING = /\b(?:projects|workspace|mergeConfig|testMatch|testRegex|include)\b/;
+
 /**
  * Files the tools of a run read by their names, at the top of the subproject. Not package.json:
  * with a runner config of the helpers, what it holds for the runner is not read, and its scripts
@@ -390,16 +396,24 @@ export function loadedScope(
   listed: string[]
 ): Set<string> | null {
   const dir = realpath(manifest.dir);
-  // Only a config made with the helpers of this tool runs the specs of the gates and no others,
-  // unless it is given projects of its own, which the helpers pass on.
-  const own = /@t09tanaka\/test-gates\/(?:jest|vitest)\b/;
-  const widened = /\b(?:projects|workspace)\b/;
-  const runner = configs.files.slice(1).map((file) => fs.readFileSync(file, 'utf8'));
-  if (runner.length === 0 || !runner.every((text) => own.test(text) && !widened.test(text))) {
-    return null;
-  }
   const cache = new Map<string, Edges>();
   const context = { dir, aliases: manifest.settings.importAliases, cache };
+  // Only a config made with the helpers of this tool runs the specs of the gates and no others.
+  // What could add specs to it, in it or in a file it is put together from, is not looked
+  // through: projects of its own, a config merged after it, a set of specs given anew.
+  const runner = configs.files.slice(1);
+  if (runner.length === 0 || !runner.every((file) => OWN.test(fs.readFileSync(file, 'utf8')))) {
+    return null;
+  }
+  const parts = new Set(runner.map(realpath));
+  for (const file of [...parts]) {
+    if (SCRIPT.test(file)) {
+      fileEdges(file, context).loads.forEach((loaded) => parts.add(loaded));
+    }
+  }
+  if ([...parts].some((file) => WIDENING.test(withoutComments(fs.readFileSync(file, 'utf8'))))) {
+    return null;
+  }
   const named = fs
     .readdirSync(dir)
     .filter((name) => READ_BY_NAME.some((pattern) => pattern.test(name)))
@@ -411,10 +425,14 @@ export function loadedScope(
     ...manifest.gates
       .flatMap((gate) => [gate.path, ...gate.existingSpecs])
       .map((file) => path.join(dir, file)),
-    ...(fs.existsSync(mocks) ? fs.readdirSync(mocks).map((name) => path.join(mocks, name)) : []),
+    ...listed.filter((file) => file.startsWith(`${mocks}${path.sep}`)),
   ]
     .filter((file) => fs.existsSync(file))
     .map(realpath);
+  // Files whose text names further files: the configs, those read by name, and what they name.
+  const naming = new Set(
+    [...configs.files, ...named].filter((file) => fs.existsSync(file)).map(realpath)
+  );
   const seen = new Set(seeds);
   const queue = [...seeds];
   const add = (file: string): void => {
@@ -442,13 +460,17 @@ export function loadedScope(
       add(mock);
     }
     // What a config names as text: a setup file, an environment, `<rootDir>/test/setup.ts`.
-    if (configs.files.includes(file) || (SCRIPT.test(file) && path.dirname(file) === dir)) {
+    if (naming.has(file) || (SCRIPT.test(file) && path.dirname(file) === dir)) {
       for (const match of fs.readFileSync(file, 'utf8').matchAll(QUOTED)) {
         const text = (match[2] as string).replace(/^<rootDir>\//, '');
         const found =
           resolveFile(path.resolve(path.dirname(file), text), false) ??
           resolveFile(path.resolve(dir, text), false);
         if (found !== null && !text.includes('*')) {
+          // `"extends": "./config/tsconfig.shared.json"` names a file that names others.
+          if (!SCRIPT.test(found)) {
+            naming.add(realpath(found));
+          }
           add(found);
         }
       }
@@ -457,16 +479,26 @@ export function loadedScope(
   return seen;
 }
 
-/** The files whose path, without its extension, ends as the import after its first part does. */
+/**
+ * The files whose path ends as the import after its first part does, both without their
+ * extensions (`@shared/fee.js` and `src/fee.ts`). An import of one part (`@helper`, `#config`)
+ * leads to the files of that name.
+ */
 function endingAs(specifier: string, files: string[]): string[] {
   const parts = specifier.split('/');
-  const rest = parts.slice(1).join('/');
+  const rest = (
+    parts.length > 1 ? parts.slice(1).join('/') : specifier.replace(/^[@#~$]+/, '')
+  ).replace(/\.[cm]?[jt]sx?$/, '');
   if (rest === '') {
     return [];
   }
   return files.filter((file) => {
-    const posix = toPosix(file);
-    const bare = posix.replace(/\.[^./]+$/, '');
-    return [posix, bare, bare.replace(/\/index$/, '')].some((one) => one.endsWith(`/${rest}`));
+    const bare = toPosix(file).replace(/\.[^./]+$/, '');
+    return [bare, bare.replace(/\/index$/, '')].some((one) => one.endsWith(`/${rest}`));
   });
+}
+
+/** The text without its comments, as far as a simple search can tell them. */
+function withoutComments(text: string): string {
+  return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`])\/\/.*$/gm, '$1');
 }

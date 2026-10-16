@@ -133,6 +133,36 @@ describe('the paths the snapshot follows', () => {
 
   it.each([
     [
+      'an import of an alias with the extension of the compiled file',
+      { 'fee-rules/src/near.ts': "export { near } from '@shared/helper.js';\n" },
+      'fee-rules/lib/helper.ts',
+    ],
+    [
+      'an import of an alias of one part',
+      { 'fee-rules/src/near.ts': "export { near } from '#helper';\n" },
+      'fee-rules/lib/helper.ts',
+    ],
+    ['a mock of a scoped package in the root __mocks__', {}, 'fee-rules/__mocks__/@acme/kit.ts'],
+    [
+      'a config that tsconfig.json extends',
+      { 'fee-rules/tsconfig.json': { extends: './config/tsconfig.shared.json' } },
+      'fee-rules/config/tsconfig.shared.json',
+    ],
+    [
+      'an import written in another case than the file',
+      { 'fee-rules/src/near.ts': "export { near } from './Helper';\n" },
+      'fee-rules/src/helper.ts',
+    ],
+  ])('follows a way up in the file that %s leads to', (_name, files, file) => {
+    const root = repository({
+      ...files,
+      [file]: `export const near = (a: number, b: number) => a === b;\nexport const top = '${up(file.split('/').length - 1)}';\n`,
+    });
+    expect(snapshot(root).keys).toContain(ELSEWHERE);
+  });
+
+  it.each([
+    [
       'a runner config this tool did not make',
       { 'fee-rules/vitest.gates.config.ts': 'export default { test: {} };\n' },
     ],
@@ -141,6 +171,23 @@ describe('the paths the snapshot follows', () => {
       {
         'fee-rules/vitest.gates.config.ts':
           "import { createVitestGatesConfig } from '@t09tanaka/test-gates/vitest';\nexport default createVitestGatesConfig({ test: { projects: ['packages/*'] } });\n",
+      },
+    ],
+    [
+      'a runner config merged with another one after the helper',
+      {
+        'fee-rules/vitest.gates.config.ts':
+          "import { mergeConfig } from 'vitest/config';\nimport { createVitestGatesConfig } from '@t09tanaka/test-gates/vitest';\nimport shared from './vitest.shared';\nexport default mergeConfig(createVitestGatesConfig(), shared);\n",
+        'fee-rules/vitest.shared.ts': 'export default {};\n',
+      },
+    ],
+    [
+      'a runner config put together from a file that names specs',
+      {
+        'fee-rules/vitest.gates.config.ts':
+          "import { createVitestGatesConfig } from '@t09tanaka/test-gates/vitest';\nimport shared from './vitest.shared';\nexport default { ...createVitestGatesConfig(), ...shared };\n",
+        'fee-rules/vitest.shared.ts':
+          "export default { test: { include: ['src/**/*.test.ts'] } };\n",
       },
     ],
     [
