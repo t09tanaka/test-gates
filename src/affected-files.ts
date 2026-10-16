@@ -1069,6 +1069,11 @@ const ROOT_DIR_HERE = new Set([
  * through the lock file). Anything else, also what cannot be read from the text (a variable, a
  * regular expression, a spread), makes what a gate depends on unknown.
  *
+ * tsconfig `paths` are read whether or not the run applies them (Vite 7 and Jest do not without a
+ * plugin, newer versions may): which plugin applies them is not told reliably from the text. A
+ * repository whose base tsconfig.json lists every package in `paths` has to name them all in
+ * settings.importAliases to be told gate by gate.
+ *
  * @param input.runner The runner configs and the files they import, read for `alias` and
  *   `moduleNameMapper`; `mapperOnly` for package.json, where only Jest is read.
  * @param input.compiler The compiler configs (see compilerConfigs).
@@ -1136,15 +1141,16 @@ export function unexplainedMaps(input: {
           continue;
         }
         const value = stringValue(entry.value);
-        if (value !== null && !value.includes('$')) {
-          continue; // one fixed module, which the config names
-        }
-        // <rootDir> is where the config lies, unless it is set to another directory.
+        // <rootDir> is taken for where the config lies (also where the config names a stub by
+        // it), unless it is set to another directory.
         for (const root of text.matchAll(/\brootDir\b['"]?\s*:\s*([^,}\n]+)/g)) {
           const set = (root[1] as string).trim();
-          if (!ROOT_DIR_HERE.has(set)) {
+          if (!ROOT_DIR_HERE.has(set) && (value === null || value.includes('<rootDir>'))) {
             return `${shown(file)} sets rootDir to a directory that cannot be told: ${set}`;
           }
+        }
+        if (value !== null && !value.includes('$')) {
+          continue; // one fixed module, which the config names
         }
         const prefix = mapperPrefix(entry.key);
         const target = value === null ? null : /^<rootDir>\/(.*)\$1$/.exec(value);

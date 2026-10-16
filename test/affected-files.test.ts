@@ -640,6 +640,40 @@ describe('the module maps of the runner config', () => {
     ).toBe(message);
   });
 
+  it('takes the stub a moduleNameMapper names for a config', () => {
+    const dir = fixture(
+      {
+        'jest.config.cjs':
+          "module.exports = { moduleNameMapper: { '\\\\.css$': '<rootDir>/test/style-stub.js' } };\n",
+        'test/style-stub.js': 'module.exports = {};\n',
+      },
+      ALIASES
+    );
+    const { snapshot, root } = snapshotOf({ dir, written: ['reports'], args: [] });
+    const found = affectedInputs(readManifest(dir), {
+      root,
+      files: snapshot.files,
+      configs: runnerConfigs(dir, 'stryker.gates.config.mjs', { testRunner: 'jest' }),
+      tests: [],
+      covering: {},
+    });
+    expect(found.config).toContain('test/style-stub.js');
+  });
+
+  it('refuses a stub of moduleNameMapper by a rootDir that is not where the config lies', () => {
+    expect(
+      told(
+        {
+          'jest.config.cjs':
+            "module.exports = { rootDir: 'src', moduleNameMapper: { '\\\\.css$': '<rootDir>/stub.js' } };\n",
+          'src/stub.js': 'module.exports = {};\n',
+        },
+        ALIASES,
+        'jest'
+      )
+    ).toBe("jest.config.cjs sets rootDir to a directory that cannot be told: 'src'");
+  });
+
   it('refuses a moduleNameMapper of a rootDir that is not where the config lies', () => {
     expect(
       told(
