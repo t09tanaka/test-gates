@@ -56,6 +56,13 @@ function inputs(dir: string, covering: Record<string, string[]> = {}, tests: str
   return affectedInputs(manifest, { root, files: snapshot.files, configs, tests, covering });
 }
 
+/** Gate c loads src/settings.ts, which a test writes. */
+const LOADS_SETTINGS = {
+  'src/c.ts':
+    "import { env } from './settings';\nexport const c = (x: number) => (env ? x - 1 : x);\n",
+  'src/settings.ts': 'export const env = 1;\n',
+};
+
 const refusal = (dir: string): string => {
   try {
     inputs(dir);
@@ -211,16 +218,45 @@ describe('affectedInputs', () => {
       'src/round.ts:2 imports a module whose path is not written out',
     ],
     [
-      '__dirname',
+      'a file read by a path from __dirname',
       {
-        'src/c.spec.ts': `${H}import { c } from './c';\nconst here = __dirname;\nit('c', () => {});\n`,
+        'src/settings.ts': `import { join } from 'node:path';\nexport const env = readFileSync(join(__dirname, '..', '.env'));\n`,
       },
-      'src/c.spec.ts uses __dirname, which can reach files that no import names',
+      'src/settings.ts uses readFileSync, which can reach files that no import names',
     ],
     [
-      'import.meta.url',
-      { 'src/c.spec.ts': `${H}import { c } from './c';\nnew URL('x', import.meta.url);\n` },
-      'src/c.spec.ts uses import.meta.url, which can reach files that no import names',
+      'a path from __dirname handed to a package',
+      {
+        'src/settings.ts':
+          "import { join } from 'node:path';\nimport { config } from 'dotenv';\n" +
+          "config({ path: join(__dirname, '..', '.env') });\nexport const env = 1;\n",
+        'node_modules/dotenv/package.json': '{ "name": "dotenv" }',
+      },
+      'src/settings.ts uses __dirname and imports dotenv, which can read files by it that no import names',
+    ],
+    [
+      'a file looked at by a path from import.meta.dirname',
+      {
+        'src/settings.ts': `export const has = existsSync(\`\${import.meta.dirname}/.env\`);\n`,
+      },
+      'src/settings.ts uses import.meta.dirname and existsSync, which can reach files that no import names',
+    ],
+    [
+      'a file streamed by a path from import.meta.url',
+      {
+        'src/settings.ts':
+          "export const s = createReadStream(new URL('./x.csv', import.meta.url));\n",
+      },
+      'src/settings.ts uses import.meta.url and createReadStream, which can reach files that no import names',
+    ],
+    [
+      'a mock named by a path from __dirname',
+      {
+        'src/settings.ts':
+          "import { vi } from 'vitest';\nimport { join } from 'node:path';\n" +
+          "vi.mock(join(__dirname, 'rates'));\nexport const env = 1;\n",
+      },
+      'src/settings.ts uses __dirname and mock, which can reach files that no import names',
     ],
     [
       'a file read with fs',
@@ -250,7 +286,29 @@ describe('affectedInputs', () => {
       'src/c.spec.ts imports /no/such/file, which leads to no file',
     ],
   ])('refuses %s', (_name, files, message) => {
-    expect(refusal(fixture(files))).toBe(message);
+    expect(refusal(fixture({ ...LOADS_SETTINGS, ...files }))).toBe(message);
+  });
+
+  it.each([
+    ['__dirname', "export const env = join(__dirname, '..', '.env');\n"],
+    ['__filename', 'export const env = `${__filename}.env`;\n'],
+    ['import.meta.dirname', "export const env = join(import.meta.dirname, '..', '.env');\n"],
+    ['import.meta.filename', 'export const env = `${import.meta.filename}.env`;\n'],
+    [
+      'import.meta.url',
+      "import { fileURLToPath } from 'node:url';\nexport const env = fileURLToPath(new URL('../.env', import.meta.url));\n",
+    ],
+  ])('takes a file that only finds where it lies with %s', (_name, settings) => {
+    const dir = fixture({
+      ...LOADS_SETTINGS,
+      'src/settings.ts': `import { join } from 'node:path';\n${settings}`,
+      'src/c.spec.ts': `${H}import { c } from './c';\nconst here = __dirname;\nit('c', () => {});\n`,
+    });
+    expect(inputs(dir).gates['src/c.ts']?.files).toEqual([
+      'src/c.spec.ts',
+      'src/c.ts',
+      'src/settings.ts',
+    ]);
   });
 
   it.each([['/abs/x.spec.ts'], ['../x.spec.ts']])(

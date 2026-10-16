@@ -23,7 +23,34 @@ export class AffectedError extends Error {}
  * Where one of them is used, a change to a file that nothing imports could change a result.
  */
 const RUNTIME_PATHS =
-  /\b(?:__dirname|__filename|require\.(?:context|resolve)|process\.cwd|createRequire|toMatchFileSnapshot|readFileSync|readdirSync)\b|\bimport\.meta\.(?:url|dirname|filename|glob|resolve)\b/;
+  /\b(?:require\.(?:context|resolve)|process\.cwd|createRequire|toMatchFileSnapshot|readFileSync|readdirSync)\b|\bimport\.meta\.(?:glob|resolve)\b/;
+/**
+ * Where the file itself lies. Knowing it reads nothing: `path.join(__dirname, '..', '.env')` is
+ * only a string. It is what the file does with it that may read a file (see LOCATION_READS).
+ */
+const LOCATION = /\b(?:__dirname|__filename)\b|\bimport\.meta\.(?:url|dirname|filename)\b/;
+/**
+ * What, next to LOCATION, may read a file by that path, besides what is refused anyway (an
+ * import of fs, a computed import, RUNTIME_PATHS): a function that reads, opens or looks at a
+ * file or a directory, a module handed to the runner by a computed path
+ * (`vi.mock(join(__dirname, 'rates'))`), and a worker started from a file.
+ */
+const LOCATION_READS =
+  /\b(?:readFile|readdir|readlink|existsSync|stat|statSync|lstat|lstatSync|access|accessSync|realpath|realpathSync|open|openSync|opendir|opendirSync|createReadStream|watch|watchFile|glob|globSync|promises)\b|\b(?:requireActual|requireMock|importActual|importMock|mock|doMock|unstable_mockModule|setMock|createMockFromModule)\(\s*(?![\s'"`)])|\bWorker\(/;
+/**
+ * Modules that a file may import next to LOCATION without reading by it: those that only build
+ * paths and URLs, and the test runner's own. Any other package or built-in module counts as one
+ * that reads for the file (`config({ path: join(__dirname, '..', '.env') })` of dotenv): a
+ * package is not looked into, so what it does with a path cannot be told.
+ */
+const LOCATION_SAFE = new Set([
+  'path',
+  'path/posix',
+  'path/win32',
+  'url',
+  'vitest',
+  '@jest/globals',
+]);
 const FILE_MODULES = new Set([
   'fs',
   'fs/promises',
@@ -338,6 +365,7 @@ export function fileEdges(
   } else if (runtime !== null) {
     found.unknown = `${shown(file)} uses ${runtime[0]}, which can reach files that no import names`;
   }
+  const location = LOCATION.exec(source);
   // An import of types only, where the run drops it (see typesErased), loads nothing; a module
   // that is also imported for a value, or named to the runner, is still followed.
   const refs = parseImports(source);
@@ -383,6 +411,22 @@ export function fileEdges(
         found.unknown ??= `${shown(file)} imports ${specifier}, a package of the repository linked into node_modules`;
         found.computed = true;
       }
+    }
+  }
+  if (location !== null) {
+    const reads = LOCATION_READS.exec(source);
+    const reader = [...specifiers].find(
+      (specifier) =>
+        !specifier.startsWith('.') &&
+        !path.isAbsolute(specifier) &&
+        !specifier.startsWith('file:') &&
+        !isProjectImport(specifier, aliases) &&
+        !LOCATION_SAFE.has(bare(specifier))
+    );
+    if (reads !== null) {
+      found.unknown ??= `${shown(file)} uses ${location[0]} and ${reads[0].replace(/\($/, '')}, which can reach files that no import names`;
+    } else if (reader !== undefined) {
+      found.unknown ??= `${shown(file)} uses ${location[0]} and imports ${reader}, which can read files by it that no import names`;
     }
   }
   // A path given to the runner as text: vi.mock('./rates', …).
