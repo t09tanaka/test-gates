@@ -250,7 +250,9 @@ What is compared:
 
 - Every file of the subproject: gates, specs, other sources, helpers of the specs, configs, `test-gates.json`, the lock file.
 - The files directly in the directories above the subproject, up to the root of the repository: the lock file and the shared configs of a monorepo.
-- Packages of the same repository that are linked into `node_modules`, and directories outside the subproject that a file leads to, with a link or with a relative path (`../../pricing-kit/rounding/half-up`). When a path cannot be followed (`<rootDir>/../pricing-kit`, a way up handed to `path.join` as separate `'..'` arguments, a path to a file or a directory above the subproject), every file of the repository is compared.
+- Packages of the same repository that are linked into `node_modules`, and directories outside the subproject that a file leads to, with a link or with a relative path (`../../pricing-kit/rounding/half-up`). A path that starts at the directory of its own file is followed as well, whether it is written as a template (`` `${__dirname}/../pricing-kit` ``) or as parts handed to `path.join` or `path.resolve` (`__dirname, '..', 'pricing-kit'`, also with `import.meta.dirname`). A path that leads back into the subproject adds nothing.
+- When a path cannot be followed, every file of the repository is compared: when its start is not known (`<rootDir>/../pricing-kit`, an alias such as `@/../shared`, `'..'` after anything but the directory of the file), when a part after it is not known (`join(__dirname, '..', name)`, `join(resolve(__dirname, '..'), name)`, a way up after a placeholder), and when a plain relative path leads to a file or a directory above the subproject (`'../tsconfig.base.json'`).
+- Files written for people to read (`.md`, `.markdown`, `.txt`, `.rst`, `.adoc`) are compared, but the paths in them are not followed. Every other file is searched, whatever its extension.
 - What is installed (`node_modules/.package-lock.json`, or what yarn and pnpm write in its place), the versions of Node.js, of this package, of Stryker and of the test runners, and the arguments handed to Stryker.
 - The incremental file itself: it has to be the one the recorded run wrote.
 
@@ -258,7 +260,7 @@ With git, "every file" is what git tracks plus the untracked files it does not i
 
 The record is removed before each run and written only after a run that Stryker ended without an error and in which it wrote the incremental file, so a run that failed, was interrupted or was a dry run is followed by a full one. A run that is given `--force` is not changed. When Stryker does not run in incremental mode, nothing is recorded or compared.
 
-The paths that leave the subproject are found by text, in every file that is compared. The search errs towards comparing too much: text that merely looks like such a path widens the comparison, and a path or a link to a directory that exists outside the repository turns reuse off, with the file named in the message.
+The paths that leave the subproject are found by text, in every file that is compared but those written for people. The search errs towards comparing too much: text that merely looks like such a path widens the comparison, and a path or a link to a directory that exists outside the repository turns reuse off, with the file and the path as it is written named in the message. There is one exception, where the path is known: a path from the directory of the file that ends in a directory above the subproject (`path.resolve(__dirname, '..')` in a file at the top of the subproject) adds only the files directly in that directory, which are compared anyway (see the last point of the list below).
 
 The comparison loads the Stryker config in a process of its own, to see where the incremental file is, and reads and hashes those files before each run. Timed with a stand-in for Stryker, so that only this tool is measured, in a project of 5,200 files written for the measurement: 0.13 s without the comparison, 0.44 to 0.55 s with it (medians of three rounds; other jobs were running on the machine).
 
@@ -267,7 +269,9 @@ What it does not see, and what therefore still needs `-- --force` by hand, or CI
 - files git ignores (build output that a spec or a config loads, `.env`),
 - environment variables, the clock, the network, and a Stryker config that reads them or the command line to decide about incremental mode,
 - files outside the subproject that are reached without a link and without `..` in a path: an absolute path, an alias defined in a config above the subproject (in that case every file of the repository is compared only if the subproject points at that config with a relative path),
-- changes inside `node_modules` that leave the files of the package manager as they were.
+- changes inside `node_modules` that leave the files of the package manager as they were,
+- paths in files written for people (`.md`, `.txt` and the like): a script that reads a path out of a README,
+- what is read below a directory above the subproject when the path to that directory is kept in a variable and the rest is added elsewhere: `const top = path.resolve(__dirname, '..')` in one place and `path.join(top, 'shared', name)` in another, or a path to such a directory handed to a tool that reads below it.
 
 #### `--gate <path>`: only the mutants of one gate
 

@@ -50,6 +50,18 @@ const NEVER = ['node_modules', '.git'];
 const SCAN_LIMIT = 8 * 1024 * 1024;
 /** A string literal with `..` as a part of a path: it may lead out of the directory of its file. */
 const UPWARD = /(['"`])((?:[^'"`\n]*\/)?\.\.(?:\/[^'"`\n]*)?)\1/g;
+/** Files written for people to read: hashed, but the paths in them are not followed. */
+const DOCUMENTS = ['.md', '.markdown', '.txt', '.rst', '.adoc'];
+/** The start of a template literal that is the directory of its own file. */
+const HERE = /^\$\{(?:__dirname|import\.meta\.dirname)\}(?=\/)/;
+/**
+ * The directory of the file, then string literals as further arguments (`__dirname, '..', 'x'`
+ * handed to path.join or path.resolve). Group 1 holds the literals; group 3 the closing
+ * parenthesis, when nothing but those literals follows.
+ */
+const FROM_HERE = /\b(?:__dirname|import\.meta\.dirname)((?:\s*,\s*(['"])[^'"`\n]*\2)+)(\s*\))?/g;
+const LITERAL = /(['"])([^'"`\n]*)\1/g;
+const isUpward = (segment: string): boolean => segment.split('/').includes('..');
 
 function hashOf(content: Buffer | string): string {
   return createHash('sha256').update(content).digest('hex');
@@ -241,7 +253,8 @@ function ownVersion(): string {
  * The files are those of the subproject, the files directly in the directories above it (lock
  * files, shared configs), packages of the same repository linked into node_modules, and every
  * directory outside the subproject that a file points at: with a link, or with a path that has
- * `..` in it. Where such a path cannot be followed, every file that can be listed is taken.
+ * `..` in it (also one that starts at `__dirname`). Where such a path cannot be followed, every
+ * file that can be listed is taken. Paths in files written for people are not followed.
  * With git, files that are ignored are left out; without it, everything but node_modules is
  * read.
  *
@@ -286,12 +299,24 @@ export function takeSnapshot(input: { dir: string; written: string[]; args: stri
   // The subproject, then every directory its files (and the files of those directories) lead to.
   const regions = [dir];
   const queued = new Set(regions);
-  const enqueue = (target: string, from: string): void => {
+  /**
+   * @param reference The path as it is written in `from`, for the message.
+   * @param anchored Whether `target` is the whole path, counted from the directory of `from`
+   *   (`join(__dirname, '..')`). Such a path to a directory above the subproject leads to the
+   *   files directly in it, and those are compared anyway.
+   */
+  const enqueue = (target: string, from: string, reference?: string, anchored = false): void => {
+    // The subproject itself is not above it: a path to it adds nothing.
+    const above = target !== dir && isInside(target, dir) && isInside(listRoot, target);
+    if (above && anchored) {
+      return;
+    }
     // Of a directory that contains the subproject, what is used cannot be told: take everything.
-    const directory = isInside(target, dir) && isInside(listRoot, target) ? listRoot : target;
+    const directory = above ? listRoot : target;
     if (!isInside(listRoot, directory)) {
+      const written = reference === undefined ? '' : ` with ${JSON.stringify(reference)}`;
       throw new SnapshotError(
-        `${toPosix(path.relative(dir, from))} points outside of what can be listed (${directory})`
+        `${toPosix(path.relative(dir, from))} points outside of what can be listed${written} (${directory})`
       );
     }
     if (![...queued].some((region) => isInside(region, directory))) {
@@ -299,17 +324,22 @@ export function takeSnapshot(input: { dir: string; written: string[]; args: stri
       regions.push(directory);
     }
   };
-  /** A path found in `file`: the directory it leads to joins the snapshot. */
-  const follow = (literal: string, file: string): void => {
-    // `../fixtures/${name}.json`: what is known is the part before the placeholder.
-    const fixed = literal.includes('${')
-      ? literal.slice(0, literal.lastIndexOf('/', literal.indexOf('${')) + 1)
-      : literal;
-    if (!fixed.startsWith('../')) {
-      // `<rootDir>/../shared`, or a lone `..` handed to path.join: where it leads is not known.
-      enqueue(listRoot, file);
-      return;
-    }
+  /**
+   * A path found in `file`: the directory it leads to joins the snapshot.
+   *
+   * @param fixed The known part of the path, relative to the directory of `file`.
+   * @param open Whether something unknown follows it (a placeholder, a variable).
+   * @param anchored Whether the path is written as one from the directory of the file
+   *   (`__dirname`), rather than as a plain relative path.
+   * @param reference The path as written in `file`, for the message.
+   */
+  const follow = (
+    fixed: string,
+    open: boolean,
+    anchored: boolean,
+    file: string,
+    reference: string
+  ): void => {
     const target = path.resolve(path.dirname(file), fixed);
     let isDirectory = false;
     try {
@@ -321,7 +351,54 @@ export function takeSnapshot(input: { dir: string; written: string[]; args: stri
     // Nothing is there (text that only looks like a path). Should the directory appear later, it
     // is looked at then.
     if (fs.existsSync(directory)) {
-      enqueue(directory, file);
+      enqueue(directory, file, reference, anchored && !open);
+    }
+  };
+  /** Follows every path in the text of `file` that has `..` in it. */
+  const scan = (text: string, file: string): void => {
+    // `__dirname, '..', 'x'`: the literals are one path. Their places are kept so that the
+    // search below does not take each `'..'` for a path of its own.
+    const taken: Array<[number, number]> = [];
+    for (const match of text.matchAll(FROM_HERE)) {
+      const literals = match[1] as string;
+      const segments = [...literals.matchAll(LITERAL)].map((literal) => literal[2] as string);
+      if (!segments.some(isUpward)) {
+        continue;
+      }
+      const start = (match.index ?? 0) + match[0].indexOf(literals);
+      taken.push([start, start + literals.length]);
+      // Anything but the closing parenthesis after them, or something added to what the call
+      // returns (`join(join(__dirname, '..'), name)`, `` `${join(__dirname, '..')}/x` ``,
+      // `+ '/x'`): the end of the path is not known.
+      const end = (match.index ?? 0) + match[0].length;
+      const open = match[3] === undefined || /^\s*[,+.}[]/.test(text.slice(end, end + 200));
+      const reference = match[0].slice(0, match[0].length - (match[3]?.length ?? 0));
+      follow(path.posix.join(...segments), open, true, file, reference);
+    }
+    for (const match of text.matchAll(UPWARD)) {
+      const at = match.index ?? 0;
+      if (taken.some(([start, end]) => at >= start && at < end)) {
+        continue;
+      }
+      const literal = match[2] as string;
+      // `${__dirname}/../shared` starts in the directory of the file.
+      const here = HERE.exec(literal);
+      const relative = here === null ? literal : `.${literal.slice(here[0].length)}`;
+      // `../fixtures/${name}.json`: what is known is the part before the placeholder.
+      const open = relative.includes('${');
+      const fixed = open
+        ? relative.slice(0, relative.lastIndexOf('/', relative.indexOf('${')) + 1)
+        : relative;
+      if (
+        (here === null && !fixed.startsWith('../')) ||
+        (open && isUpward(relative.slice(relative.indexOf('${'))))
+      ) {
+        // `<rootDir>/../shared`, a lone `..` handed to path.join, or a way up after a
+        // placeholder (`${__dirname}/${name}/../..`): where it leads is not known.
+        enqueue(listRoot, file);
+      } else {
+        follow(fixed, open, here !== null, file, literal);
+      }
     }
   };
   const add = (relative: string): void => {
@@ -354,12 +431,10 @@ export function takeSnapshot(input: { dir: string; written: string[]; args: stri
     } else {
       const content = fs.readFileSync(file);
       files[relative] = hashOf(content);
-      if (content.length <= SCAN_LIMIT && !content.subarray(0, 8000).includes(0)) {
+      const document = DOCUMENTS.includes(path.extname(file).toLowerCase());
+      if (!document && content.length <= SCAN_LIMIT && !content.subarray(0, 8000).includes(0)) {
         // `..\/` in JSON and `..\\` on Windows are the same path.
-        const text = content.toString('utf8').replace(/\\[\\/]/g, '/');
-        for (const match of text.matchAll(UPWARD)) {
-          follow(match[2] as string, file);
-        }
+        scan(content.toString('utf8').replace(/\\[\\/]/g, '/'), file);
       }
     }
   };
