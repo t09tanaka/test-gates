@@ -11,9 +11,10 @@ export const SCRIPT = /\.[cm]?[jt]sx?$/;
 export const COMPONENT = /\.(?:vue|svelte|astro|mdx)$/;
 const EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'];
 export const QUOTED = /(['"`])([^'"`\n]+)\1/g;
-// A module that is named to the runner instead of imported: jest.requireActual('fs').
+// A module that is named to the runner instead of imported: jest.requireActual('fs'), also with
+// a type argument: jest.createMockFromModule<Rates>('./rates').
 export const RUNNER_LOAD =
-  /\b(?:requireActual|requireMock|importActual|importMock|mock|doMock|unstable_mockModule)\(\s*(['"`])([^'"`\n]+)\1/g;
+  /\b(?:requireActual|requireMock|importActual|importMock|mock|doMock|unstable_mockModule|createMockFromModule|genMockFromModule)\s*(?:<[^()\n]*>)?\s*\(\s*(['"`])([^'"`\n]+)\1/g;
 
 function isFile(file: string): boolean {
   try {

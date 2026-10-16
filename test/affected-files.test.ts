@@ -323,6 +323,13 @@ describe('affectedInputs', () => {
       'src/c.spec.ts imports ./missing, which leads to no file',
     ],
     [
+      'an alias handed to createMockFromModule with a type argument',
+      {
+        'src/c.spec.ts': `${H}import { c } from './c';\nconst kit = jest.createMockFromModule<typeof c>('@/kit');\n`,
+      },
+      'src/c.spec.ts imports @/kit, which is neither a file nor an installed package (name an alias in settings.importAliases)',
+    ],
+    [
       'an alias that is not named',
       { 'src/c.spec.ts': `${H}import { c } from '@/c';\n` },
       'src/c.spec.ts imports @/c, which is neither a file nor an installed package (name an alias in settings.importAliases)',
@@ -1144,6 +1151,49 @@ describe('an import of types only', () => {
         'src/c.spec.ts': `${H}import { c } from './c';\nimport type { Rate } from './rate';\nvi.mock('./rate');\nit('c', () => {});\n`,
       })
     ).toEqual(['src/c.spec.ts', 'src/c.ts', 'src/rate.ts']);
+  });
+
+  const SWC = {
+    'jest.gates.config.cjs': "module.exports = { transform: { '^.+\\\\.ts$': '@swc/jest' } };\n",
+  };
+
+  it.each([
+    ['createMockFromModule', "jest.createMockFromModule<Rate>('./rate');"],
+    ['genMockFromModule', "jest.genMockFromModule('./rate');"],
+  ])('keeps a module whose path is handed to %s', (_name, call) => {
+    expect(
+      filesOf(
+        {
+          ...SWC,
+          'src/c.spec.ts': `import { c } from './c';\nimport type { Rate } from './rate';\nconst rate = ${call}\nit('c', () => { expect(c(rate)).toBe(0); });\n`,
+        },
+        'jest'
+      )
+    ).toEqual(['src/c.spec.ts', 'src/c.ts', 'src/rate.ts']);
+  });
+
+  it('follows the path of an import of types only where it is written elsewhere as text', () => {
+    expect(
+      filesOf(
+        {
+          ...SWC,
+          'src/c.spec.ts': `import { c } from './c';\nimport type { Rate } from './rate';\nconst load = (name: string) => jest.requireActual(name);\nit('c', () => { expect(c(load('./rate'))).toBe(0); });\n`,
+        },
+        'jest'
+      )
+    ).toEqual(['src/c.spec.ts', 'src/c.ts', 'src/rate.ts']);
+  });
+
+  it('leaves out the path of an import of types only on its own line, also twice', () => {
+    expect(
+      filesOf(
+        {
+          ...SWC,
+          'src/c.spec.ts': `import { c } from './c';\nimport type { Rate } from './rate'; import type { Due } from './rate';\nit('c', () => { expect(c(1 as Rate)).toBe(0); });\n`,
+        },
+        'jest'
+      )
+    ).toEqual(['src/c.spec.ts', 'src/c.ts']);
   });
 
   it.each([

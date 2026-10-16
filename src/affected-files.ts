@@ -391,12 +391,13 @@ export function fileEdges(
     ...refs.filter((ref) => !dropped(ref)).map((ref) => ref.module),
     ...[...code.matchAll(RUNNER_LOAD)].map((match) => match[2] as string),
   ]);
-  const typesOnly = new Set(
-    refs
-      .filter(dropped)
-      .map((ref) => ref.module)
-      .filter((module) => !specifiers.has(module))
-  );
+  // The specifier of each import of types only that is dropped, by its line: the text there is
+  // not followed below. The same text elsewhere still is.
+  const typeLines = new Map<string, number>();
+  for (const ref of refs.filter(dropped)) {
+    const key = `${ref.line}:${ref.module}`;
+    typeLines.set(key, (typeLines.get(key) ?? 0) + 1);
+  }
   for (const specifier of specifiers) {
     if (path.isAbsolute(specifier) || specifier.startsWith('file:')) {
       const resolved = resolveFiles(
@@ -445,9 +446,21 @@ export function fileEdges(
   }
   // A path given to the runner as text: vi.mock('./rates', …). Also one in a comment, which
   // errs on the strict side.
+  // The lines of the text without its comments are those of the source.
+  let line = 1;
+  let counted = 0;
   for (const match of source.matchAll(QUOTED)) {
+    for (; counted < match.index; counted += 1) {
+      if (source[counted] === '\n') {
+        line += 1;
+      }
+    }
     const text = match[2] as string;
-    if (text.startsWith('.') && !specifiers.has(text) && !typesOnly.has(text)) {
+    const key = `${line}:${text}`;
+    const left = typeLines.get(key) ?? 0;
+    if (left > 0) {
+      typeLines.set(key, left - 1);
+    } else if (text.startsWith('.') && !specifiers.has(text)) {
       found.loads.push(...resolveFiles(path.resolve(path.dirname(file), text)).map(realpath));
     }
   }
