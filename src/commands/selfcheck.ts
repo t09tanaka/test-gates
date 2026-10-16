@@ -5,7 +5,14 @@ import path from 'node:path';
 import { type Shard, UsageError } from '../core/args.js';
 import { ManifestError } from '../core/manifest.js';
 import { findImporters } from '../core/import-policy.js';
-import { cleanHold, jobFlags, jobsRefused, knownCommand, type Runner } from '../core/jobs.js';
+import {
+  cleanHold,
+  jobFlags,
+  jobsPlan,
+  jobsRefused,
+  knownCommand,
+  type Runner,
+} from '../core/jobs.js';
 import {
   EXCLUDE_ALL_ENV,
   EXCLUDE_ENV,
@@ -359,13 +366,18 @@ export async function runSelfcheck(
   const jobs = selection.jobs ?? 1;
   if (jobs > 1 && waiting.length > 1) {
     const known = knownCommand(program, args);
-    const configFile = gateConfigFile(args);
-    const ask = (loaded: ReturnType<typeof loadedFiles>) =>
-      jobsRefused({
-        failurePattern: manifest.settings.selfcheckFailurePattern,
-        command: known,
-        configSource: gateConfigSource(manifest, args),
-        ...loaded,
+    const refusal = jobsRefused({
+      failurePattern: manifest.settings.selfcheckFailurePattern,
+      command: known,
+      configSource: gateConfigSource(manifest, args),
+    });
+    if (refusal !== null || !('runner' in known)) {
+      io.out(`test-gates selfcheck: one negative control at a time (${refusal})`);
+    } else {
+      // The files are read only when nothing else stands against it.
+      const plan = jobsPlan({
+        gates: waiting.map((gate) => ({ path: gate.path, spec: gate.spec as string })),
+        ...loadedFiles(manifest, gateConfigFile(args)),
         trusted:
           manifest.settings.importMode === 'allowlist'
             ? manifest.settings.importAllow.flatMap((rule) =>
@@ -373,40 +385,50 @@ export async function runSelfcheck(
               )
             : [],
       });
-    // The files are read only when nothing else stands against it.
-    const refusal =
-      ask({ files: [], lost: null }) ?? ask(loadedFiles(manifest, configFile as string));
-    if (refusal !== null || !('runner' in known)) {
-      io.out(`test-gates selfcheck: one negative control at a time (${refusal})`);
-    } else {
-      const specs = new Set(manifest.gates.map((gate) => gate.spec)).size - 1;
-      const names = [
-        manifest.dir,
-        realPath(manifest.dir),
-        ...manifest.gates.flatMap((gate) => [gate.path, gate.spec as string]),
-      ].sort((left, right) => right.length - left.length);
-      const results = await runAtOnce(manifest, waiting, jobs, known.runner, executable, args);
-      for (const [gate, result] of results) {
-        const output = `${result.stdout}${result.stderr}`;
-        const clean = cleanHold({
-          held: judgeSelfcheck({ status: result.status, output, gatePath: gate.path }) === null,
-          signal: result.signal,
-          output,
-          runner: known.runner,
-          specs,
-          gatePath: gate.path,
-          others: manifest.gates.map((other) => other.path).filter((other) => other !== gate.path),
-          names,
-        });
-        if (clean) {
-          heldAtOnce.set(gate.path, result.status);
+      if (plan.alone.length > 0) {
+        // Every one of them and every reason, so that all can be dealt with at once.
+        io.out(
+          `test-gates selfcheck: ${plan.alone.length} of ${waiting.length} negative control(s) run one at a time, since in their runs something that loads the gate also loads a file that may meet what another run is doing:`
+        );
+        for (const { gate, reasons } of plan.alone) {
+          for (const reason of reasons) {
+            io.out(`  ${gate}: ${reason}`);
+          }
         }
       }
-      const again = waiting.length - heldAtOnce.size;
-      if (again > 0) {
-        io.out(
-          `test-gates selfcheck: ${again} of ${waiting.length} negative control(s) did not hold cleanly next to others and run again on their own`
-        );
+      const atOnce = waiting.filter((gate) => plan.atOnce.includes(gate.path));
+      if (atOnce.length > 1) {
+        const specs = new Set(manifest.gates.map((gate) => gate.spec)).size - 1;
+        const names = [
+          manifest.dir,
+          realPath(manifest.dir),
+          ...manifest.gates.flatMap((gate) => [gate.path, gate.spec as string]),
+        ].sort((left, right) => right.length - left.length);
+        const results = await runAtOnce(manifest, atOnce, jobs, known.runner, executable, args);
+        for (const [gate, result] of results) {
+          const output = `${result.stdout}${result.stderr}`;
+          const clean = cleanHold({
+            held: judgeSelfcheck({ status: result.status, output, gatePath: gate.path }) === null,
+            signal: result.signal,
+            output,
+            runner: known.runner,
+            specs,
+            gatePath: gate.path,
+            others: manifest.gates
+              .map((other) => other.path)
+              .filter((other) => other !== gate.path),
+            names,
+          });
+          if (clean) {
+            heldAtOnce.set(gate.path, result.status);
+          }
+        }
+        const again = atOnce.length - heldAtOnce.size;
+        if (again > 0) {
+          io.out(
+            `test-gates selfcheck: ${again} of ${atOnce.length} negative control(s) did not hold cleanly next to others and run again on their own`
+          );
+        }
       }
     }
   }

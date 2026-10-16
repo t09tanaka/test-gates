@@ -4,8 +4,10 @@
 // words, that nothing but the threshold of its gate went wrong (cleanHold). Every other control
 // is run again on its own, and that run counts. What a run next to others cannot show is a spec
 // that quietly does something else because another run is there: one that finds a file, a port
-// or a lock taken, or that looks at the time. So the controls are only started at the same time
-// when no file a gate run loads can be seen to reach outside of its process (jobsRefused).
+// or a lock taken, or that looks at the time, and then covers less of another gate. So the
+// controls are only started at the same time when the gate command and config are known
+// (jobsRefused), and a control only when no spec in its run that loads its gate, and no file the
+// gate config names, can be seen to reach outside of its process (jobsPlan).
 
 /** The runners whose gate command and output are known. */
 export type Runner = 'jest' | 'vitest';
@@ -156,22 +158,17 @@ export function reachesOutside(file: LoadedFile, trusted: string[]): string | nu
 
 /**
  * Why the negative controls are not run at the same time although `--jobs` asks for it, or null
- * when they can be.
+ * when they can be, as far as the gate command and config tell. Which of them can is then up to
+ * the files their runs load (jobsPlan).
  *
  * @param input.command What knownCommand says of the gate command.
  * @param input.configSource Text of the gate config the gate command names; null when it
  *   cannot be read.
- * @param input.lost An import of a loaded file that could not be followed, or null.
- * @param input.files Every file a gate run loads, as far as the imports could be followed.
- * @param input.trusted Packages the project vouches for (see reachesOutside).
  */
 export function jobsRefused(input: {
   failurePattern: string | null;
   command: { runner: Runner } | { stray: string };
   configSource: string | null;
-  lost: string | null;
-  files: LoadedFile[];
-  trusted: string[];
 }): string | null {
   // (An empty pattern counts as none, as it does for the judge.)
   if (input.failurePattern) {
@@ -185,16 +182,95 @@ export function jobsRefused(input: {
   if (input.configSource === null || !input.configSource.includes(helper)) {
     return `the gate config does not use ${helper}`;
   }
-  if (input.lost !== null) {
-    return `${input.lost} cannot be followed, so what the gate run loads is not known`;
-  }
-  for (const file of input.files) {
-    const reach = reachesOutside(file, input.trusted);
-    if (reach !== null) {
-      return `${file.path} ${reach}, and may meet what another run is doing`;
+  return null;
+}
+
+/**
+ * Where the files of a gate run come from: the spec of a gate, or what the gate config names (a
+ * setup file runs with every spec), with all the project files they import.
+ */
+export interface LoadRoot {
+  /** The spec, relative to the subproject; null for the files the gate config names. */
+  spec: string | null;
+  /** Paths of every file it loads, itself among them (see LoadedFile.path). */
+  files: string[];
+  /** The first of its imports that leads to no file and to no installed package, or null. */
+  lost: string | null;
+}
+
+/**
+ * Which of the negative controls may run next to others, and why each of the others may not.
+ *
+ * A control leaves out the spec of its gate and runs every other spec. What a spec does
+ * differently while another run is there can only change the control of a gate that the spec
+ * covers, and a spec can only cover a gate it loads. So the control of a gate runs on its own
+ * when, in its run, something that loads the gate (or may load it) also loads a file that reaches
+ * outside of its process (reachesOutside):
+ *
+ * - a spec other than the gate's own that imports the gate, directly or through other files,
+ *   and among whose files one reaches outside;
+ * - a spec other than the gate's own whose imports cannot all be followed, or among whose files
+ *   one loads a module whose name is computed: it may load any gate;
+ * - the files the gate config names, when one of them reaches outside or cannot be followed:
+ *   they run with every spec.
+ *
+ * A spec that reaches outside but loads no other gate (the usual spec of a gate: the gate and
+ * fixed values) does not keep any control from running next to others.
+ *
+ * @param input.gates The controls to run: the path of each gate and of its spec.
+ * @param input.files Every file of the roots (see LoadedFile).
+ * @param input.trusted Packages the project vouches for (see reachesOutside).
+ * @returns `alone`: each control that runs on its own, in the order of `gates`, with a line for
+ *   every root that keeps it from running next to others.
+ */
+export function jobsPlan(input: {
+  gates: { path: string; spec: string }[];
+  files: LoadedFile[];
+  roots: LoadRoot[];
+  trusted: string[];
+}): { atOnce: string[]; alone: { gate: string; reasons: string[] }[] } {
+  const byPath = new Map(input.files.map((file) => [file.path, file]));
+  const roots = input.roots.map((root) => {
+    const loaded = root.files.flatMap((name) => {
+      const file = byPath.get(name);
+      return file === undefined ? [] : [file];
+    });
+    const reaches = loaded.flatMap((file) => {
+      const reach = reachesOutside(file, input.trusted);
+      return reach === null ? [] : [`${file.path} ${reach}`];
+    });
+    const unknown =
+      root.lost !== null ||
+      loaded.some((file) => COMPUTED_LOAD.test(file.source.replace(/\s/g, '')));
+    return {
+      ...root,
+      unknown,
+      reasons: [...(root.lost === null ? [] : [`${root.lost} cannot be followed`]), ...reaches],
+    };
+  });
+  const atOnce: string[] = [];
+  const alone: { gate: string; reasons: string[] }[] = [];
+  for (const gate of input.gates) {
+    const reasons = roots.flatMap((root) => {
+      if (root.reasons.length === 0 || root.spec === gate.spec) {
+        return [];
+      }
+      const what = root.reasons.join('; ');
+      if (root.spec === null) {
+        return [`the gate config names files that run with every spec, and ${what}`];
+      }
+      if (root.files.includes(gate.path)) {
+        return [`${root.spec} loads it, and ${what}`];
+      }
+      return root.unknown ? [`${root.spec} may load it, and ${what}`] : [];
+    });
+    if (reasons.length === 0) {
+      atOnce.push(gate.path);
+    } else {
+      alone.push({ gate: gate.path, reasons });
     }
   }
-  return null;
+  return { atOnce, alone };
 }
 
 // Words a gate run prints when something went wrong besides a threshold (a failed, skipped or

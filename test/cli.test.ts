@@ -1262,7 +1262,6 @@ describe('test-gates selfcheck', () => {
         `test-gates selfcheck: one negative control at a time (${reason})\n`;
       const COMMAND = (stray: string) =>
         `the gate command is not known to keep runs at the same time apart: only jest or "vitest run" with --config and options for the number of workers is (found: ${stray})`;
-      const MEETS = ', and may meet what another run is doing';
 
       it('runs the controls at the same time, each line of runs in a directory of its own, and prints what one at a time prints', () => {
         const dir = asVitest();
@@ -1360,90 +1359,172 @@ describe('test-gates selfcheck', () => {
           { 'vitest.gates.config.ts': 'export default {};\n' },
           'the gate config does not use createVitestGatesConfig',
         ],
+      ])('runs one at a time for %s, and says why', (_name, files, reason) => {
+        const dir = asVitest(files);
+        expect(testGates(['selfcheck', '--jobs', '4', '--dir', dir]).stdout).toBe(
+          ONE_AT_A_TIME(reason) + OK
+        );
+        expect(runs(dir)).toEqual(alone);
+      });
+
+      /** What is printed first when the controls of `gates` run on their own, and why. */
+      const SOME_ALONE = (gates: string[], reason: string) =>
+        `test-gates selfcheck: ${gates.length} of 5 negative control(s) run one at a time, since in their runs something that loads the gate also loads a file that may meet what another run is doing:\n` +
+        gates.map((gate) => `  src/${gate}.ts: ${reason}\n`).join('');
+      /** The runs: those next to others first, then those on their own in the order of the gates. */
+      const split = (gates: string[]) => {
+        const others = names.filter((name) => !gates.includes(name));
+        return {
+          atOnce: (others.length > 1
+            ? others.map((name) => `one src/${name}.spec.ts at once`)
+            : []
+          ).sort(),
+          alone: names
+            .filter((name) => gates.includes(name) || others.length <= 1)
+            .map((name) => `one src/${name}.spec.ts`),
+        };
+      };
+      const expectRuns = (dir: string, gates: string[]) => {
+        const { atOnce: together, alone: apart } = split(gates);
+        const log = runs(dir);
+        expect(log.slice(0, together.length).sort()).toEqual(together);
+        expect(log.slice(together.length)).toEqual(apart);
+      };
+      // The spec of src/fee.ts also loads src/tax.ts, and with it a file that reaches outside.
+      const LOADS_TAX = "import './tax';\n";
+      const loads = (what: string) => `src/fee.spec.ts loads it, and ${what}`;
+
+      it.each<[string, Record<string, string | object>, string]>([
         [
-          'a spec that reads files',
-          { 'src/fee.spec.ts': `import fs from 'node:fs';\n${SPEC}` },
-          `src/fee.spec.ts imports node:fs${MEETS}`,
+          'a file that reads files',
+          { 'src/fee.spec.ts': `import fs from 'node:fs';\n${LOADS_TAX}${SPEC}` },
+          loads('src/fee.spec.ts imports node:fs'),
         ],
         [
-          'a spec that imports a built-in module that only computes',
-          { 'src/fee.spec.ts': `import path from 'node:path';\n${SPEC}` },
-          `src/fee.spec.ts imports node:path${MEETS}`,
+          'a built-in module that only computes',
+          { 'src/fee.spec.ts': `import path from 'node:path';\n${LOADS_TAX}${SPEC}` },
+          loads('src/fee.spec.ts imports node:path'),
         ],
         [
-          'a spec that waits',
+          'a wait',
           {
-            'src/fee.spec.ts':
-              "it('x', async () => {\n  await new Promise((done) => setTimeout(done, 5));\n});\n",
+            'src/fee.spec.ts': `${LOADS_TAX}it('x', async () => {\n  await new Promise((done) => setTimeout(done, 5));\n});\n`,
           },
-          `src/fee.spec.ts uses setTimeout${MEETS}`,
+          loads('src/fee.spec.ts uses setTimeout'),
         ],
         [
           // The first counterexample: a lock on a file, taken by a helper of the spec.
-          'a file that a spec imports and that reads files',
+          'a helper that reads files',
           {
-            'src/fee.spec.ts': `import { acquire } from './support/lock';\n${SPEC}`,
+            'src/fee.spec.ts': `import { acquire } from './support/lock';\n${LOADS_TAX}${SPEC}`,
             'src/support/lock.ts':
               "import fs from 'node:fs';\nexport const acquire = () => fs.existsSync('lock');\n",
           },
-          `src/support/lock.ts imports node:fs${MEETS}`,
+          loads('src/support/lock.ts imports node:fs'),
         ],
         [
           'a file two imports away, written with the extension of the compiled file',
           {
-            'src/fee.spec.ts': `import './support/index.js';\n${SPEC}`,
+            'src/fee.spec.ts': `import './support/index.js';\n${LOADS_TAX}${SPEC}`,
             'src/support/index.ts': "export * from './port';\n",
             'src/support/port.ts':
               "import net from 'net';\nexport const server = net.createServer();\n",
           },
-          `src/support/port.ts imports net${MEETS}`,
+          loads('src/support/port.ts imports net'),
         ],
         [
-          'a directory that a spec imports',
+          'a directory',
           {
-            'src/fee.spec.ts': `import './support';\n${SPEC}`,
+            'src/fee.spec.ts': `import './support';\n${LOADS_TAX}${SPEC}`,
             'src/support/index.ts': 'export const at = Date.now();\n',
           },
-          `src/support/index.ts uses Date.now${MEETS}`,
+          loads('src/support/index.ts uses Date.now'),
         ],
         [
-          'a file that a spec reaches through an alias',
+          'a file reached through an alias',
           {
             'test-gates.json': manifest({ importAliases: [{ prefix: '@/', target: 'src/' }] }),
-            'src/fee.spec.ts': `import '@/support/clock';\n${SPEC}`,
+            'src/fee.spec.ts': `import '@/support/clock';\n${LOADS_TAX}${SPEC}`,
             'src/support/clock.ts': 'export const at = performance.now();\n',
           },
-          `src/support/clock.ts uses performance.now${MEETS}`,
+          loads('src/support/clock.ts uses performance.now'),
         ],
         [
-          'a file that a spec only names to the runner',
+          'a file only named to the runner',
           {
-            'src/fee.spec.ts': `vi.mock('./rates');\n${SPEC}`,
+            'src/fee.spec.ts': `vi.mock('./rates');\n${LOADS_TAX}${SPEC}`,
             'src/rates.ts': "import os from 'node:os';\nexport const cores = os.cpus().length;\n",
           },
-          `src/rates.ts imports node:os${MEETS}`,
+          loads('src/rates.ts imports node:os'),
         ],
         [
-          'a built-in module that a spec gets from the runner',
-          { 'src/fee.spec.ts': `const files = jest.requireActual('fs');\n${SPEC}` },
-          `src/fee.spec.ts imports fs${MEETS}`,
+          'a built-in module got from the runner',
+          { 'src/fee.spec.ts': `const files = jest.requireActual('fs');\n${LOADS_TAX}${SPEC}` },
+          loads('src/fee.spec.ts imports fs'),
         ],
         [
-          'a package that a spec only mocks',
+          'a package only mocked',
           {
-            'src/fee.spec.ts': `vi.mock('some-lock');\n${SPEC}`,
+            'src/fee.spec.ts': `vi.mock('some-lock');\n${LOADS_TAX}${SPEC}`,
             'node_modules/some-lock/package.json': { name: 'some-lock', version: '1.0.0' },
           },
-          `src/fee.spec.ts imports the package some-lock, which is not looked into${MEETS}`,
+          loads('src/fee.spec.ts imports the package some-lock, which is not looked into'),
         ],
         [
-          'a gate that reads the clock',
+          'a package that is not the runner',
+          {
+            'src/fee.spec.ts': `import { lock } from 'some-lock';\n${LOADS_TAX}${SPEC}`,
+            'node_modules/some-lock/package.json': { name: 'some-lock', version: '1.0.0' },
+          },
+          loads('src/fee.spec.ts imports the package some-lock, which is not looked into'),
+        ],
+        [
+          'the gate it loads, which reads the clock',
           {
             'src/tax.ts': 'export const value = Date.now();\n',
-            'src/tax.spec.ts': `import './tax';\n${SPEC}`,
+            'src/fee.spec.ts': `${LOADS_TAX}${SPEC}`,
           },
-          `src/tax.ts uses Date.now${MEETS}`,
+          loads('src/tax.ts uses Date.now'),
         ],
+      ])(
+        'runs on its own the control of a gate whose run has another spec that loads it and %s',
+        (_name, files, reason) => {
+          const dir = asVitest(files);
+          expect(testGates(['selfcheck', '--jobs', '4', '--dir', dir]).stdout).toBe(
+            SOME_ALONE(['tax'], reason) + OK
+          );
+          expectRuns(dir, ['tax']);
+        }
+      );
+
+      it('never starts next to others the control it runs on its own, and still judges the others', () => {
+        const dir = asVitest({
+          'src/fee.spec.ts': `import fs from 'node:fs';\n${LOADS_TAX}${SPEC}`,
+          // The stand-in reports no threshold for this gate in any run: its control does not hold.
+          'shy-alone.txt': 'src/age.ts',
+        });
+        const result = testGates(['selfcheck', '--jobs', '4', '--dir', dir]);
+        expect(result.status).toBe(1);
+        expect(result.stdout).toContain(
+          `${SOME_ALONE(['tax'], loads('src/fee.spec.ts imports node:fs'))}test-gates selfcheck: 1 of 4 negative control(s) did not hold cleanly next to others and run again on their own\n`
+        );
+        expect(result.stderr).toContain(
+          '  ✗ src/age.ts: the gate passed although the spec of src/age.ts was left out.'
+        );
+        expect(result.stderr).toContain(
+          'test-gates selfcheck: FAILED (1 of 5 negative control(s))'
+        );
+        const commands = fs.readFileSync(path.join(dir, 'at-once.log'), 'utf8');
+        expect(commands.trim().split('\n')).toHaveLength(4);
+        const log = runs(dir);
+        expect(log.slice(0, 4).sort()).toEqual(
+          ['age', 'rate', 'fee', 'toll'].map((name) => `one src/${name}.spec.ts at once`).sort()
+        );
+        // What runs on its own comes after, in the order of the gates.
+        expect(log.slice(4)).toEqual(['one src/age.spec.ts', 'one src/tax.spec.ts']);
+      });
+
+      it.each<[string, Record<string, string | object>, string]>([
         [
           'a setup file that the gate config names',
           {
@@ -1451,7 +1532,7 @@ describe('test-gates selfcheck', () => {
               "export default createVitestGatesConfig({ test: { setupFiles: ['./test/setup.ts'] } });\n",
             'test/setup.ts': "import fs from 'fs';\nfs.writeFileSync('started', '');\n",
           },
-          `test/setup.ts imports fs${MEETS}`,
+          'test/setup.ts imports fs',
         ],
         [
           'a setup file that the gate config names from the root, without its extension',
@@ -1460,7 +1541,7 @@ describe('test-gates selfcheck', () => {
               "export default createVitestGatesConfig({ test: { setupFiles: ['<rootDir>/test/setup'] } });\n",
             'test/setup.js': 'globalThis.started = true;\n',
           },
-          `test/setup.js uses globalThis${MEETS}`,
+          'test/setup.js uses globalThis',
         ],
         [
           'a setup file named in a file the gate config imports',
@@ -1472,40 +1553,57 @@ describe('test-gates selfcheck', () => {
             'test/setup.ts':
               "import { spawnSync } from 'node:child_process';\nspawnSync('true');\n",
           },
-          `test/setup.ts imports node:child_process${MEETS}`,
+          'test/setup.ts imports node:child_process',
         ],
-        [
-          'an import that leads to no file',
-          { 'src/fee.spec.ts': `import './support/gone';\n${SPEC}` },
-          './support/gone (imported by src/fee.spec.ts) cannot be followed, so what the gate run loads is not known',
-        ],
-        [
-          'an import that is neither a file nor an installed package',
-          { 'src/fee.spec.ts': `import '~/support/rates';\n${SPEC}` },
-          '~/support/rates (imported by src/fee.spec.ts) cannot be followed, so what the gate run loads is not known',
-        ],
-        [
-          'a package that is not the runner',
-          {
-            'src/fee.spec.ts': `import { lock } from 'some-lock';\n${SPEC}`,
-            'node_modules/some-lock/package.json': { name: 'some-lock', version: '1.0.0' },
-          },
-          `src/fee.spec.ts imports the package some-lock, which is not looked into${MEETS}`,
-        ],
-        [
-          'a module whose name is computed',
-          { 'src/fee.spec.ts': `const rates = require(name);\n${SPEC}` },
-          `src/fee.spec.ts loads a module whose name is computed${MEETS}`,
-        ],
-      ])('runs one at a time for %s, and says why', (_name, files, reason) => {
+      ])('runs every control on its own for %s that reaches outside', (_name, files, reason) => {
         const dir = asVitest(files);
         expect(testGates(['selfcheck', '--jobs', '4', '--dir', dir]).stdout).toBe(
-          ONE_AT_A_TIME(reason) + OK
+          SOME_ALONE(names, `the gate config names files that run with every spec, and ${reason}`) +
+            OK
         );
         expect(runs(dir)).toEqual(alone);
       });
 
+      it.each<[string, Record<string, string | object>, string]>([
+        [
+          'an import that leads to no file',
+          { 'src/fee.spec.ts': `import './support/gone';\n${SPEC}` },
+          './support/gone (imported by src/fee.spec.ts) cannot be followed',
+        ],
+        [
+          'an import that is neither a file nor an installed package',
+          { 'src/fee.spec.ts': `import '~/support/rates';\n${SPEC}` },
+          '~/support/rates (imported by src/fee.spec.ts) cannot be followed',
+        ],
+        [
+          'a module whose name is computed',
+          { 'src/fee.spec.ts': `const rates = require(name);\n${SPEC}` },
+          'src/fee.spec.ts loads a module whose name is computed',
+        ],
+      ])(
+        'runs on their own the controls of every other gate for a spec with %s',
+        (_name, files, reason) => {
+          const dir = asVitest(files);
+          const others = names.filter((name) => name !== 'fee');
+          expect(testGates(['selfcheck', '--jobs', '4', '--dir', dir]).stdout).toBe(
+            SOME_ALONE(others, `src/fee.spec.ts may load it, and ${reason}`) + OK
+          );
+          // The control of src/fee.ts leaves that spec out, but is the only one left.
+          expect(runs(dir)).toEqual(alone);
+        }
+      );
+
       it.each<[string, Record<string, string | object>]>([
+        [
+          // The usual spec of a gate that needs a clock or a file: it loads no other gate.
+          'specs that reach outside but load only their own gate',
+          {
+            'src/fee.spec.ts': `import fs from 'node:fs';\nimport './fee';\n${SPEC}`,
+            'src/tax.spec.ts': `import { at } from './support/clock';\nimport './tax';\n${SPEC}`,
+            'src/support/clock.ts': 'export const at = () => new Date();\n',
+            'src/toll.ts': 'export const value = Date.now();\n',
+          },
+        ],
         [
           'specs that import the runner, their gate, a file that only computes and a type',
           {
@@ -1527,7 +1625,7 @@ describe('test-gates selfcheck', () => {
           'a package the project lets its gates import',
           {
             'test-gates.json': manifest({ imports: { mode: 'allowlist', allow: ['decimal.js'] } }),
-            'src/fee.spec.ts': `import Decimal from 'decimal.js';\n${SPEC}`,
+            'src/fee.spec.ts': `import Decimal from 'decimal.js';\n${LOADS_TAX}${SPEC}`,
             'node_modules/decimal.js/package.json': { name: 'decimal.js', version: '1.0.0' },
           },
         ],
@@ -1548,14 +1646,16 @@ describe('test-gates selfcheck', () => {
       it('does not trust the packages of settings.imports.allow while the mode is blocklist', () => {
         const dir = asVitest({
           'test-gates.json': manifest({ imports: { allow: ['decimal.js'] } }),
-          'src/fee.spec.ts': `import Decimal from 'decimal.js';\n${SPEC}`,
+          'src/fee.spec.ts': `import Decimal from 'decimal.js';\n${LOADS_TAX}${SPEC}`,
           'node_modules/decimal.js/package.json': { name: 'decimal.js', version: '1.0.0' },
         });
         expect(testGates(['selfcheck', '--jobs', '4', '--dir', dir]).stdout).toBe(
-          ONE_AT_A_TIME(
-            `src/fee.spec.ts imports the package decimal.js, which is not looked into${MEETS}`
+          SOME_ALONE(
+            ['tax'],
+            loads('src/fee.spec.ts imports the package decimal.js, which is not looked into')
           ) + OK
         );
+        expectRuns(dir, ['tax']);
       });
 
       it('takes the gate command after "--" for what it is', () => {
