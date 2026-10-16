@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.4.2
+
+Most of this release closes cases where `test-gates mutation` took over the results of the last run although a file the run depends on had changed, with `--affected` and without it. The rest spares full runs that were not needed. Two things to know when updating: the first run after it is one of every mutant, since the record holds the version of test-gates; and in a project whose runner config maps modules in a way that `settings.importAliases` does not name, `--affected` no longer tells the gates apart until the aliases are added (`test-gates doctor` names them).
+
+### Fixed
+
+These made a run take over results that a change could have turned into survivors.
+
+- `mutation --affected` kept the results of a gate after a change of a file it depends on:
+  - An import put together from strings (`import('./locales/' + lang + '.ts')`, `require('./rules/' + lang)`) was not followed at all. Any `require()` / `import()` whose argument is not one string literal is now one whose path is not written out, and what the gates depend on is unknown. Allowlist mode of `test-gates check` now rejects such an import too.
+  - With `x.ts` and `x.js` next to each other, `./x` was taken for `x.ts` alone while the runner may load `x.js`. Every script that exists for a path is now followed (also by the comparison and by `selfcheck --jobs`).
+  - Module maps of the runner (`resolve.alias` / `test.alias` of Vite, `moduleNameMapper` of Jest, also in package.json, `jsc.paths` of `.swcrc`, tsconfig `paths` for Vitest, Babel `module-resolver`) can send an import somewhere else than the path says. Such a map now makes what the gates depend on unknown, unless it does what an alias of `settings.importAliases` does, is a `moduleNameMapper` entry to one fixed module (a style stub), or is a `paths` entry of one name that leads to an installed package. The reason names every such map and the alias to add; `test-gates doctor` shows it in its note.
+  - Where the run drops imports of types, a spec with `import type { Rate } from './rate'` and `jest.createMockFromModule<Rate>('./rate')` left `./rate` out of what the gate loads. `createMockFromModule` and `genMockFromModule` are now followed, also with a type argument.
+- `test-gates mutation` (without `--affected` too) reused the results after a change in files the comparison did not reach:
+  - A directory whose name holds glob characters (`shared/[rates]`, a `[locale]` of Next.js) was listed as empty by git and dropped out of the comparison. The path handed to git is now escaped.
+  - A plain `..` path that exists only from the subproject, where the run starts (`readFileSync('../shared-data/x.json')` in a spec, `path.resolve('../…')` in a setup file), was resolved from the directory of the file only. It is now resolved from the subproject as well. One from the subproject that lies outside of what can be listed is refused, and one that ends in a directory holding the repository makes every file of the repository part of the comparison.
+  - A file git ignores that the run loads (generated code, downloaded fixtures a spec imports) was not compared. With the helper's runner config it is now hashed and its paths followed.
+  - `patches/` of patch-package, in the subproject and in the directories above it, is compared.
+  - The node on PATH, which the shebang of `node_modules/.bin/stryker` starts, is recorded as `Node.js on PATH`; a change of it runs every mutant.
+  - A path in a file above the subproject that the comparison reaches (`"extends": "./configs/strict.json"` in a base tsconfig at the top of the repository) is followed by the same rules as a path in the subproject.
+
+### Changed
+
+These spare full runs, or runs of more gates, that were not needed.
+
+- `mutation --affected` gives up telling the gates apart in fewer cases:
+  - An import of a module that only has a declaration file (`@/types/schema` for `src/types/schema.d.ts`, `index.d.ts` of a directory) leads to that file. A script of the same name still comes first.
+  - An import of types only (`import type`, `export type … from`, an import whose names are all marked `type`) is left out of what a gate depends on, but only where the run is known not to check types: no checkers in the Stryker config, and Vitest without `typecheck`, or Jest with ts-jest and `isolatedModules: true` or `diagnostics: false`, or with `@swc/jest`, `babel-jest`, `esbuild-jest` or `@sucrase/jest` and neither ts-jest nor a preset. `import { type A } from './a'` is left out only where no compiler config keeps imports as written (`verbatimModuleSyntax`, `preserveValueImports`, `importsNotUsedAsValues`, `onlyRemoveTypeImports`). Anything else keeps the import.
+  - A file other than a script that a runner config names (`coverage.exclude: ['src/components/Foo.vue']`, a JSON stub of `moduleNameMapper`) is taken as a config by itself: a change of it runs every gate again, but a component named there no longer makes `--affected` refuse.
+  - A file that uses `__dirname`, `__filename` or `import.meta.url` / `dirname` / `filename` only to find where it lies keeps the gates apart. It is refused only when it may also read by that path: a call that reads or looks at a file or a directory, a mock named by a computed path, a `Worker`, or an import of a package or built-in module other than `path`, `url`, `vitest` and `@jest/globals`.
+  - `require('./rates')` of `rates.json` leads to the JSON file (also `<dir>/index.json`), after the scripts, as Node, Jest and Vite do.
+  - An import or a word such as `readFileSync` in a comment no longer counts. A relative path in quotes is still followed wherever it is written.
+  - A mock in a `__mocks__` next to a module (`src/__mocks__/dep.ts`) is loaded with that module, so a change of it runs again only the gates that load the module. The `__mocks__` at the top of the subproject, and a mock named as an installed package or a built-in module, are still configs.
+- A run without `--affected` writes what each gate depends on too, whenever it writes a record. Before, the next `--affected` run after a run without it, or after `-- --force`, had nothing to go on and ran every mutant. Runs with `--gate` and runs that fail still write none.
+- A mutant that timed out in the last run and that an `expectedTimeouts` entry of its gate points at is taken over, with and without `--affected`. Before, such mutants that never end were run again on every run. Any other timeout is still run again.
+- A plain path to a file directly in a directory above the subproject (`"extends": "../../tsconfig.base.json"`) no longer makes every file of the repository part of the comparison: that file is compared anyway. A path to a directory above, or to a missing file there, still does.
+- The files of Stryker's reporters (`htmlReporter`, `jsonReporter`, or their defaults) and the files that `ignorePatterns` leaves out (`.eslintcache`, `tsconfig.tsbuildinfo`) are no longer taken for files the run reads. A new report or cache no longer runs every mutant, and the paths in an HTML report no longer make every file of the repository part of the comparison. Where a pattern of `ignorePatterns` starts with `!`, nothing is left out by it. The paths in `.html` files are not followed.
+- `test-gates check` keeps a `..` of an import that leaves the subproject (`resolveSpecifier`): `../../shared/x` from `src/a.ts` is `../shared/x`, not `shared/x`. An import outside is judged by the path it points at, a mock of a module outside is no longer taken for a mock of the gate, and `selfcheck` no longer lists a file that imports a module outside as an importer of a gate of the same path inside. A root-anchored `impurePaths` rule (`^shared/`) no longer matches an import outside.
+- The comparison and the work of `--affected` before a run are faster: the files of each path are looked up once in a run (on this repository the snapshot went from about 140 to 90 ms).
+
 ## 0.4.1
 
 ### Fixed
