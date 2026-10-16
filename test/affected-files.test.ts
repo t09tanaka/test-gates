@@ -333,7 +333,7 @@ describe('affectedInputs', () => {
     }
   );
 
-  it('takes from a runner config only the scripts it names, not a component it excludes', () => {
+  it('takes a component or data a runner config names as a config, not as a setup file', () => {
     const dir = fixture({
       'vitest.gates.config.ts':
         "export default { test: { setupFiles: ['./test/setup.ts'], coverage: { exclude: ['src/components/Widget.vue', 'src/data/rates.json'] } }, root: import.meta.dirname };\n",
@@ -343,6 +343,8 @@ describe('affectedInputs', () => {
     const found = inputs(dir);
     // the setup file is still taken, with what it imports
     expect(found.config).toEqual([
+      'src/components/Widget.vue',
+      'src/data/rates.json',
       'stryker.gates.config.mjs',
       'test/prepare.ts',
       'test/setup.ts',
@@ -408,7 +410,8 @@ describe('an import of types only', () => {
   function filesOf(
     files: Record<string, string | null>,
     runner: 'vitest' | 'jest' = 'vitest',
-    checkers?: string[]
+    checkers?: string[],
+    ignored: string[] = []
   ): string[] | undefined {
     const config = runner === 'vitest' ? 'vitest.gates.config.ts' : 'jest.gates.config.cjs';
     const dir = fixture({
@@ -423,6 +426,8 @@ describe('an import of types only', () => {
       }
     }
     const { snapshot, root } = snapshotOf({ dir, written: [], args: [] });
+    // as git would leave out a file it ignores
+    ignored.forEach((file) => delete snapshot.files[file]);
     const configs = runnerConfigs(dir, 'stryker.gates.config.mjs', {
       testRunner: runner,
       vitestConfig: config,
@@ -485,6 +490,52 @@ describe('an import of types only', () => {
     ).toEqual(['src/c.spec.ts', 'src/c.ts']);
   });
 
+  it('keeps an import of type names with a base it extends that is not compared', () => {
+    expect(
+      filesOf(
+        {
+          'tsconfig.json': '{ "extends": "./.generated/tsconfig.json" }\n',
+          '.generated/tsconfig.json': '{ "compilerOptions": { "strict": true } }\n',
+        },
+        'vitest',
+        undefined,
+        ['.generated/tsconfig.json']
+      )
+    ).toEqual(['src/c.spec.ts', 'src/c.ts', 'src/tax.ts']);
+  });
+
+  it('keeps an import of type names with a Babel config above the subproject that keeps them', () => {
+    const root = project({
+      'package.json': { name: 'root', private: true, workspaces: ['pkg'] },
+      'babel.config.json':
+        '{ "presets": [["@babel/preset-typescript", { "onlyRemoveTypeImports": true }]] }\n',
+      'node_modules/vitest/package.json': '{ "name": "vitest" }',
+    });
+    const dir = path.join(root, 'pkg');
+    write(dir, {
+      'test-gates.json': { gates: [gate('src/c.ts')], candidates: [] },
+      'stryker.gates.config.mjs': "export default { testRunner: 'vitest' };\n",
+      'vitest.config.ts': 'export default {};\n',
+      'tsconfig.json': '{}\n',
+      'src/c.ts': "import { type Tax } from './tax';\nexport const c = (x: number): Tax => x;\n",
+      'src/tax.ts': 'export type Tax = number;\n',
+      'src/c.spec.ts': `${H}import { c } from './c';\nit('c', () => { expect(c(1)).toBe(1); });\n`,
+    });
+    const { snapshot, root: listed } = snapshotOf({ dir, written: [], args: [] });
+    const found = affectedInputs(readManifest(dir), {
+      root: listed,
+      files: snapshot.files,
+      configs: runnerConfigs(dir, 'stryker.gates.config.mjs', { testRunner: 'vitest' }),
+      tests: [],
+      covering: {},
+    });
+    expect(found.gates['src/c.ts']?.files).toEqual([
+      'pkg/src/c.spec.ts',
+      'pkg/src/c.ts',
+      'pkg/src/tax.ts',
+    ]);
+  });
+
   it('keeps an import of type names without a tsconfig.json to tell', () => {
     expect(filesOf({ 'tsconfig.json': null })).toEqual(['src/c.spec.ts', 'src/c.ts', 'src/tax.ts']);
   });
@@ -520,6 +571,30 @@ describe('an import of types only', () => {
       },
     ],
     ['Jest with no transform it names', 'jest', {}],
+    [
+      'ts-jest, with a comment that names an option',
+      'jest',
+      {
+        'jest.gates.config.cjs':
+          "// isolatedModules: true would be faster\nmodule.exports = { preset: 'ts-jest' };\n",
+      },
+    ],
+    [
+      'ts-jest with compiler options in place',
+      'jest',
+      {
+        'jest.gates.config.cjs':
+          "module.exports = { transform: { '^.+\\\\.ts$': ['ts-jest', { tsconfig: { isolatedModules: true } }] } };\n",
+      },
+    ],
+    [
+      'ts-jest with projects',
+      'jest',
+      {
+        'jest.gates.config.cjs':
+          "module.exports = { projects: [{ preset: 'ts-jest' }, { transform: { '^.+\\\\.ts$': ['ts-jest', { diagnostics: false }] } }] };\n",
+      },
+    ],
   ] as const)('keeps them where the run may check types: %s', (_name, runner, files) => {
     expect(filesOf(files, runner)).toEqual(ALL);
   });

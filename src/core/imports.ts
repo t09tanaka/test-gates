@@ -55,13 +55,9 @@ export function parseImports(source: string): ImportRef[] {
           .map((part) => part.trim())
           .filter((part) => part !== '')
       : [];
-    const names = braces
-      ? (braces[1] as string)
-          .split(',')
-          .map((part) => part.trim())
-          .filter((part) => part !== '' && !/^type\s/.test(part))
-          .map((part) => (part.split(/\s+as\s+/)[0] as string).trim())
-      : [];
+    const names = entries
+      .filter((part) => !/^type\s/.test(part))
+      .map((part) => (part.split(/\s+as\s+/)[0] as string).trim());
     const outsideBraces = clause
       .replace(/\{[^}]*\}/, '')
       .replace(/,/g, '')
@@ -75,7 +71,8 @@ export function parseImports(source: string): ImportRef[] {
       ...(match[2] === undefined &&
       outsideBraces === '' &&
       entries.length > 0 &&
-      entries.every((part) => /^type\s/.test(part))
+      // `type as kind` imports the value named `type`.
+      entries.every((part) => /^type\s+(?!as\s)[\w$]/.test(part))
         ? { inlineTypes: true as const }
         : {}),
     });

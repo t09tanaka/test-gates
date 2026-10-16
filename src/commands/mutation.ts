@@ -178,8 +178,15 @@ export function decideReuse(
   const options = incrementalOptions(loaded, strykerArgs);
   // The real path: the files of the snapshot are listed by theirs.
   const base = fs.realpathSync(manifest.dir);
+  // Checkers given to Stryker as an argument check types as those of its config do.
+  const checkersArg = strykerArgs.some(
+    (arg) => arg === '--checkers' || arg.startsWith('--checkers=')
+  );
   const configs = (): ReturnType<typeof runnerConfigs> =>
-    runnerConfigs(base, config, (loaded ?? {}) as Record<string, unknown>);
+    runnerConfigs(base, config, {
+      ...((loaded ?? {}) as Record<string, unknown>),
+      ...(checkersArg ? { checkers: ['--checkers'] } : {}),
+    });
   const decision: ReuseDecision = {
     incremental: false,
     incrementalFile: null,

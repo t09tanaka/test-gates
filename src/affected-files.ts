@@ -131,6 +131,11 @@ export interface TypeImports {
 const CHECKS_TYPES = /\bcheckers\b|typescript-checker|\btypecheck\b/;
 /** Options of ts-jest that make it only strip types, without checking them. */
 const TS_JEST_STRIPS = /["']?(?:isolatedModules["']?\s*:\s*true|diagnostics["']?\s*:\s*false)/;
+/**
+ * What makes an option of ts-jest above not hold for every spec: projects of their own, or
+ * compiler options given in place (where `isolatedModules` is not an option of ts-jest).
+ */
+const TS_JEST_UNSURE = /\b(?:projects|compilerOptions)\b|\btsconfig["']?\s*:\s*\{/;
 /** Jest transforms that only strip types. */
 const STRIPPING_TRANSFORMS = /@swc\/jest|babel-jest|esbuild-jest|@sucrase\/jest/;
 /** Options that make the compiler keep an import of type names (as `import {} from …`). */
@@ -165,14 +170,15 @@ export function typesErased(
   texts: string[],
   compiler: Array<{ file: string; text: string | null }>
 ): TypeImports {
-  const all = texts.join('\n');
+  // Not what a comment says: `// isolatedModules: true would be faster`.
+  const all = texts.map(withoutComments).join('\n');
   let erased = false;
   if (configs.checkers !== true && !CHECKS_TYPES.test(all)) {
     if (configs.runner === 'vitest') {
       erased = true;
     } else if (configs.runner === 'jest') {
       erased = /\bts-jest\b/.test(all)
-        ? TS_JEST_STRIPS.test(all)
+        ? TS_JEST_STRIPS.test(all) && !TS_JEST_UNSURE.test(all)
         : STRIPPING_TRANSFORMS.test(all) && !/\bpreset\b/.test(all);
     }
   }
@@ -204,14 +210,13 @@ function compilerConfigs(
       break;
     }
   }
-  const starts = keys
-    .map((key) => path.join(root, key))
-    .filter((file) => COMPILER_CONFIG.test(path.basename(file)))
-    .filter(
-      (file) =>
-        file.startsWith(`${dir}${path.sep}`) ||
-        (above.has(path.dirname(file)) && /^tsconfig/.test(path.basename(file)))
-    );
+  const compared = new Set(keys.map((key) => path.join(root, key)));
+  // package.json may hold a Babel config (`"babel": { … }`).
+  const starts = [...compared].filter(
+    (file) =>
+      (COMPILER_CONFIG.test(path.basename(file)) || path.basename(file) === 'package.json') &&
+      (file.startsWith(`${dir}${path.sep}`) || above.has(path.dirname(file)))
+  );
   const found: Array<{ file: string; text: string | null }> = [];
   const seen = new Set<string>();
   const queue = [...starts];
@@ -220,11 +225,16 @@ function compilerConfigs(
       continue;
     }
     seen.add(file);
-    let text: string | null;
-    try {
-      text = fs.readFileSync(file, 'utf8');
-    } catch {
-      text = null;
+    // A base that is not compared (generated, ignored by git) can change without the snapshot
+    // showing it: taken as one that cannot be read. One that is installed is compared through
+    // the lock file.
+    let text: string | null = null;
+    if (compared.has(file) || file.split(path.sep).includes('node_modules')) {
+      try {
+        text = fs.readFileSync(file, 'utf8');
+      } catch {
+        text = null;
+      }
     }
     found.push({ file, text });
     for (const base of text === null ? [] : valuesOf(text, 'extends')) {
@@ -500,12 +510,22 @@ export function affectedInputs(
       for (const match of fs.readFileSync(loaded, 'utf8').matchAll(QUOTED)) {
         const text = (match[2] as string).replace(/^<rootDir>\//, '');
         const found =
-          resolveFile(path.resolve(path.dirname(loaded), text), false) ??
-          resolveFile(path.resolve(dir, text), false);
-        // Only a script is run for every spec (a setup file, an environment, a reporter). Other
-        // paths a config names are not loaded by the run: `coverage.exclude: ['src/Widget.vue']`.
-        if (found !== null && SCRIPT.test(found) && !text.includes('*') && isCompared(found)) {
+          resolveFile(path.resolve(path.dirname(loaded), text), false, false) ??
+          resolveFile(path.resolve(dir, text), false, false);
+        if (found === null || text.includes('*') || !isCompared(found)) {
+          continue;
+        }
+        if (SCRIPT.test(found)) {
+          // A setup file, an environment, a reporter: run for every spec.
           named.push(realpath(found));
+        } else {
+          // Not run, but maybe read for every spec (`moduleNameMapper` to a JSON or a stub), or
+          // not at all (`coverage.exclude: ['src/Widget.vue']`). Either way a change of it
+          // reruns every gate, and a component it is cannot stop the gates from being told
+          // apart, as it would when followed as strictly as a setup file.
+          closure(realpath(found), false)
+            .filter(isCompared)
+            .forEach((one) => config.add(one));
         }
       }
     }

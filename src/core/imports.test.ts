@@ -46,6 +46,7 @@ describe('parseImports', () => {
     [`import { type A, b } from 'x';`, undefined],
     [`import d, { type A } from 'x';`, undefined],
     [`import {} from 'x';`, undefined],
+    [`import { type as kind } from 'x';`, undefined],
     [`import { a } from 'x';`, undefined],
   ])('marks %s as naming only types: %s', (source, inlineTypes) => {
     expect(one(source).inlineTypes).toBe(inlineTypes);
