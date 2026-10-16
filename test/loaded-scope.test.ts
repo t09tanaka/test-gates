@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { loadedScope, runnerConfigs } from '../src/affected-files';
@@ -67,6 +68,11 @@ function snapshot(root: string): { keys: string[]; followed: Set<string> | null 
 }
 
 const ELSEWHERE = 'catalog-site/src/listing.ts';
+// Whether the file system tells the case of letters apart (Linux) or not (macOS, Windows).
+const caseInsensitive = (): boolean => {
+  const dir = project({ 'probe.txt': '' });
+  return fs.existsSync(path.join(dir, 'PROBE.TXT'));
+};
 
 describe('the paths the snapshot follows', () => {
   it('follows only what the run loads, and compares every file of the subproject', () => {
@@ -165,11 +171,6 @@ describe('the paths the snapshot follows', () => {
       },
       'fee-rules/config/base.json',
     ],
-    [
-      'an import written in another case than the file',
-      { 'fee-rules/src/near.ts': "export { near } from './Helper';\n" },
-      'fee-rules/src/helper.ts',
-    ],
   ])('follows a way up in the file that %s leads to', (_name, files, file) => {
     const root = repository({
       ...files,
@@ -206,6 +207,18 @@ describe('the paths the snapshot follows', () => {
       const { keys, followed } = snapshot(root);
       expect(followed).not.toBeNull();
       expect(keys).not.toContain(ELSEWHERE);
+    }
+  );
+
+  // Elsewhere the import leads to no file, for the run as well.
+  it.runIf(caseInsensitive())(
+    'follows a way up in a file imported in another case of letters than it has',
+    () => {
+      const root = repository({
+        'fee-rules/src/near.ts': "export { near } from './Helper';\n",
+        'fee-rules/src/helper.ts': `export const near = (a: number, b: number) => a === b;\nexport const top = '${up(2)}';\n`,
+      });
+      expect(snapshot(root).keys).toContain(ELSEWHERE);
     }
   );
 
