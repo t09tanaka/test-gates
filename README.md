@@ -270,8 +270,8 @@ What it does not see, and what therefore still needs `-- --force` by hand, or CI
 - environment variables, the clock, the network, and a Stryker config that reads them or the command line to decide about incremental mode,
 - files outside the subproject that are reached without a link and without `..` in a path: an absolute path, an alias defined in a config above the subproject (in that case every file of the repository is compared only if the subproject points at that config with a relative path),
 - changes inside `node_modules` that leave the files of the package manager as they were.
-- what is read below a directory above the subproject when the path to that directory is kept in a variable and the rest is added elsewhere: `const top = path.resolve(__dirname, '..')` in one place and `path.join(top, 'shared', name)` in another, or a path to such a directory handed to a tool that reads below it,
-- paths in files written for people (`.md`, `.txt` and the like): a script that reads a path out of a README.
+- paths in files written for people (`.md`, `.txt` and the like): a script that reads a path out of a README,
+- what is read below a directory above the subproject when the path to that directory is kept in a variable and the rest is added elsewhere: `const top = path.resolve(__dirname, '..')` in one place and `path.join(top, 'shared', name)` in another, or a path to such a directory handed to a tool that reads below it.
 
 #### `--gate <path>`: only the mutants of one gate
 

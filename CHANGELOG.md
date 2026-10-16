@@ -9,6 +9,7 @@
   - A path that starts at the directory of its own file is followed: `` `${__dirname}/../shared` ``, and `__dirname, '..', 'shared'` handed to `path.join` or `path.resolve` (also with `import.meta.dirname`). Before, every file of the repository was compared. When such a path ends in a directory above the subproject, only the files directly in it are compared, as they always are; when an unknown part follows it (`join(__dirname, '..', name)`, or something added to what the call returns), every file still is. A way up after a placeholder (`` `../x/${name}/../..` ``) now also makes every file part of the comparison; before, only the part before the placeholder was followed.
   - Paths in `.md`, `.markdown`, `.txt`, `.rst` and `.adoc` files are no longer followed. The files themselves are still compared.
   - A plain relative path to a file or a directory above the subproject (`'../tsconfig.base.json'`), a path whose start is not known, and `'..'` after anything but the directory of the file still make every file of the repository part of the comparison.
+- In a project where the comparison is now smaller, the first run after the update is one of every mutant: the record of the last run holds files that are no longer compared, and the message lists them as changed.
 - When a path leads outside of the repository and the results are therefore not reused, the message names the path as it is written, next to the file it is in.
 
 ## 0.3.4
