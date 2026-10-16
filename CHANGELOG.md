@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1
+
+### Fixed
+
+- `test-gates mutation --affected` reuses every result after no change also where it cannot tell what a gate depends on (a file a gate or a spec loads reads files at run time, for one). Before, such a subproject ran every mutant on every run with the option, while a run without it reused the results after no change. The first line says so; a change still runs every mutant.
+- `test-gates doctor` reports what keeps `--affected` from telling the gates apart: as a problem when a hook relies on `--affected`, else as a note. In such a subproject it no longer asks for `--affected` in a hook. Before, it said OK although a run with `--affected` was always one of every mutant.
+
 ## 0.4.0
 
 Most of this release is about runs that were full ones although little had changed. `test-gates doctor` tells why a project's runs are full ones. `mutation --affected` runs again only the gates a change can affect. The comparison before a run covers only what the run loads. Two changes of behaviour: Stryker's `concurrency` now defaults to half of the cores, and the record of a run has a new format, so the first run after the update is one of every mutant.

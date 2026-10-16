@@ -7,6 +7,7 @@ import { ManifestError } from '../core/manifest.js';
 import { readManifest } from '../load.js';
 import { gitEnvironment } from '../snapshot.js';
 import { findStrykerConfig } from './check.js';
+import { AffectedError, affectedInputs } from '../affected-files.js';
 import { decideReuse } from './mutation.js';
 import type { Io } from './output.js';
 
@@ -112,9 +113,29 @@ export function runDoctor(dir: string, io: Io): number {
         `  next run with --affected: ${first.replace(/^test-gates mutation --affected: /, '')}`
       );
       rest.forEach((line) => io.out(`  ${line}`));
+    } else if (affected.unchanged !== null) {
+      io.out('  next run with --affected: reuses the results of the last run (nothing changed)');
     } else {
       const why = affected.forced ? 'the Stryker config sets force' : affected.force;
       io.out(`  next run with --affected: every mutant, ${why ?? 'there is nothing to reuse'}`);
+    }
+  }
+  // Whether --affected can tell the gates apart, whatever the record holds.
+  let blind: string | null = null;
+  if (plain.snapshot !== null) {
+    try {
+      affectedInputs(manifest, {
+        root: plain.root,
+        files: plain.snapshot.files,
+        configs: plain.configs(),
+        tests: [],
+        covering: {},
+      });
+    } catch (error) {
+      if (!(error instanceof AffectedError)) {
+        throw error;
+      }
+      blind = error.message;
     }
   }
   const { lines, status } = formatFindings(
@@ -125,6 +146,7 @@ export function runDoctor(dir: string, io: Io): number {
       widened: plain.widened,
       scope: plain.scope,
       hooks: hooksOf(fs.realpathSync(manifest.dir)),
+      blind,
     })
   );
   lines.forEach((line) => io.out(line));

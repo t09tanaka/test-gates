@@ -8,6 +8,7 @@ const healthy: DoctorFacts = {
   widened: [],
   scope: { files: 12 },
   hooks: [{ file: '.husky/pre-push', affected: true }],
+  blind: null,
 };
 
 describe('diagnose', () => {
@@ -21,6 +22,28 @@ describe('diagnose', () => {
         level: 'problem',
         text: 'Stryker does not run in incremental mode: every run is one of every mutant',
         fix: 'make the Stryker config with createStrykerGatesConfig, or set incremental: true',
+      },
+    ]);
+  });
+
+  it('names what keeps --affected from telling the gates apart, as a note without a hook that relies on it', () => {
+    const plain = [{ file: '.husky/pre-push', affected: false }];
+    expect(diagnose({ ...healthy, hooks: plain, blind: 'src/db.ts uses readdirSync' })).toEqual([
+      {
+        level: 'note',
+        text: 'with --affected, a change of any file runs every mutant: what a gate depends on cannot be told (src/db.ts uses readdirSync)',
+        fix: 'keep what reads files or loads modules by a computed name out of what the gates and their specs import, or run without --affected',
+      },
+    ]);
+    const mixed = [...plain, { file: 'lefthook.yml', affected: true }];
+    expect(
+      diagnose({ ...healthy, hooks: mixed, blind: 'src/db.ts uses readdirSync' })[0]?.level
+    ).toBe('problem');
+    expect(diagnose({ ...healthy, blind: 'src/db.ts uses readdirSync' })).toEqual([
+      {
+        level: 'problem',
+        text: 'with --affected, a change of any file runs every mutant: what a gate depends on cannot be told (src/db.ts uses readdirSync)',
+        fix: 'keep what reads files or loads modules by a computed name out of what the gates and their specs import, or run without --affected',
       },
     ]);
   });
