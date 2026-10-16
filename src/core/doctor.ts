@@ -33,8 +33,8 @@ export interface Finding {
   fix: string | null;
 }
 
-/** The message of loadedScope when the runner config is not one of the helpers. */
-export const NOT_THE_HELPER = 'the runner config is not made with';
+/** The start of the reason loadedScope gives when the runner config is not one of the helpers. */
+const NOT_THE_HELPER = 'the runner config is not made with';
 
 export function diagnose(facts: DoctorFacts): Finding[] {
   const findings: Finding[] = [];

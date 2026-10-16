@@ -30,12 +30,36 @@ const FILE_MODULES = new Set([
   'globby',
 ]);
 const bare = (specifier: string): string => specifier.replace(/^node:/, '');
+/** Components, whose imports are read like those of a script. */
+const COMPONENT = /\.(?:vue|svelte|astro|mdx)$/;
+
+/**
+ * Where `node_modules/<package>` of the nearest node_modules that has it leads, when that is a
+ * link to a directory outside of every node_modules (a package of the same repository); else null.
+ */
+export function linkedPackage(specifier: string, from: string): string | null {
+  const name = specifier
+    .split('/')
+    .slice(0, specifier.startsWith('@') ? 2 : 1)
+    .join('/');
+  for (let current = path.dirname(from); ; current = path.dirname(current)) {
+    const candidate = path.join(current, 'node_modules', name);
+    if (fs.existsSync(candidate)) {
+      const target = realpath(candidate);
+      return target.split(path.sep).includes('node_modules') ? null : target;
+    }
+    if (current === path.dirname(current)) {
+      return null;
+    }
+  }
+}
 
 const toPosix = (file: string): string => file.split(path.sep).join('/');
 
+/** The path as it is on disk, also in the case of its letters (what git and a listing show). */
 function realpath(file: string): string {
   try {
-    return fs.realpathSync(file);
+    return fs.realpathSync.native(file);
   } catch {
     return file;
   }
@@ -82,7 +106,7 @@ export interface Edges {
   loads: string[];
   /** Why what the file loads cannot be told, or null. */
   unknown: string | null;
-  /** Whether the file loads a module whose path is not written out. */
+  /** Whether the file loads modules that are not followed: a path not written out, a component, a linked package. */
   computed: boolean;
   /** Imports that are neither a file nor an installed package: aliases this tool is not told of. */
   unnamed: string[];
@@ -124,9 +148,10 @@ export function fileEdges(
   if (fs.existsSync(snapshotFile)) {
     found.loads.push(realpath(snapshotFile));
   }
-  if (!SCRIPT.test(file)) {
+  if (!SCRIPT.test(file) && !COMPONENT.test(file)) {
     return found; // data: it loads nothing
   }
+  // A component imports in its scripts (or the frontmatter of Astro): read as one text.
   const source = fs.readFileSync(file, 'utf8');
   const uncheckable = findUncheckableImports(source)[0];
   const runtime = RUNTIME_PATHS.exec(source);
@@ -163,6 +188,10 @@ export function fileEdges(
       if (!installed(specifier, file)) {
         found.unknown ??= `${shown(file)} imports ${specifier}, which is neither a file nor an installed package (name an alias in settings.importAliases)`;
         found.unnamed.push(specifier);
+      } else if (linkedPackage(specifier, file) !== null) {
+        // A package of the repository, linked into node_modules: its files are not followed.
+        found.unknown ??= `${shown(file)} imports ${specifier}, a package of the repository linked into node_modules`;
+        found.computed = true;
       }
     }
   }
@@ -355,6 +384,43 @@ export function affectedInputs(
   return { subproject, config: keysOf([...config]).sort(), gates };
 }
 
+/** Why every file is followed when the runner config is not made with the helpers. */
+export const NOT_THE_HELPER =
+  'the runner config is not made with createJestGatesConfig or createVitestGatesConfig';
+/** A runner config made with the helpers of this tool. */
+const OWN = /@t09tanaka\/test-gates\/(?:jest|vitest)\b/;
+/** Options that make a runner config of the helpers run more than the specs of the gates. */
+const PROJECTS = /\b(?:projects|workspace)\b/;
+const HELPERS = ['createJestGatesConfig', 'createVitestGatesConfig'];
+
+/**
+ * Whether what a runner config exports is what a helper returns: `export default helper(…)`,
+ * `module.exports = helper(…)`, also inside `defineConfig(…)`, by another name it is imported
+ * under, or through a variable that is exported as it is.
+ */
+function isHelperResult(text: string): boolean {
+  const names = new Set(HELPERS);
+  for (const match of text.matchAll(
+    /\b(?:createJestGatesConfig|createVitestGatesConfig)\s*(?::|\bas\b)\s*([\w$]+)/g
+  )) {
+    names.add(match[1] as string);
+  }
+  const escaped = [...names].map((name) => name.replace(/\$/g, '\\$'));
+  const call = `(?:defineConfig\\s*\\(\\s*)?(?:${escaped.join('|')})\\s*\\(`;
+  const exported = '(?:export\\s+default|module\\.exports\\s*=)\\s*';
+  if (new RegExp(`${exported}${call}`).test(text)) {
+    return true;
+  }
+  const variable = new RegExp(`\\b(?:const|let|var)\\s+([\\w$]+)\\s*=\\s*${call}`).exec(text);
+  return (
+    variable !== null &&
+    new RegExp(`${exported}${(variable[1] as string).replace(/\$/g, '\\$')}\\s*(?:;|$)`, 'm').test(
+      text
+    ) &&
+    !new RegExp(`\\b${(variable[1] as string).replace(/\$/g, '\\$')}\\s*(?:\\.|\\[)`).test(text)
+  );
+}
+
 /**
  * Files the tools of a run read by their names, at the top of the subproject. Not package.json:
  * with a runner config of the helpers, what it holds for the runner is not read, and its scripts
@@ -382,7 +448,7 @@ const READ_BY_NAME = [
  * @param configs The Stryker config and the config of the test runner.
  * @param listed The files of the subproject, as absolute paths.
  * @returns `every`, with the reason, when the specs the run starts are not known, or when a file
- *   loads a module whose path is not written out: then every file is followed.
+ *   loads modules that are not followed: then every file is followed.
  */
 export function loadedScope(
   manifest: LoadedManifest,
@@ -390,21 +456,34 @@ export function loadedScope(
   listed: string[]
 ): { files: Set<string> } | { every: string } {
   const dir = realpath(manifest.dir);
-  // Only a config made with the helpers of this tool runs the specs of the gates and no others,
-  // unless it is given projects of its own, which the helpers pass on.
-  const own = /@t09tanaka\/test-gates\/(?:jest|vitest)\b/;
-  const widened = /\b(?:projects|workspace)\b/;
-  const runner = configs.files.slice(1).map((file) => fs.readFileSync(file, 'utf8'));
-  if (runner.length === 0 || !runner.every((text) => own.test(text))) {
-    return {
-      every: 'the runner config is not made with createJestGatesConfig or createVitestGatesConfig',
-    };
-  }
-  if (runner.some((text) => widened.test(text))) {
-    return { every: 'the runner config is given projects of its own' };
-  }
   const cache = new Map<string, Edges>();
   const context = { dir, aliases: manifest.settings.importAliases, cache };
+  // Only a config that is what a helper of this tool returns runs the specs of the gates and no
+  // others: the helper sets them after the options it is given. Not one that changes what the
+  // helper returns (merged with another config, spread with more after it), and not one given
+  // projects of its own, which the helper passes on, also from a file it is put together from.
+  const runner = configs.files.slice(1);
+  const texts = runner.map((file) => withoutComments(fs.readFileSync(file, 'utf8')));
+  if (runner.length === 0 || !texts.every((text) => OWN.test(text))) {
+    return { every: NOT_THE_HELPER };
+  }
+  if (!texts.every(isHelperResult)) {
+    return {
+      every:
+        'what the runner config exports is not what the helper returns (merged with another config, or changed after the call)',
+    };
+  }
+  const parts = new Set(runner.map(realpath));
+  for (const file of [...parts]) {
+    if (SCRIPT.test(file)) {
+      fileEdges(file, context).loads.forEach((loaded) => parts.add(loaded));
+    }
+  }
+  if ([...parts].some((file) => PROJECTS.test(withoutComments(fs.readFileSync(file, 'utf8'))))) {
+    return {
+      every: 'the runner config, or a file it is put together from, names projects or a workspace',
+    };
+  }
   const named = fs
     .readdirSync(dir)
     .filter((name) => READ_BY_NAME.some((pattern) => pattern.test(name)))
@@ -416,10 +495,14 @@ export function loadedScope(
     ...manifest.gates
       .flatMap((gate) => [gate.path, ...gate.existingSpecs])
       .map((file) => path.join(dir, file)),
-    ...(fs.existsSync(mocks) ? fs.readdirSync(mocks).map((name) => path.join(mocks, name)) : []),
+    ...listed.filter((file) => file.startsWith(`${mocks}${path.sep}`)),
   ]
     .filter((file) => fs.existsSync(file))
     .map(realpath);
+  // Files whose text names further files: the configs, those read by name, and what they name.
+  const naming = new Set(
+    [...configs.files, ...named].filter((file) => fs.existsSync(file)).map(realpath)
+  );
   const seen = new Set(seeds);
   const queue = [...seeds];
   const add = (file: string): void => {
@@ -435,7 +518,7 @@ export function loadedScope(
     }
     const edges = fileEdges(file, context);
     if (edges.computed) {
-      return { every: edges.unknown ?? 'a file imports a module whose path is not written out' };
+      return { every: edges.unknown ?? 'a file loads modules that are not followed' };
     }
     edges.loads.forEach(add);
     for (const specifier of edges.unnamed) {
@@ -447,13 +530,17 @@ export function loadedScope(
       add(mock);
     }
     // What a config names as text: a setup file, an environment, `<rootDir>/test/setup.ts`.
-    if (configs.files.includes(file) || (SCRIPT.test(file) && path.dirname(file) === dir)) {
-      for (const match of fs.readFileSync(file, 'utf8').matchAll(QUOTED)) {
-        const text = (match[2] as string).replace(/^<rootDir>\//, '');
+    if (naming.has(file) || (SCRIPT.test(file) && path.dirname(file) === dir)) {
+      for (const named of namedIn(file)) {
+        const text = named.replace(/^<rootDir>\//, '');
         const found =
           resolveFile(path.resolve(path.dirname(file), text), false) ??
           resolveFile(path.resolve(dir, text), false);
         if (found !== null && !text.includes('*')) {
+          // `"extends": "./config/tsconfig.shared.json"` names a file that names others.
+          if (!SCRIPT.test(found)) {
+            naming.add(realpath(found));
+          }
           add(found);
         }
       }
@@ -462,16 +549,100 @@ export function loadedScope(
   return { files: seen };
 }
 
-/** The files whose path, without its extension, ends as the import after its first part does. */
+/**
+ * The files whose path ends as the import after its first part does, both without their
+ * extensions (`@shared/fee.js` and `src/fee.ts`). An import of one part (`@helper`, `#config`)
+ * leads to the files of that name.
+ */
 function endingAs(specifier: string, files: string[]): string[] {
   const parts = specifier.split('/');
-  const rest = parts.slice(1).join('/');
+  const rest = (
+    parts.length > 1 ? parts.slice(1).join('/') : specifier.replace(/^[@#~$]+/, '')
+  ).replace(/\.[cm]?[jt]sx?$/, '');
   if (rest === '') {
     return [];
   }
   return files.filter((file) => {
-    const posix = toPosix(file);
-    const bare = posix.replace(/\.[^./]+$/, '');
-    return [posix, bare, bare.replace(/\/index$/, '')].some((one) => one.endsWith(`/${rest}`));
+    const bare = toPosix(file).replace(/\.[^./]+$/, '');
+    return [bare, bare.replace(/\/index$/, '')].some((one) => one.endsWith(`/${rest}`));
   });
+}
+
+/**
+ * The paths a config names as text. In a script, every string. In data (`tsconfig.json`, a
+ * `.babelrc`), only what the tools of a run take from it: what it extends, and the plugins and
+ * presets it names. Its `files`, `include` and `exclude` are inputs of the compiler, not of a run.
+ */
+function namedIn(file: string): string[] {
+  const text = fs.readFileSync(file, 'utf8');
+  if (SCRIPT.test(file)) {
+    return [...text.matchAll(QUOTED)].map((match) => match[2] as string);
+  }
+  return ['extends', 'plugins', 'presets'].flatMap((key) => valuesOf(text, key));
+}
+
+/**
+ * The strings of the value of `"key":` in JSON (also with comments, as tsconfig.json has them): a
+ * string, or every string in an array that follows it. Read from the text, so that a file JSON
+ * cannot parse is read as well.
+ */
+function valuesOf(text: string, key: string): string[] {
+  const found: string[] = [];
+  for (const match of text.matchAll(new RegExp(`"${key}"\\s*:\\s*`, 'g'))) {
+    let at = (match.index ?? 0) + match[0].length;
+    if (text[at] === '"') {
+      const end = text.indexOf('"', at + 1);
+      found.push(text.slice(at + 1, end === -1 ? undefined : end));
+      continue;
+    }
+    if (text[at] !== '[') {
+      continue;
+    }
+    // To the bracket that closes the array, past the strings in it.
+    let depth = 0;
+    for (; at < text.length; at += 1) {
+      const char = text[at];
+      if (char === '"') {
+        const end = text.indexOf('"', at + 1);
+        found.push(text.slice(at + 1, end === -1 ? undefined : end));
+        at = end === -1 ? text.length : end;
+      } else if (char === '[') {
+        depth += 1;
+      } else if (char === ']') {
+        depth -= 1;
+        if (depth === 0) {
+          break;
+        }
+      }
+    }
+  }
+  return found;
+}
+
+/**
+ * The text without its comments. Strings are read past, so that a glob or a URL in
+ * one is not taken for the start of a comment; a comment ends a line or at its closing mark.
+ */
+function withoutComments(text: string): string {
+  let out = '';
+  for (let at = 0; at < text.length; at += 1) {
+    const char = text[at] as string;
+    if (char === "'" || char === '"' || char === '`') {
+      let end = at + 1;
+      while (end < text.length && text[end] !== char && text[end] !== '\n') {
+        end += text[end] === '\\' ? 2 : 1;
+      }
+      out += text.slice(at, end + 1);
+      at = end;
+    } else if (char === '/' && text[at + 1] === '/') {
+      const end = text.indexOf('\n', at);
+      at = end === -1 ? text.length : end - 1;
+    } else if (char === '/' && text[at + 1] === '*') {
+      const end = text.indexOf('*/', at + 2);
+      at = end === -1 ? text.length : end + 1;
+    } else {
+      out += char;
+    }
+  }
+  return out;
 }
