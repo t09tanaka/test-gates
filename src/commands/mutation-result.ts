@@ -5,6 +5,7 @@ import {
   formatSurvivor,
   judgeMutationReport,
   type MutationReport,
+  type MutationVerdict,
 } from '../core/mutation-result.js';
 import { gateRunCaveat } from '../core/selfcheck.js';
 import { readManifest, type LoadedManifest } from '../load.js';
@@ -23,7 +24,8 @@ export function runMutationResult(
   dir: string,
   reportOverride: string | null,
   io: Io,
-  only: string[] = []
+  only: string[] = [],
+  seen: (judged: { report: MutationReport; verdict: MutationVerdict }) => void = () => undefined
 ): number {
   const manifest = readManifest(dir);
   const gates =
@@ -59,6 +61,7 @@ export function runMutationResult(
       }
     },
   });
+  seen({ report, verdict });
   const summary = formatSummary(verdict.summary);
 
   if (verdict.violations.length === 0 && verdict.survivors.length === 0) {

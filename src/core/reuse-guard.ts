@@ -7,7 +7,7 @@
  * everything the run depends on is what it was when they were written.
  */
 
-export const RECORD_FORMAT = 1;
+export const RECORD_FORMAT = 2;
 
 /** Everything a run depends on. */
 export interface Snapshot {
@@ -21,12 +21,32 @@ export interface Snapshot {
   files: Record<string, string>;
 }
 
+/** What a run with `--affected` writes down about each gate (see core/affected.ts). */
+export interface AffectedRecord {
+  /** Every spec file the report of the run lists. */
+  tests: string[];
+  /**
+   * The gates whose results may be reused by a later run: those with no survivor and no timeout
+   * that the allow lists do not cover. Keys are paths of gates, as in test-gates.json.
+   */
+  gates: Record<string, AffectedGate>;
+}
+
+export interface AffectedGate {
+  /** The spec files whose tests covered or killed a mutant of the gate. */
+  specs: string[];
+  /** Keys of the snapshot (`Snapshot.files`) that the results of the gate depend on. */
+  files: string[];
+}
+
 /** What is written next to the incremental file after a run that Stryker finished. */
 export interface GuardRecord {
   format: number;
   /** Hash of the incremental file the run wrote. */
   incremental: string;
   snapshot: Snapshot;
+  /** Only after a run with `--affected`. */
+  affected?: AffectedRecord;
 }
 
 function isStringRecord(value: unknown): value is Record<string, string> {
@@ -38,10 +58,31 @@ function isStringRecord(value: unknown): value is Record<string, string> {
   );
 }
 
+const isStringList = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every((entry) => typeof entry === 'string');
+
+/** The part written by a run with `--affected`; null when it is not well formed. */
+function parseAffected(value: unknown): AffectedRecord | null {
+  const { tests, gates } = (value ?? {}) as Record<string, unknown>;
+  if (!isStringList(tests) || typeof gates !== 'object' || gates === null || Array.isArray(gates)) {
+    return null;
+  }
+  // No prototype: a gate may be called "constructor".
+  const parsed = Object.create(null) as Record<string, AffectedGate>;
+  for (const [gate, entry] of Object.entries(gates)) {
+    const { specs, files } = (entry ?? {}) as Record<string, unknown>;
+    if (!isStringList(specs) || !isStringList(files)) {
+      return null;
+    }
+    parsed[gate] = { specs, files };
+  }
+  return { tests, gates: parsed };
+}
+
 /** The record as it was written, or null when `value` is not a record of this format. */
 export function parseRecord(value: unknown): GuardRecord | null {
-  // Anything but an object has none of the three, and fails the checks below.
-  const { format, incremental, snapshot } = (value ?? {}) as Record<string, unknown>;
+  // Anything but an object has none of the four, and fails the checks below.
+  const { format, incremental, snapshot, affected } = (value ?? {}) as Record<string, unknown>;
   if (format !== RECORD_FORMAT || typeof incremental !== 'string') {
     return null;
   }
@@ -52,35 +93,85 @@ export function parseRecord(value: unknown): GuardRecord | null {
   if (mode !== 'git' && mode !== 'walk') {
     return null;
   }
-  if (!Array.isArray(args) || !args.every((arg) => typeof arg === 'string')) {
+  if (!isStringList(args) || !isStringRecord(environment) || !isStringRecord(files)) {
     return null;
   }
-  if (!isStringRecord(environment) || !isStringRecord(files)) {
-    return null;
+  const record: GuardRecord = { format, incremental, snapshot: { mode, environment, args, files } };
+  if (affected !== undefined) {
+    const parsed = parseAffected(affected);
+    if (parsed === null) {
+      return null;
+    }
+    record.affected = parsed;
   }
-  return { format, incremental, snapshot: { mode, environment, args: args as string[], files } };
+  return record;
 }
 
 /** The first names, and how many more there are. */
-function listed(names: string[]): string {
+export function listed(names: string[]): string {
   const shown = names.slice(0, 3).join(', ');
   return names.length > 3 ? `${shown} and ${names.length - 3} more` : shown;
 }
 
 /** Keys whose value differs between the two, or that only one of them has. Sorted. */
-function differingKeys(before: Record<string, string>, after: Record<string, string>): string[] {
+export function differingKeys(
+  before: Record<string, string>,
+  after: Record<string, string>
+): string[] {
   return [...new Set([...Object.keys(before), ...Object.keys(after)])]
     .filter((key) => before[key] !== after[key])
     .sort();
 }
 
 /**
- * Decides whether Stryker may reuse the results in its incremental file.
+ * Whether the record belongs to the incremental file as it is now and to a run under the same
+ * tools and arguments; what is in the files is not compared here.
  *
  * @param input.record The parsed content of the record file; undefined when there is none or
  *   it cannot be read.
  * @param input.incremental Hash of the incremental file as it is now.
  * @param input.snapshot The state of everything the run depends on, as it is now.
+ * @returns The record, or why the results of the last run cannot be reused.
+ */
+export function readRecord(input: {
+  record: unknown;
+  incremental: string;
+  snapshot: Snapshot;
+}): { record: GuardRecord } | { refused: string } {
+  if (input.record === undefined) {
+    return { refused: 'there is no record of the run that wrote the incremental file' };
+  }
+  const record = parseRecord(input.record);
+  if (record === null) {
+    return { refused: 'the record of the last run is not one this version can read' };
+  }
+  if (record.incremental !== input.incremental) {
+    return { refused: 'the incremental file is not the one the last recorded run wrote' };
+  }
+  const before = record.snapshot;
+  const now = input.snapshot;
+  if (before.mode !== now.mode) {
+    return {
+      refused: `the files are listed in another way than in the last run (${before.mode}, now ${now.mode})`,
+    };
+  }
+  const environment = differingKeys(before.environment, now.environment);
+  if (environment.length > 0) {
+    const changes = environment.map(
+      (key) => `${key} ${before.environment[key] ?? 'none'} → ${now.environment[key] ?? 'none'}`
+    );
+    return { refused: `the tools changed since the last run: ${listed(changes)}` };
+  }
+  if (JSON.stringify(before.args) !== JSON.stringify(now.args)) {
+    return { refused: 'the arguments for Stryker are not those of the last run' };
+  }
+  return { record };
+}
+
+/**
+ * Decides whether Stryker may reuse the results in its incremental file: only when nothing at
+ * all changed since the recorded run.
+ *
  * @returns null when the results may be reused, otherwise why every mutant has to be run again.
  */
 export function refuseReuse(input: {
@@ -88,32 +179,11 @@ export function refuseReuse(input: {
   incremental: string;
   snapshot: Snapshot;
 }): string | null {
-  if (input.record === undefined) {
-    return 'there is no record of the run that wrote the incremental file';
+  const read = readRecord(input);
+  if ('refused' in read) {
+    return read.refused;
   }
-  const record = parseRecord(input.record);
-  if (record === null) {
-    return 'the record of the last run is not one this version can read';
-  }
-  if (record.incremental !== input.incremental) {
-    return 'the incremental file is not the one the last recorded run wrote';
-  }
-  const before = record.snapshot;
-  const now = input.snapshot;
-  if (before.mode !== now.mode) {
-    return `the files are listed in another way than in the last run (${before.mode}, now ${now.mode})`;
-  }
-  const environment = differingKeys(before.environment, now.environment);
-  if (environment.length > 0) {
-    const changes = environment.map(
-      (key) => `${key} ${before.environment[key] ?? 'none'} → ${now.environment[key] ?? 'none'}`
-    );
-    return `the tools changed since the last run: ${listed(changes)}`;
-  }
-  if (JSON.stringify(before.args) !== JSON.stringify(now.args)) {
-    return 'the arguments for Stryker are not those of the last run';
-  }
-  const files = differingKeys(before.files, now.files);
+  const files = differingKeys(read.record.snapshot.files, input.snapshot.files);
   if (files.length > 0) {
     return `changed since the last run: ${listed(files)}`;
   }

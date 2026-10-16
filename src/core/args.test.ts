@@ -12,6 +12,7 @@ const base = {
   gates: [],
   shard: null,
   quick: false,
+  affected: false,
   jobs: null,
   rest: [],
 };
@@ -296,12 +297,47 @@ describe('parseArgs', () => {
     );
   });
 
+  it('reads --affected of the mutation command, before and between other arguments', () => {
+    expect(parseArgs(['mutation', '--affected'])).toEqual({
+      ...base,
+      command: 'mutation',
+      affected: true,
+    });
+    expect(parseArgs(['mutation', '--concurrency', '1', '--affected', '--', '--force'])).toEqual({
+      ...base,
+      command: 'mutation',
+      affected: true,
+      rest: ['--concurrency', '1', '--force'],
+    });
+  });
+
+  it.each([
+    [['mutation', '--', '--affected']],
+    [['mutation', '--', '--concurrency', '1', '--affected=1']],
+  ])('rejects --affected after "--": %j', (argv) => {
+    expect(() => parseArgs(argv)).toThrow(
+      new UsageError('--affected after "--" would go to Stryker. Write it before "--"')
+    );
+  });
+
+  it('refuses --affected together with --gate, and a value for --affected', () => {
+    expect(() => parseArgs(['mutation', '--affected', '--gate', 'src/a.ts'])).toThrow(
+      new UsageError(
+        '--affected and --gate cannot be combined: --gate runs the gates it names, --affected decides which gates run'
+      )
+    );
+    expect(() => parseArgs(['mutation', '--affected=yes'])).toThrow(
+      new UsageError('--affected does not take a value')
+    );
+    expect(() => parseArgs(['selfcheck', '--affected'])).toThrow(
+      new UsageError('unknown argument for selfcheck: --affected')
+    );
+  });
+
   it('leaves alone arguments for Stryker that only start like --gate', () => {
-    expect(parseArgs(['mutation', '--', '--gates', '--gateway=1', 'x--gate']).rest).toEqual([
-      '--gates',
-      '--gateway=1',
-      'x--gate',
-    ]);
+    expect(
+      parseArgs(['mutation', '--', '--gates', '--gateway=1', 'x--gate', '--affectedx']).rest
+    ).toEqual(['--gates', '--gateway=1', 'x--gate', '--affectedx']);
     // the gate command of selfcheck is not looked at for the rule of mutation
     expect(() => parseArgs(['selfcheck', '--', 'jest', '--gate=x'])).toThrow(
       new UsageError('--gate after "--" would go to the gate command. Write it before "--"')

@@ -9,6 +9,7 @@ import {
   planControls,
   gateRunCaveat,
   gateRunRefused,
+  affectedRefused,
   quickCaveat,
   quickRefused,
   selectControls,
@@ -836,6 +837,18 @@ describe('planControls', () => {
       alone: ['src/x.ts'],
       reason: null,
     });
+  });
+});
+
+describe('mutation --affected', () => {
+  it.each(['true', '1', 'woodpecker'])('runs every mutant when CI is %j', (value) => {
+    expect(affectedRefused({ CI: value })).toBe(
+      'CI is set, and there every mutant is run (the final check)'
+    );
+  });
+
+  it.each([undefined, '', 'false', '0'])('may reuse results when CI is %j', (value) => {
+    expect(affectedRefused({ CI: value })).toBeNull();
   });
 });
 

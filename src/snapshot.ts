@@ -265,6 +265,18 @@ function ownVersion(): string {
  *   listed.
  */
 export function takeSnapshot(input: { dir: string; written: string[]; args: string[] }): Snapshot {
+  return snapshotOf(input).snapshot;
+}
+
+/**
+ * The snapshot (see takeSnapshot), and the directory its keys are relative to.
+ *
+ * @throws SnapshotError as takeSnapshot does.
+ */
+export function snapshotOf(input: { dir: string; written: string[]; args: string[] }): {
+  snapshot: Snapshot;
+  root: string;
+} {
   const dir = fs.realpathSync(input.dir);
   const top = git(dir, ['rev-parse', '--show-toplevel']);
   let root = top === null ? dir : fs.realpathSync(top.trim());
@@ -481,10 +493,5 @@ export function takeSnapshot(input: { dir: string; written: string[]; args: stri
     }
   }
 
-  return {
-    mode,
-    environment,
-    args: input.args,
-    files,
-  };
+  return { snapshot: { mode, environment, args: input.args, files }, root: listRoot };
 }

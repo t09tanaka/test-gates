@@ -6,11 +6,11 @@ import { parseImports } from '../core/imports.js';
 import type { LoadedFile } from '../core/jobs.js';
 import type { LoadedManifest } from '../load.js';
 
-const SCRIPT = /\.[cm]?[jt]sx?$/;
+export const SCRIPT = /\.[cm]?[jt]sx?$/;
 const EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'];
-const QUOTED = /(['"`])([^'"`\n]+)\1/g;
+export const QUOTED = /(['"`])([^'"`\n]+)\1/g;
 // A module that is named to the runner instead of imported: jest.requireActual('fs').
-const RUNNER_LOAD =
+export const RUNNER_LOAD =
   /\b(?:requireActual|requireMock|importActual|importMock|mock|doMock|unstable_mockModule)\(\s*(['"`])([^'"`\n]+)\1/g;
 
 function isFile(file: string): boolean {
@@ -22,7 +22,7 @@ function isFile(file: string): boolean {
 }
 
 /** The file a path without (or with a compiled) extension stands for, or null. */
-function resolveFile(base: string, directory = true): string | null {
+export function resolveFile(base: string, directory = true): string | null {
   const candidates = [
     base,
     ...EXTENSIONS.map((extension) => base + extension),
@@ -34,7 +34,7 @@ function resolveFile(base: string, directory = true): string | null {
 }
 
 /** Whether `node_modules/<package>` exists in the directory of `from` or above it. */
-function installed(specifier: string, from: string): boolean {
+export function installed(specifier: string, from: string): boolean {
   const name = specifier
     .split('/')
     .slice(0, specifier.startsWith('@') ? 2 : 1)

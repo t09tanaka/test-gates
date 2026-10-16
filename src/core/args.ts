@@ -18,6 +18,11 @@ export interface ParsedArgs {
   jobs: number | null;
   /** `--quick` (selfcheck): gates that only their own spec touches share one run. */
   quick: boolean;
+  /**
+   * `--affected` (mutation): run again only the gates that a change since the last run can
+   * have affected, and reuse the results of the others.
+   */
+  affected: boolean;
   /** `--shard <index>/<total>` (selfcheck): one of `total` parts of the gates, `index` from 1. */
   shard: Shard | null;
   /**
@@ -53,7 +58,7 @@ function parseShard(value: string): Shard {
 
 const OPTIONS_BY_COMMAND: Record<Command, string[]> = {
   check: ['--dir'],
-  mutation: ['--dir', '--gate'],
+  mutation: ['--dir', '--gate', '--affected'],
   'mutation-result': ['--dir', '--report'],
   selfcheck: ['--dir', '--all', '--first', '--gate', '--shard', '--quick', '--jobs'],
   lcov: ['--dir', '--file'],
@@ -121,6 +126,10 @@ function consume(
       parsed.quick = true;
       return next;
     }
+    if (name === '--affected') {
+      parsed.affected = true;
+      return next;
+    }
     const mode = name === '--all' ? 'all' : 'first';
     if (parsed.mode !== null && parsed.mode !== mode) {
       throw new UsageError('--all and --first cannot be combined');
@@ -157,6 +166,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     gates: [],
     shard: null,
     quick: false,
+    affected: false,
     jobs: null,
     rest: [],
   };
@@ -184,6 +194,11 @@ export function parseArgs(argv: string[]): ParsedArgs {
   if (selections.length > 1) {
     throw new UsageError(`${selections.join(' and ')} cannot be combined`);
   }
+  if (parsed.affected && parsed.gates.length > 0) {
+    throw new UsageError(
+      '--affected and --gate cannot be combined: --gate runs the gates it names, --affected decides which gates run'
+    );
+  }
   // `npm run selfcheck -- --shard 2/4` on a script that already ends in `-- <gate command>`
   // would hand the option to the test runner, which has a --shard of its own.
   const misplaced = parsed.rest.find((arg) => /^--(gate|shard|quick|jobs)(=|$)/.test(arg));
@@ -194,8 +209,11 @@ export function parseArgs(argv: string[]): ParsedArgs {
   }
   // After "--" the option would go to Stryker, which does not know it. (Only mutation is left
   // here with such an argument: selfcheck was refused above, and no other command has a rest.)
-  if (parsed.rest.some((arg) => arg === '--gate' || arg.startsWith('--gate='))) {
-    throw new UsageError('--gate after "--" would go to Stryker. Write it before "--"');
+  const forStryker = parsed.rest.find((arg) => /^--(gate|affected)(=|$)/.test(arg));
+  if (forStryker !== undefined) {
+    throw new UsageError(
+      `${forStryker.split('=')[0]} after "--" would go to Stryker. Write it before "--"`
+    );
   }
   if (parsed.command === 'selfcheck' && parsed.rest.length === 0 && argv.includes('--')) {
     throw new UsageError('"--" must be followed by the gate command');
