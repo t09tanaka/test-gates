@@ -238,3 +238,107 @@ export function incrementalOptions(config: unknown, args: string[]): Incremental
 export function comparableArgs(args: string[]): string[] {
   return args.filter((arg) => arg !== '--force');
 }
+
+/** The object of a config as loaded, or an empty one. */
+function objectOf(value: unknown): Record<string, unknown> {
+  return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {};
+}
+
+/**
+ * The reports a Stryker run writes, relative to the subproject: those of its HTML and its JSON
+ * reporter, at the defaults of Stryker where the config names none. What a run writes is not
+ * something it depends on.
+ *
+ * @param config The Stryker config as loaded (its default export).
+ */
+export function reportFiles(config: unknown): string[] {
+  const options = objectOf(config);
+  const fileName = (reporter: string, fallback: string): string => {
+    const named = objectOf(options[reporter]).fileName;
+    return typeof named === 'string' ? named : fallback;
+  };
+  return [
+    fileName('htmlReporter', 'reports/mutation/mutation.html'),
+    fileName('jsonReporter', 'reports/mutation/mutation.json'),
+  ];
+}
+
+/** A pattern of ignorePatterns as a regular expression: `*` within a part, `**` across parts. */
+function globSource(glob: string): string {
+  let source = '';
+  for (let at = 0; at < glob.length; at += 1) {
+    const char = glob[at] as string;
+    if (glob.startsWith('**/', at)) {
+      source += '(?:.*/)?';
+      at += 2;
+    } else if (glob.startsWith('**', at)) {
+      source += '.*';
+      at += 1;
+    } else if (char === '*') {
+      source += '[^/]*';
+    } else if (char === '?') {
+      source += '[^/]';
+    } else if (char === '[' && glob.indexOf(']', at + 2) !== -1) {
+      const end = glob.indexOf(']', at + 2);
+      source += `[${glob
+        .slice(at + 1, end)
+        .replace(/^!/, '^')
+        .replace(/\\/g, '\\\\')}]`;
+      at = end;
+    } else if (char === '{' && glob.indexOf('}', at) !== -1) {
+      const end = glob.indexOf('}', at);
+      source += `(?:${glob
+        .slice(at + 1, end)
+        .split(',')
+        .map(globSource)
+        .join('|')})`;
+      at = end;
+    } else {
+      source += char.replace(/[.+^${}()|[\]\\/]/g, '\\$&');
+    }
+  }
+  return source;
+}
+
+/**
+ * Whether Stryker leaves a file out of the run by the ignorePatterns of its config, which it
+ * reads as a .gitignore: a pattern without a `/` matches a name at any depth, one with a `/` the
+ * path from the subproject, one that ends in `/` a directory only, `!` takes a file back. What
+ * lies in a directory that is left out is left out with it.
+ *
+ * @param config The Stryker config as loaded (its default export).
+ * @returns A test of a path relative to the subproject, with `/` between its parts.
+ */
+export function strykerIgnores(config: unknown): (relative: string) => boolean {
+  const patterns = objectOf(config).ignorePatterns;
+  const rules = (Array.isArray(patterns) ? patterns : [])
+    .filter((pattern): pattern is string => typeof pattern === 'string' && pattern.trim() !== '')
+    .map((pattern) => {
+      const negate = pattern.startsWith('!');
+      let body = negate ? pattern.slice(1) : pattern;
+      const directoryOnly = body.endsWith('/');
+      body = body.replace(/\/+$/, '');
+      const anchored = body.includes('/');
+      const expression = new RegExp(`^${globSource(body.replace(/^\//, ''))}$`, 'i');
+      return { negate, directoryOnly, anchored, expression };
+    });
+  return (relative) => {
+    const parts = relative.split('/');
+    let ignored = false;
+    for (const rule of rules) {
+      // the file itself, and each directory it lies in
+      const matches = parts.some((part, index) => {
+        const directory = index < parts.length - 1;
+        if (rule.directoryOnly && !directory) {
+          return false;
+        }
+        const target = rule.anchored ? parts.slice(0, index + 1).join('/') : part;
+        return rule.expression.test(target);
+      });
+      if (matches) {
+        ignored = !rule.negate;
+      }
+    }
+    return ignored;
+  };
+}

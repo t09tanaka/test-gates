@@ -761,6 +761,7 @@ describe.each(['git', 'walk'] as const)(
       it.each([
         ['NOTES.md', 'reuses'],
         ['notes.txt', 'reuses'],
+        ['report.html', 'reuses'],
         ['notes.ts', 'does not reuse'],
       ])(
         'compares %s but follows no path in it unless it is code: %s after a change elsewhere',
@@ -1120,6 +1121,33 @@ describe('test-gates mutation, reuse of the last run (what the comparison reache
     write(dir, { 'test-fixtures/cases.json': { ages: [] } });
     expect(mutation(dir)).toEqual(forcedBy(`${CHANGED}fee-rules/test-fixtures/cases.json`));
     expect(mutation(dir)).toEqual(REUSED);
+  });
+
+  it('does not compare the reports of the run and what Stryker leaves out, that its config names', () => {
+    const root = repository({
+      '.gitignore': `${IGNORE}generated/\n.eslintcache\n*.tsbuildinfo\n`,
+      'fee-rules/stryker.gates.config.mjs':
+        "export default { incremental: true, testRunner: 'vitest', vitest: { configFile: 'vitest.gates.config.ts' }, htmlReporter: { fileName: 'reports/mutation/gates.html' }, jsonReporter: { fileName: 'reports/gates.json' }, ignorePatterns: ['.eslintcache', 'tsconfig.tsbuildinfo'] };\n",
+      'fee-rules/vitest.gates.config.ts': VITEST_WITH_HELPER,
+      'fee-rules/src/generated/limit.ts': 'export const limit = 18;\n',
+      'fee-rules/src/age.spec.ts': "import { limit } from './generated/limit';\n" + SPEC_SOURCE,
+    });
+    const dir = path.join(root, 'fee-rules');
+    // What a report and a cache hold: paths that lead anywhere, and change on every run.
+    const written = (run: number) => ({
+      'reports/mutation/gates.html': `<pre>at ${up(2)}/node_modules/expect/build/index.js:${run}</pre>\n`,
+      'reports/gates.json': { run, file: `${up(3)}/elsewhere/x.ts` },
+      '.eslintcache': { run, file: `${up(3)}/elsewhere/y.ts` },
+      'tsconfig.tsbuildinfo': { run, file: `${up(3)}/elsewhere/z.ts` },
+    });
+    write(dir, written(1));
+    mutation(dir);
+    expect(mutation(dir)).toEqual(REUSED);
+    write(dir, written(2));
+    expect(mutation(dir)).toEqual(REUSED);
+    // Generated code that git ignores and the run loads is still compared.
+    write(dir, { 'src/generated/limit.ts': 'export const limit = 21;\n' });
+    expect(mutation(dir)).toEqual(forcedBy(`${CHANGED}fee-rules/src/generated/limit.ts`));
   });
 
   it.each([

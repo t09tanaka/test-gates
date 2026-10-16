@@ -22,7 +22,9 @@ import {
   readRecord,
   RECORD_FORMAT,
   refuseReuse,
+  reportFiles,
   type Snapshot,
+  strykerIgnores,
 } from '../core/reuse-guard.js';
 import { affectedRefused, gateRunRefused, selectControls } from '../core/selfcheck.js';
 import { findLocalBin } from '../fs.js';
@@ -56,6 +58,8 @@ function loadStrykerConfig(manifest: LoadedManifest, config: string): unknown {
     'incrementalFile: config.incrementalFile, tempDirName: config.tempDirName,' +
     'testRunner: config.testRunner, vitestConfig: config.vitest?.configFile,' +
     'jestConfig: config.jest?.configFile, checkers: config.checkers,' +
+    'htmlReporter: config.htmlReporter, jsonReporter: config.jsonReporter,' +
+    'ignorePatterns: config.ignorePatterns,' +
     `}) + ${JSON.stringify(CONFIG_MARK)});`;
   const result = spawnSync(process.execPath, ['--input-type=module', '--eval', script], {
     cwd: manifest.dir,
@@ -219,12 +223,26 @@ export function decideReuse(
   let snapshot: Snapshot | null = null;
   let root = base;
   let failure = 'the Stryker config could not be loaded to see where the incremental file is';
+  // The reports of the run, and what Stryker leaves out of it (a cache of lint, of tsc): a text
+  // of the Stryker config that names one is not a file the run reads.
+  const reports = reportFiles(loaded).map((file) => path.resolve(base, file));
+  const ignores = strykerIgnores(loaded);
+  const read = (file: string): boolean => {
+    const relative = path.relative(base, file);
+    const inside = !relative.startsWith('..') && !path.isAbsolute(relative);
+    return !reports.includes(file) && !(inside && ignores(relative.split(path.sep).join('/')));
+  };
   if (loaded !== undefined) {
     const scope = (listed: string[]): Set<string> | null => {
       try {
         const found = loadedScope(manifest, configs(), listed);
-        decision.scope = 'files' in found ? { files: found.files.size } : found;
-        return 'files' in found ? found.files : null;
+        if (!('files' in found)) {
+          decision.scope = found;
+          return null;
+        }
+        const files = new Set([...found.files].filter(read));
+        decision.scope = { files: files.size };
+        return files;
       } catch (error) {
         // what the run loads cannot be told: every path is followed
         decision.scope = { every: (error as Error).message };
@@ -241,6 +259,7 @@ export function decideReuse(
           recordFile,
           path.resolve(base, options.tempDirName),
           path.resolve(base, manifest.settings.strykerReportFile),
+          ...reports,
         ],
         args: comparableArgs(strykerArgs),
       }));

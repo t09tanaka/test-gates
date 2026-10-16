@@ -53,8 +53,11 @@ const WIDENED_SHOWN = 5;
 const SCAN_LIMIT = 8 * 1024 * 1024;
 /** A string literal with `..` as a part of a path: it may lead out of the directory of its file. */
 const UPWARD = /(['"`])((?:[^'"`\n]*\/)?\.\.(?:\/[^'"`\n]*)?)\1/g;
-/** Files written for people to read: hashed, but the paths in them are not followed. */
-const DOCUMENTS = ['.md', '.markdown', '.txt', '.rst', '.adoc'];
+/**
+ * Files written for people to read (a report of Stryker is one): hashed, but the paths in them
+ * are not followed.
+ */
+const DOCUMENTS = ['.md', '.markdown', '.txt', '.rst', '.adoc', '.html', '.htm'];
 /** The start of a template literal that is the directory of its own file. */
 const HERE = /^\$\{(?:__dirname|import\.meta\.dirname)\}(?=\/)/;
 /**

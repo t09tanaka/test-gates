@@ -6,7 +6,9 @@ import {
   readRecord,
   RECORD_FORMAT,
   refuseReuse,
+  reportFiles,
   type Snapshot,
+  strykerIgnores,
 } from './reuse-guard';
 
 const snapshot = (changes: Partial<Snapshot> = {}): Snapshot => ({
@@ -274,5 +276,129 @@ describe('comparableArgs', () => {
       '--forced',
     ]);
     expect(comparableArgs([])).toEqual([]);
+  });
+});
+
+describe('reportFiles', () => {
+  it('takes the defaults of Stryker where the config names no file', () => {
+    const defaults = ['reports/mutation/mutation.html', 'reports/mutation/mutation.json'];
+    expect(reportFiles(undefined)).toEqual(defaults);
+    expect(reportFiles({ htmlReporter: null, jsonReporter: 'x' })).toEqual(defaults);
+    expect(reportFiles({ htmlReporter: { fileName: 1 }, jsonReporter: {} })).toEqual(defaults);
+  });
+
+  it('reads the file of each reporter', () => {
+    expect(
+      reportFiles({
+        htmlReporter: { fileName: 'out/gates.html' },
+        jsonReporter: { fileName: 'out/gates.json' },
+      })
+    ).toEqual(['out/gates.html', 'out/gates.json']);
+  });
+});
+
+describe('strykerIgnores', () => {
+  const ignored = (patterns: unknown, files: string[]): string[] => {
+    const test = strykerIgnores({ ignorePatterns: patterns });
+    return files.filter((file) => test(file));
+  };
+
+  it('leaves out nothing without patterns', () => {
+    expect(strykerIgnores(undefined)('a.ts')).toBe(false);
+    expect(strykerIgnores({ ignorePatterns: 'a.ts' })('a.ts')).toBe(false);
+    expect(ignored([1, '', '  '], ['a.ts', ' '])).toEqual([]);
+  });
+
+  it('matches a name at any depth, and what lies below it', () => {
+    expect(
+      ignored(['.eslintcache', 'dist'], ['.eslintcache', 'a/.eslintcache', 'dist/x.js', 'distx'])
+    ).toEqual(['.eslintcache', 'a/.eslintcache', 'dist/x.js']);
+  });
+
+  it('matches a path with a / from the subproject only', () => {
+    const files = [
+      'tsconfig.tsbuildinfo',
+      'a/tsconfig.tsbuildinfo',
+      'src/gen/x.ts',
+      'a/src/gen/x.ts',
+    ];
+    expect(ignored(['/tsconfig.tsbuildinfo', 'src/gen'], files)).toEqual([
+      'tsconfig.tsbuildinfo',
+      'src/gen/x.ts',
+    ]);
+  });
+
+  it('matches a pattern that ends in / to a directory only', () => {
+    expect(ignored(['cache/'], ['cache', 'cache/x', 'a/cache/x'])).toEqual([
+      'cache/x',
+      'a/cache/x',
+    ]);
+  });
+
+  it('reads * within a part, ** across parts, ? and [] for one character, {} for either', () => {
+    const files = [
+      'a.tsbuildinfo',
+      'x/a.tsbuildinfo',
+      'out/a/b/c.map',
+      'out/c.map',
+      'outc.map',
+      'log1.txt',
+      'log12.txt',
+      'logb.txt',
+      'notes.md',
+      'notes.mdx',
+      'a.html',
+      'a.htm',
+      'a.js',
+      'a.b',
+      'axb',
+      'a+b',
+    ];
+    expect(
+      ignored(
+        ['*.tsbuildinfo', 'out/**/*.map', 'log?.txt', 'notes.{md,txt}', '*.htm[l]', 'a.b', 'a+b'],
+        files
+      )
+    ).toEqual([
+      'a.tsbuildinfo',
+      'x/a.tsbuildinfo',
+      'out/a/b/c.map',
+      'out/c.map',
+      'log1.txt',
+      'logb.txt',
+      'notes.md',
+      'a.html',
+      'a.b',
+      'a+b',
+    ]);
+    expect(
+      ignored(
+        ['log[!a].txt', '**/deep', 'w**'],
+        ['loga.txt', 'logb.txt', 'deep', 'x/y/deep/z', 'wa/b']
+      )
+    ).toEqual(['logb.txt', 'deep', 'x/y/deep/z', 'wa/b']);
+    expect(ignored(['[a\\]x', 'p[q', 'r{s'], ['ax', '\\x', 'bx', 'p[q', 'r{s'])).toEqual([
+      'ax',
+      '\\x',
+      'p[q',
+      'r{s',
+    ]);
+  });
+
+  it('takes a file back with !, the last pattern that matches winning', () => {
+    expect(
+      ignored(
+        ['reports', '!reports/keep.json', 'reports/keep.json.bak'],
+        ['reports/a.html', 'reports/keep.json', 'reports/keep.json.bak']
+      )
+    ).toEqual(['reports/a.html', 'reports/keep.json.bak']);
+    expect(ignored(['!a.ts', 'a.ts', '!b.ts'], ['a.ts', 'b.ts'])).toEqual(['a.ts']);
+  });
+
+  it('tells no case of letters apart, as Stryker does', () => {
+    expect(ignored(['.ESLintCache', 'Src/Gen'], ['.eslintcache', 'src/gen/x.ts'])).toEqual([
+      '.eslintcache',
+      'src/gen/x.ts',
+    ]);
   });
 });
