@@ -324,6 +324,23 @@ To run only some gates, `--affected` hands them to Stryker as `--mutate` with `-
 
 What it does not see, besides what is listed for the comparison above: a file that a spec or a gate reaches in a way the text does not show and that is not a config by its name (a script that a tool loads by a name built at run time), and a spec that changes what another spec sees (Vitest with `isolate: false`, a shared global set by one spec file and read by another). Keep the CI run without the option.
 
+### `test-gates doctor`
+
+Tells why `test-gates mutation` would run every mutant where it need not, and what to change. It runs neither Stryker nor a test and changes no file: it takes the same snapshot as a mutation run, reads the record of the last run, and looks at the git hooks of the repository (`.husky/pre-push` and `pre-commit`, the hooks git runs, `lefthook.yml`).
+
+```
+test-gates doctor: /work/shop/fee-rules (stryker.gates.config.mjs)
+  compared: 640 files, 16 outside the subproject, paths followed in the 31 files the run loads
+  next run: every mutant, changed since the last run: src/fee.ts
+  next run with --affected: 3 of 4 gate(s) reused, 1 run again
+    src/fee.ts: changed src/fee.ts
+problem: .husky/pre-push runs test-gates mutation without --affected: a change of any file of the subproject runs every mutant
+  fix: pass --affected in the hook (npm run test:gates:mutation -- --affected); keep the run in CI without it
+test-gates doctor: 1 problem(s) that make runs full ones
+```
+
+A **problem** makes runs full ones that need not be: Stryker not in incremental mode, a path that turns reuse off (one that leads outside of the repository to something), a path that makes every file of the repository part of the comparison (it names the file and the path), and a hook that runs `test-gates mutation` without `--affected`, also through the `test:gates:mutation` script of the subproject. A **note** is worth knowing: that every file of the subproject is searched for paths, and why (a runner config that is not made with the helper, an import whose path is not written out), and that no hook runs a mutation run. The exit code is 1 when there is a problem, so that the doctor can run in CI next to the other checks.
+
 ### `test-gates mutation-result [--report <path>]`
 
 Judges an existing Stryker JSON report without running Stryker.

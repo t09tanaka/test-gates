@@ -103,12 +103,19 @@ export function runDoctor(dir: string, io: Io): number {
         ? '  next run: reuses the results of the last run'
         : `  next run: every mutant, ${reuse}`
     );
-    const lines = affected.ci
-      ? [affected.ci]
-      : describePlan(affected.plan ?? { full: affected.force ?? 'nothing to reuse' });
-    io.out(
-      `  next run with --affected: ${lines.join(' / ').replace(/^test-gates mutation --affected: /, '')}`
-    );
+    if (affected.ci !== null) {
+      io.out(`  next run with --affected: every mutant, ${affected.ci}`);
+    } else if (affected.plan !== null && 'rerun' in affected.plan) {
+      const [first = '', ...rest] = describePlan(affected.plan);
+      io.out(
+        `  next run with --affected: ${first.replace(/^test-gates mutation --affected: /, '')}`
+      );
+      rest.forEach((line) => io.out(`  ${line}`));
+    } else {
+      io.out(
+        `  next run with --affected: every mutant, ${affected.force ?? 'there is nothing to reuse'}`
+      );
+    }
   }
   const { lines, status } = formatFindings(
     diagnose({

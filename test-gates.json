@@ -66,6 +66,11 @@
       "impact": "A gate keeps an old Killed after a change of a file its results depend on (its spec, a helper, the spec of another gate that imports it, a config), and a mutant that now survives passes"
     },
     {
+      "path": "src/core/doctor.ts",
+      "decides": "What test-gates doctor reports as a problem that makes mutation runs full ones, and what it tells to change",
+      "impact": "A subproject whose runs are always full ones is reported as healthy, or a healthy one fails the doctor, and the fix it gives sends the user the wrong way"
+    },
+    {
       "path": "src/core/vitest-coverage.ts",
       "decides": "Whether a Vitest setup can report 100% branches with the skipped side of an if untested",
       "impact": "A project keeps a coverage floor that has a hole in it without being told"
