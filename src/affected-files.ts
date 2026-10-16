@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import { builtinModules } from 'node:module';
 import path from 'node:path';
-import { gateDependencies, kindOf } from './core/affected.js';
+import { gateDependencies, isNestedMock, kindOf } from './core/affected.js';
 import { isProjectImport } from './core/import-policy.js';
 import { findUncheckableImports, type ImportRef, parseImports } from './core/imports.js';
 import {
@@ -347,6 +347,18 @@ export function fileEdges(
   if (fs.existsSync(snapshotFile)) {
     found.loads.push(realpath(snapshotFile));
   }
+  // The mock that `jest.mock('./rates')` and `vi.mock('./rates')` take in place of the file. Both
+  // runners look for the name of the file; one of another extension is taken as well.
+  const mocks = path.join(path.dirname(file), '__mocks__');
+  const name = path.basename(file);
+  for (const mock of new Set([
+    path.join(mocks, name),
+    ...resolveFiles(path.join(mocks, name.replace(/\.[^.]+$/, '')), false, false),
+  ])) {
+    if (isFile(mock)) {
+      found.loads.push(realpath(mock));
+    }
+  }
   if (!SCRIPT.test(file) && !COMPONENT.test(file)) {
     return found; // data: it loads nothing
   }
@@ -354,28 +366,30 @@ export function fileEdges(
   // template uses without an import (a component registered by a plugin) is not seen, so that
   // --affected runs every mutant for it.
   const source = fs.readFileSync(file, 'utf8');
+  // What a comment names is not run. A string is kept: a path in one is followed below.
+  const code = withoutComments(source);
   if (COMPONENT.test(file)) {
     found.unknown = `${shown(file)} is a component, which can use others that it does not import`;
   }
-  const uncheckable = findUncheckableImports(source)[0];
-  const runtime = RUNTIME_PATHS.exec(source);
+  const uncheckable = findUncheckableImports(code)[0];
+  const runtime = RUNTIME_PATHS.exec(code);
   if (uncheckable !== undefined) {
     found.unknown = `${shown(file)}:${uncheckable} imports a module whose path is not written out`;
     found.computed = true;
   } else if (runtime !== null) {
     found.unknown = `${shown(file)} uses ${runtime[0]}, which can reach files that no import names`;
   }
-  const location = LOCATION.exec(source);
+  const location = LOCATION.exec(code);
   // An import of types only, where the run drops it (see typesErased), loads nothing; a module
   // that is also imported for a value, or named to the runner, is still followed.
-  const refs = parseImports(source);
+  const refs = parseImports(code);
   const dropped = (ref: ImportRef): boolean =>
     types !== undefined &&
     types.erased &&
     (ref.typeOnly || (types.inline && ref.inlineTypes === true));
   const specifiers = new Set([
     ...refs.filter((ref) => !dropped(ref)).map((ref) => ref.module),
-    ...[...source.matchAll(RUNNER_LOAD)].map((match) => match[2] as string),
+    ...[...code.matchAll(RUNNER_LOAD)].map((match) => match[2] as string),
   ]);
   const typesOnly = new Set(
     refs
@@ -414,7 +428,7 @@ export function fileEdges(
     }
   }
   if (location !== null) {
-    const reads = LOCATION_READS.exec(source);
+    const reads = LOCATION_READS.exec(code);
     const reader = [...specifiers].find(
       (specifier) =>
         !specifier.startsWith('.') &&
@@ -429,7 +443,8 @@ export function fileEdges(
       found.unknown ??= `${shown(file)} uses ${location[0]} and imports ${reader}, which can read files by it that no import names`;
     }
   }
-  // A path given to the runner as text: vi.mock('./rates', …).
+  // A path given to the runner as text: vi.mock('./rates', …). Also one in a comment, which
+  // errs on the strict side.
   for (const match of source.matchAll(QUOTED)) {
     const text = match[2] as string;
     if (text.startsWith('.') && !specifiers.has(text) && !typesOnly.has(text)) {
@@ -661,7 +676,30 @@ export function affectedInputs(
       files: found.files,
     };
   }
-  return { subproject, config: keysOf([...config]).sort(), gates };
+  // Jest takes a mock below any `__mocks__` for the package of its name, in every spec, without
+  // being asked to (with `roots`, it need not be the one at the top): such a mock is a config.
+  const packageMocks = Object.keys(input.files).filter(
+    (key) =>
+      isNestedMock(key, subproject) &&
+      mockNames(key).some(
+        (name) => builtinModules.includes(name) || installed(name, path.join(input.root, key))
+      )
+  );
+  return {
+    subproject,
+    config: [...new Set([...keysOf([...config]), ...packageMocks])].sort(),
+    gates,
+  };
+}
+
+/** The names a file below `__mocks__` may be the mock of: `@acme/kit` for `__mocks__/@acme/kit.ts`. */
+function mockNames(key: string): string[] {
+  const segments = key.replace(/\.[^./]+$/, '').split('/');
+  return segments.flatMap((segment, index) =>
+    segment === '__mocks__' && index < segments.length - 1
+      ? [segments.slice(index + 1).join('/')]
+      : []
+  );
 }
 
 /** Why every file is followed when the runner config is not made with the helpers. */
@@ -818,11 +856,6 @@ export function loadedScope(
     for (const specifier of edges.unnamed) {
       endingAs(specifier, listed).forEach(add);
     }
-    // The mock that `jest.mock('./rates')` takes in place of the file.
-    const mock = path.join(path.dirname(file), '__mocks__', path.basename(file));
-    if (fs.existsSync(mock)) {
-      add(mock);
-    }
     // What a config names as text: a setup file, an environment, `<rootDir>/test/setup.ts`.
     if (naming.has(file) || (SCRIPT.test(file) && path.dirname(file) === dir)) {
       for (const named of namedIn(file)) {
@@ -913,32 +946,119 @@ function valuesOf(text: string, key: string): string[] {
 }
 
 /**
- * The text without its comments. Strings are read past, so that a glob or a URL in
- * one is not taken for the start of a comment; a comment ends a line or at its closing mark.
+ * The text without its comments. Strings, templates (also of several lines) and regular
+ * expressions are read past, so that a glob, a URL or a pattern in one is not taken for the start
+ * of a comment; a comment ends a line or at its closing mark. The lines of a comment are kept, so
+ * that a line of the text is still the same line. Where a `/` may start a regular expression or
+ * divide is not always told: it is then taken for a regular expression, which keeps the text.
  */
 function withoutComments(text: string): string {
   let out = '';
   for (let at = 0; at < text.length; at += 1) {
     const char = text[at] as string;
+    const next = text[at + 1];
     if (char === "'" || char === '"' || char === '`') {
+      const end = stringEnd(text, at);
+      out += text.slice(at, end + 1);
+      at = end;
+    } else if (char === '/' && next === '/') {
+      const end = text.indexOf('\n', at);
+      at = end === -1 ? text.length : end - 1;
+    } else if (char === '/' && next === '*') {
+      const end = text.indexOf('*/', at + 2);
+      const stop = end === -1 ? text.length : end + 2;
+      // A space keeps the words on both sides apart: `import/* c */type`.
+      out += ` ${text.slice(at, stop).replace(/[^\n]/g, '')}`;
+      at = stop - 1;
+    } else if (char === '/' && mayStartPattern(out)) {
       let end = at + 1;
-      while (end < text.length && text[end] !== char && text[end] !== '\n') {
-        end += text[end] === '\\' ? 2 : 1;
+      for (let inClass = false; end < text.length && text[end] !== '\n'; end += 1) {
+        if (text[end] === '\\') {
+          end += 1;
+        } else if (text[end] === '[') {
+          inClass = true;
+        } else if (text[end] === ']') {
+          inClass = false;
+        } else if (text[end] === '/' && !inClass) {
+          break;
+        }
       }
       out += text.slice(at, end + 1);
       at = end;
-      // Not the end of a regular expression literal that ends with a slash: `/^@\//`.
-    } else if (char === '/' && text[at + 1] === '/' && text[at - 1] !== '\\') {
-      const end = text.indexOf('\n', at);
-      at = end === -1 ? text.length : end - 1;
-    } else if (char === '/' && text[at + 1] === '*') {
-      const end = text.indexOf('*/', at + 2);
-      at = end === -1 ? text.length : end + 1;
     } else {
       out += char;
     }
   }
   return out;
+}
+
+/** Where the string or template that opens at `at` closes: its quote, or the end of its line. */
+function stringEnd(text: string, at: number): number {
+  const quote = text[at];
+  let end = at + 1;
+  while (end < text.length && text[end] !== quote && (quote === '`' || text[end] !== '\n')) {
+    if (text[end] === '\\') {
+      end += 2;
+    } else if (quote === '`' && text.startsWith('${', end)) {
+      end = placeholderEnd(text, end + 2) + 1;
+    } else {
+      end += 1;
+    }
+  }
+  return end;
+}
+
+/** Where the `${…}` of a template closes: the `}` after `at` that is not in a string or a block. */
+function placeholderEnd(text: string, at: number): number {
+  let depth = 0;
+  for (let index = at; index < text.length; index += 1) {
+    const char = text[index] as string;
+    if (char === "'" || char === '"' || char === '`') {
+      index = stringEnd(text, index);
+    } else if (char === '{') {
+      depth += 1;
+    } else if (char === '}') {
+      if (depth === 0) {
+        return index;
+      }
+      depth -= 1;
+    }
+  }
+  return text.length;
+}
+
+/** Words after which a `/` starts a regular expression: `return /x/.test(s)`. */
+const BEFORE_PATTERN = new Set([
+  'return',
+  'typeof',
+  'instanceof',
+  'in',
+  'of',
+  'new',
+  'delete',
+  'void',
+  'throw',
+  'case',
+  'do',
+  'else',
+  'yield',
+  'await',
+]);
+
+/** Whether a `/` after this text may start a regular expression rather than divide. */
+function mayStartPattern(before: string): boolean {
+  let end = before.length;
+  while (end > 0 && /\s/.test(before[end - 1] as string)) {
+    end -= 1;
+  }
+  let start = end;
+  while (start > 0 && /[\w$]/.test(before[start - 1] as string)) {
+    start -= 1;
+  }
+  if (start < end) {
+    return BEFORE_PATTERN.has(before.slice(start, end));
+  }
+  return end === 0 || !')]'.includes(before[end - 1] as string);
 }
 
 /** package.json, where Jest reads its config from when no other config file is there. */

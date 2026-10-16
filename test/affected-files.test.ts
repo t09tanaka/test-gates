@@ -503,6 +503,168 @@ describe('affectedInputs', () => {
   });
 });
 
+describe('a JSON file required without its extension', () => {
+  it('follows it as data, as Jest and Vite do', () => {
+    const dir = fixture({
+      'src/c.ts':
+        "const rates = require('./rates');\nexport const c = (x: number) => x - rates.one;\n",
+      'src/rates.json': '{ "one": 1 }\n',
+    });
+    expect(inputs(dir).gates['src/c.ts']?.files).toEqual([
+      'src/c.spec.ts',
+      'src/c.ts',
+      'src/rates.json',
+    ]);
+  });
+
+  it('takes a script of the same name first, and both when both are there', () => {
+    const dir = fixture({
+      'src/c.ts': "import { one } from './rates';\nexport const c = (x: number) => x - one;\n",
+      'src/rates.ts': 'export const one = 1;\n',
+      'src/rates.json': '{ "one": 1 }\n',
+    });
+    expect(inputs(dir).gates['src/c.ts']?.files).toEqual([
+      'src/c.spec.ts',
+      'src/c.ts',
+      'src/rates.json',
+      'src/rates.ts',
+    ]);
+  });
+
+  it('follows the index.json of a directory', () => {
+    const dir = fixture({
+      'src/c.ts':
+        "const rates = require('./rates');\nexport const c = (x: number) => x - rates.one;\n",
+      'src/rates/index.json': '{ "one": 1 }\n',
+    });
+    expect(inputs(dir).gates['src/c.ts']?.files).toEqual([
+      'src/c.spec.ts',
+      'src/c.ts',
+      'src/rates/index.json',
+    ]);
+  });
+});
+
+describe('comments', () => {
+  it('ignores an import in a comment that leads to no file', () => {
+    const dir = fixture({
+      'src/c.ts':
+        "/* Moved here from:\nimport { c } from './old/c';\n*/\n// import { d } from './old/d';\nexport const c = (x: number) => x - 1;\n",
+    });
+    expect(inputs(dir).gates['src/c.ts']?.files).toEqual(['src/c.spec.ts', 'src/c.ts']);
+  });
+
+  it('ignores the name of a function that reads files in a comment', () => {
+    const dir = fixture({
+      'src/c.ts':
+        '// Pure: no readFileSync, no __dirname here.\n/** Not import.meta.glob either. */\nexport const c = (x: number) => x - 1;\n',
+    });
+    expect(inputs(dir).gates['src/c.ts']?.files).toEqual(['src/c.spec.ts', 'src/c.ts']);
+  });
+
+  it('keeps an import and a path in a string', () => {
+    const dir = fixture({
+      'src/c.ts':
+        "export const hint = 'see // the docs';\nexport const c = (x: number) => (require('./rate') as number) - x;\n" +
+        "export const docs = './README.md';\n",
+      'src/rate.ts': 'export = 1;\n',
+      'src/README.md': 'docs\n',
+    });
+    expect(inputs(dir).gates['src/c.ts']?.files).toEqual([
+      'src/README.md',
+      'src/c.spec.ts',
+      'src/c.ts',
+      'src/rate.ts',
+    ]);
+  });
+
+  it('gives the line of an import after a comment of several lines', () => {
+    const dir = fixture({
+      'src/c.ts':
+        "/*\n * one\n * two\n */\nexport const c = (lang: string) => require('./rules/' + lang);\n",
+    });
+    expect(refusal(dir)).toBe('src/c.ts:5 imports a module whose path is not written out');
+  });
+
+  it.each([
+    [
+      'a regular expression with //',
+      "const url = /https?:\\/\\//; const r = require('./missing');\n",
+    ],
+    [
+      'a regular expression with /*',
+      "const trim = (s: string) => s.replace(/\\/*$/, '');\nimport { x } from './missing';\n",
+    ],
+    [
+      'a regular expression after return',
+      "function f(s: string) { return /\\/*$/.test(s); }\nimport { x } from './missing';\n",
+    ],
+    [
+      'a template of several lines with /*',
+      "const glob = `\n  src/*\n`;\nimport { x } from './missing';\n/* */\n",
+    ],
+    ['a string with //', "const u = 'http://x'; const r = require('./missing');\n"],
+    ['a comment between two words', "import/* the rate */x from './missing';\n"],
+  ])('does not take %s for the start of a comment', (_name, source) => {
+    const dir = fixture({ 'src/c.ts': `${source}export const c = (x: number) => x - 1;\n` });
+    expect(refusal(dir)).toBe('src/c.ts imports ./missing, which leads to no file');
+  });
+
+  it('does not take a regular expression for the start of a comment before readFileSync', () => {
+    const dir = fixture({
+      'src/c.ts':
+        "const strip = (s: string) => s.replace(/\\/*/g, '');\nexport const c = () => readFileSync('x');\n/* */\n",
+    });
+    expect(refusal(dir)).toBe(
+      'src/c.ts uses readFileSync, which can reach files that no import names'
+    );
+  });
+});
+
+describe('a mock in a __mocks__ next to a module', () => {
+  it('is loaded with the module, by the gates that load the module', () => {
+    const dir = fixture({
+      'src/__mocks__/round.ts':
+        "import { half } from '../half';\nexport const round = (x: number) => half(x);\n",
+      'src/half.ts': 'export const half = (x: number) => x / 2;\n',
+    });
+    const found = inputs(dir);
+    expect(found.gates['src/a.ts']?.files).toEqual([
+      'src/__mocks__/round.ts',
+      'src/a.spec.ts',
+      'src/a.ts',
+      'src/b.spec.ts',
+      'src/b.ts',
+      'src/half.ts',
+      'src/round.ts',
+    ]);
+    expect(found.gates['src/c.ts']?.files).toEqual(['src/c.spec.ts', 'src/c.ts']);
+    expect(found.config).not.toContain('src/__mocks__/round.ts');
+  });
+
+  it('is loaded also when it has another extension', () => {
+    const dir = fixture({ 'src/__mocks__/round.js': 'export const round = () => 0;\n' });
+    expect(inputs(dir).gates['src/a.ts']?.files).toContain('src/__mocks__/round.js');
+  });
+
+  it.each([
+    ['an installed package', 'src/__mocks__/vitest.ts'],
+    ['a scoped package', 'src/__mocks__/@acme/kit.ts'],
+    ['a builtin module', 'src/__mocks__/fs.ts'],
+  ])('is a config when it is named as %s', (_name, file) => {
+    const dir = fixture({
+      [file]: 'export const x = 1;\n',
+      'node_modules/@acme/kit/package.json': '{ "name": "@acme/kit" }',
+    });
+    expect(inputs(dir).config).toContain(file);
+  });
+
+  it('is not a config when it is named as no package', () => {
+    const dir = fixture({ 'src/__mocks__/helpers.ts': 'export const x = 1;\n' });
+    expect(inputs(dir).config).not.toContain('src/__mocks__/helpers.ts');
+  });
+});
+
 describe('the module maps of the runner config', () => {
   const ALIASES = { settings: { importAliases: [{ prefix: '@/', target: 'src/' }] } };
   const vitest = (resolve: string) =>

@@ -39,8 +39,8 @@ const CONFIG_NAMES = [
   // Declarations need no import to take effect.
   /\.d\.[cm]?ts$/,
 ];
-/** Jest uses a mock from `__mocks__` next to node_modules without being asked to. */
-const CONFIG_DIRECTORIES = ['__mocks__', 'node_modules'];
+/** Jest uses a mock from the `__mocks__` next to node_modules without being asked to. */
+const ROOT_MOCKS = '__mocks__';
 const DOCUMENT = /\.(?:md|markdown|txt|rst|adoc)$/i;
 const PASSIVE = /\.(?:[cm]?[jt]sx?|json|snap|css|scss|sass|less|svg|png|jpe?g|gif|webp|avif|ico)$/i;
 
@@ -49,23 +49,41 @@ const PASSIVE = /\.(?:[cm]?[jt]sx?|json|snap|css|scss|sass|less|svg|png|jpe?g|gi
  * @param subproject The subproject, relative to the same root ('' when it is the root).
  */
 export function kindOf(key: string, subproject: string): FileKind {
-  const inside = subproject === '' || key.startsWith(`${subproject}/`);
-  const local = inside && subproject !== '' ? key.slice(subproject.length + 1) : key;
-  const segments = local.split('/');
+  const segments = localSegments(key, subproject);
   const name = segments[segments.length - 1] as string;
   if (
-    segments.some((segment) => CONFIG_DIRECTORIES.includes(segment)) ||
+    segments[0] === ROOT_MOCKS ||
+    segments.includes('node_modules') ||
     CONFIG_NAMES.some((pattern) => pattern.test(name))
   ) {
     return 'config';
   }
+  // A mock in a `__mocks__` below the top, `src/__mocks__/dep.ts`, is taken in place of the
+  // module next to it (`src/dep.ts`): it is loaded with that module, so it affects the gates that
+  // load the module. One that no gate loads may still be used by name (Jest's `roots`), so that
+  // it is no file of a known kind.
+  if (isNestedMock(key, subproject)) {
+    return 'other';
+  }
   if (DOCUMENT.test(name)) {
     return 'document';
   }
+  const inside = subproject === '' || key.startsWith(`${subproject}/`);
   if (!inside || segments.length === 1 || !PASSIVE.test(name)) {
     return 'other';
   }
   return 'passive';
+}
+
+/** The parts of the path of a key, from the subproject on when it lies inside of it. */
+function localSegments(key: string, subproject: string): string[] {
+  const inside = subproject === '' || key.startsWith(`${subproject}/`);
+  return (inside && subproject !== '' ? key.slice(subproject.length + 1) : key).split('/');
+}
+
+/** Whether a key lies in a `__mocks__` that is not the one at the top of the subproject. */
+export function isNestedMock(key: string, subproject: string): boolean {
+  return localSegments(key, subproject).slice(1, -1).includes(ROOT_MOCKS);
 }
 
 /**
@@ -122,7 +140,8 @@ export type AffectedPlan = { full: string } | { rerun: GateRerun[]; reused: stri
  * @param input.now The files as they are now (the same keys as `before.files`).
  * @param input.subproject The subproject, as a key.
  * @param input.config Keys of the Stryker config and the test runner config, of what they import
- *   and of what they name (setup files, mocks): a change there may affect every gate.
+ *   and of what they name (setup files, mocks), and of the mocks below the top named as a package
+ *   (`src/__mocks__/axios.ts`): a change there may affect every gate.
  * @param input.gates Each gate (its path as in test-gates.json, the order of that file), with the
  *   keys its results depend on as they are now.
  */
@@ -145,7 +164,13 @@ export function planAffected(input: {
   const config = new Set(input.config);
   const everywhere = changed.filter((key) => {
     const kind = kindOf(key, input.subproject);
-    return config.has(key) || kind === 'config' || (kind === 'other' && !reached.has(key));
+    return (
+      config.has(key) ||
+      kind === 'config' ||
+      (kind === 'other' && !reached.has(key)) ||
+      // A mock that is gone may have been one of a package, which is used by name for every spec.
+      (isNestedMock(key, input.subproject) && !Object.hasOwn(input.now, key))
+    );
   });
   if (everywhere.length > 0) {
     return { full: `changed since the last run, and may affect every gate: ${listed(everywhere)}` };

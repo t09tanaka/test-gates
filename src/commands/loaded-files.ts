@@ -42,7 +42,9 @@ export function resolveFiles(base: string, directory = true, declarations = true
     ...extensions.map((extension) => base.replace(/\.[cm]?jsx?$/, extension)),
     ...(directory ? extensions.map((extension) => path.join(base, `index${extension}`)) : []),
   ];
-  const scripts = [...new Set([base, ...candidates(EXTENSIONS)])].filter(isFile);
+  // A JSON file, which Node, Jest and Vite take after the scripts: `require('./rates')`.
+  const data = [`${base}.json`, ...(directory ? [path.join(base, 'index.json')] : [])];
+  const scripts = [...new Set([base, ...candidates(EXTENSIONS), ...data])].filter(isFile);
   return scripts.length > 0 || !declarations
     ? scripts
     : [...new Set(candidates(DECLARATIONS))].filter(isFile);
