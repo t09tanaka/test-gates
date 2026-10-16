@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { loadedScope, runnerConfigs } from '../src/affected-files';
@@ -68,6 +69,11 @@ function snapshot(root: string): { keys: string[]; followed: Set<string> | null 
 }
 
 const ELSEWHERE = 'catalog-site/src/listing.ts';
+// Whether the file system tells the case of letters apart (Linux) or not (macOS, Windows).
+const caseInsensitive = (): boolean => {
+  const dir = project({ 'probe.txt': '' });
+  return fs.existsSync(path.join(dir, 'PROBE.TXT'));
+};
 
 describe('the paths the snapshot follows', () => {
   it('follows only what the run loads, and compares every file of the subproject', () => {
@@ -166,11 +172,6 @@ describe('the paths the snapshot follows', () => {
       },
       'fee-rules/config/base.json',
     ],
-    [
-      'an import written in another case than the file',
-      { 'fee-rules/src/near.ts': "export { near } from './Helper';\n" },
-      'fee-rules/src/helper.ts',
-    ],
   ])('follows a way up in the file that %s leads to', (_name, files, file) => {
     const root = repository({
       ...files,
@@ -210,6 +211,29 @@ describe('the paths the snapshot follows', () => {
     }
   );
 
+  it('follows what a component a spec loads imports', () => {
+    const root = repository({
+      'fee-rules/src/fee.spec.ts': `${H}import { fee } from './fee';\nimport Widget from './Widget.vue';\nit('fee', () => { expect(fee(1) && Widget).toBeTruthy(); });\n`,
+      'fee-rules/src/Widget.vue': "<script setup>\nimport { label } from './label';\n</script>\n",
+      'fee-rules/src/label.ts': `export const label = '${up(2)}';\n`,
+    });
+    const { keys, followed } = snapshot(root);
+    expect(followed).not.toBeNull();
+    expect(keys).toContain(ELSEWHERE);
+  });
+
+  // Elsewhere the import leads to no file, for the run as well.
+  it.runIf(caseInsensitive())(
+    'follows a way up in a file imported in another case of letters than it has',
+    () => {
+      const root = repository({
+        'fee-rules/src/near.ts': "export { near } from './Helper';\n",
+        'fee-rules/src/helper.ts': `export const near = (a: number, b: number) => a === b;\nexport const top = '${up(2)}';\n`,
+      });
+      expect(snapshot(root).keys).toContain(ELSEWHERE);
+    }
+  );
+
   it.each([
     [
       'a runner config this tool did not make',
@@ -237,6 +261,27 @@ describe('the paths the snapshot follows', () => {
           "import { createVitestGatesConfig } from '@t09tanaka/test-gates/vitest';\nimport shared from './vitest.shared';\nexport default { ...createVitestGatesConfig(), ...shared };\n",
         'fee-rules/vitest.shared.ts':
           "export default { test: { include: ['src/**/*.test.ts'] } };\n",
+      },
+    ],
+    [
+      'a runner config whose export is changed after it is set',
+      {
+        'fee-rules/vitest.gates.config.ts':
+          "const { createVitestGatesConfig } = require('@t09tanaka/test-gates/vitest');\nmodule.exports = createVitestGatesConfig({});\nmodule.exports.test.include = ['src/**/*.test.ts'];\n",
+      },
+    ],
+    [
+      'a runner config whose variable is handed to Object.assign',
+      {
+        'fee-rules/vitest.gates.config.ts':
+          "import { createVitestGatesConfig } from '@t09tanaka/test-gates/vitest';\nconst config = createVitestGatesConfig({});\nObject.assign(config, { test: {} });\nexport default config;\n",
+      },
+    ],
+    [
+      'a runner config whose variable is set again',
+      {
+        'fee-rules/vitest.gates.config.ts':
+          "import { mergeConfig } from 'vitest/config';\nimport { createVitestGatesConfig } from '@t09tanaka/test-gates/vitest';\nlet config = createVitestGatesConfig({});\nconfig = mergeConfig(config, {});\nexport default config;\n",
       },
     ],
     [

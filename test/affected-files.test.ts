@@ -286,16 +286,19 @@ describe('affectedInputs', () => {
       'src/Widget.astro',
       "---\nimport { format } from './format';\n---\n<p>{format(1)}</p>\n",
     ],
-  ])('follows what a %s component that a spec loads imports', (_name, file, source) => {
-    const dir = fixture({
-      'src/a.spec.ts': `${H}import { a } from './a';\nimport Widget from './${file.slice(4)}';\nit('a', () => { expect(a(1) && Widget).toBeTruthy(); });\n`,
-      [file]: source,
-      'src/format.ts': 'export const format = (x: number) => String(x);\n',
-    });
-    expect(inputs(dir).gates['src/a.ts']?.files).toEqual(
-      expect.arrayContaining([file, 'src/format.ts'])
-    );
-  });
+  ])(
+    'refuses a %s component a spec loads: it can use others it does not import',
+    (_name, file, source) => {
+      const dir = fixture({
+        'src/a.spec.ts': `${H}import { a } from './a';\nimport Widget from './${file.slice(4)}';\nit('a', () => { expect(a(1) && Widget).toBeTruthy(); });\n`,
+        [file]: source,
+        'src/format.ts': 'export const format = (x: number) => String(x);\n',
+      });
+      expect(refusal(dir)).toBe(
+        `${file} is a component, which can use others that it does not import`
+      );
+    }
+  );
 
   it('refuses a package of the repository that is linked into node_modules', () => {
     const dir = fixture({
