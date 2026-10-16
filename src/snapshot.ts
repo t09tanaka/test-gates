@@ -64,6 +64,8 @@ const HERE = /^\$\{(?:__dirname|import\.meta\.dirname)\}(?=\/)/;
  */
 const FROM_HERE = /\b(?:__dirname|import\.meta\.dirname)((?:\s*,\s*(['"])[^'"`\n]*\2)+)(\s*\))?/g;
 const LITERAL = /(['"])([^'"`\n]*)\1/g;
+/** A string literal that is a path from the directory of its file (`./configs/strict.json`). */
+const DOWNWARD = /(['"`])(\.\/[^'"`\n]*)\1/g;
 const isUpward = (segment: string): boolean => segment.split('/').includes('..');
 
 function hashOf(content: Buffer | string): string {
@@ -458,8 +460,10 @@ export function snapshotOf(input: {
     }
     for (const { target, isDirectory } of targets) {
       // A file directly in a directory above the subproject is compared anyway
-      // (`"extends": "../../tsconfig.base.json"`).
-      if (!isDirectory && !open && besideAncestors.has(resolveFile(target, false, false) ?? '')) {
+      // (`"extends": "../../tsconfig.base.json"`). What it points at in turn is followed.
+      const beside = isDirectory || open ? null : resolveFile(target, false, false);
+      if (beside !== null && besideAncestors.has(beside)) {
+        reach(beside);
         continue;
       }
       // Declaration files are left out here, so that what counts as missing stays as it was.
@@ -478,6 +482,40 @@ export function snapshotOf(input: {
       // it is looked at then.
       if (fs.existsSync(directory)) {
         enqueue(directory, file, reference, anchored && !open);
+      }
+    }
+  };
+  /**
+   * Follows the paths from its own directory in a file directly above the subproject that a file
+   * leads to (`"extends": "./configs/strict.json"` in the `tsconfig.base.json` at the root). Its
+   * paths with `..` in them are followed as those of any file that is compared.
+   */
+  const reached = new Set<string>();
+  const reach = (file: string): void => {
+    if (reached.has(file) || DOCUMENTS.includes(path.extname(file).toLowerCase())) {
+      return;
+    }
+    reached.add(file);
+    let text: string;
+    try {
+      const content = fs.readFileSync(file);
+      if (content.length > SCAN_LIMIT || content.subarray(0, 8000).includes(0)) {
+        return;
+      }
+      text = content.toString('utf8').replace(/\\[\\/]/g, '/');
+    } catch {
+      return; // a link to nothing: compared as such
+    }
+    for (const match of text.matchAll(DOWNWARD)) {
+      const literal = match[2] as string;
+      const open = literal.includes('${');
+      const fixed = open
+        ? literal.slice(0, literal.lastIndexOf('/', literal.indexOf('${')) + 1)
+        : literal;
+      if (open && isUpward(literal.slice(literal.indexOf('${')))) {
+        enqueue(listRoot, file, literal);
+      } else {
+        follow(fixed, open, false, file, literal);
       }
     }
   };

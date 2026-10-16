@@ -651,6 +651,29 @@ describe.each(['git', 'walk'] as const)(
         expect(mutation(sub(root))).toEqual(forcedBy(`${CHANGED}tsconfig.base.json`));
       });
 
+      it('follows what the file above the subproject that a config extends points at', () => {
+        const root = monorepo({
+          'fee-rules/tsconfig.json': { extends: `${up(1)}/tsconfig.base.json` },
+          'tsconfig.base.json': { extends: './configs/strict.json' },
+          'configs/strict.json': { compilerOptions: { strict: true } },
+        });
+        mutation(sub(root));
+        write(root, { 'catalog-site/src/listing.ts': 'export const listing = 1;\n' });
+        expect(mutation(sub(root))).toEqual(REUSED);
+        write(root, { 'configs/strict.json': { compilerOptions: { strict: false } } });
+        expect(mutation(sub(root))).toEqual(forcedBy(`${CHANGED}configs/strict.json`));
+      });
+
+      it('looks at every file of the repository when the file above the subproject that a config extends points at a place it cannot tell', () => {
+        const root = monorepo({
+          'fee-rules/tsconfig.json': { extends: `${up(1)}/tsconfig.base.json` },
+          'tsconfig.base.json': { extends: './${PRESET}/tsconfig.json' },
+        });
+        mutation(sub(root));
+        write(root, { 'catalog-site/src/listing.ts': 'export const listing = 1;\n' });
+        expect(mutation(sub(root))).toEqual(forcedBy(`${CHANGED}catalog-site/src/listing.ts`));
+      });
+
       it.each([
         ['a file that is not there', `${up(1)}/tsconfig.missing.json`],
         ['a directory', `${up(1)}/pricing-kit`],
