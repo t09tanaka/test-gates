@@ -348,7 +348,9 @@ describe('planAffected', () => {
   });
 
   it('runs a gate again when the last run left no result of it, and runs a new gate', () => {
-    const { 'src/b.ts': _dropped, ...kept } = affected.gates;
+    const kept = Object.fromEntries(
+      Object.entries(affected.gates).filter(([gate]) => gate !== 'src/b.ts')
+    );
     expect(
       planAffected({
         before: { files: before, affected: { ...affected, gates: kept } },
