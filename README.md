@@ -105,9 +105,16 @@ export default createStrykerGatesConfig({
   testRunner: 'jest',
   jest: { projectType: 'custom', configFile: 'jest.gates.config.js' },
   // testRunner: 'vitest', vitest: { configFile: 'vitest.gates.config.ts' },
-  concurrency: 2,
 });
 ```
+
+**How many test runners Stryker starts (`concurrency`).** When neither the config nor the command line says, the helper sets half of the cores (`os.availableParallelism()`), at least 1 and at most 8, and 2 when `CI` is set. Stryker's own default is one fewer than the cores, but each of its runners is a Jest or Vitest that does work besides the tests (transforms, coverage), and the machine of a developer is rarely free for the run alone: half of the cores leaves room, and the cap of 8 keeps the memory of the runners in bounds on large machines. On a machine with 12 cores that is 6; going from 2 to 6 took about half the time for a full run on two projects, and on this repository's own gates (about 2,400 mutants, other jobs running) 143 and 184 s instead of 307 and 389 s, each time with the same numbers of killed, survived and timed-out mutants. In CI 2 is the number of cores of the usual hosted runner; more runners than cores only make mutants run out of time. What wins, from the first:
+
+1. `--concurrency <n>` after `--` on the command line (`npm run test:gates:mutation -- --concurrency 1`), which Stryker takes over its config;
+2. `concurrency` in the options of `createStrykerGatesConfig`;
+3. the default above.
+
+A config that sets `concurrency: 2` keeps 2 everywhere; remove the key to get the default. Setting it to `undefined` gives Stryker's own default instead.
 
 Add `reports/`, `.stryker-tmp/` and `.test-gates-touch-*` (see `test-gates selfcheck`) to `.gitignore`.
 
@@ -462,20 +469,33 @@ During the first run a directory `.test-gates-touch-…` exists in the subprojec
 
 **`--jobs <n>`: `<n>` negative controls at the same time.** The default is 1, one at a time. With `--jobs 4`, four runs of the gate command are under way at any moment, each for another gate. A control stays what it is: a run of the gate command with the spec of one gate left out, and of that one only. What `--jobs` adds is other runs on the same machine, and a run can be disturbed by them. Two things are therefore asked, one before the runs start and one of each run.
 
-_Before the runs start_, the files a gate run loads must not be seen to reach outside of their process. A spec whose helper takes a lock on a file, listens on a fixed port or looks at the clock can quietly do less while another run is there, and then a gate that this spec covers looks as if only its own spec covered it. Nothing in the output of such a run tells. The files are: the spec of every gate, every script the gate config names (a setup file, a reporter; also in the project files the config imports), and all the project files those import, the gates among them. When one of them
+_Before the runs start_, the gate command and its config must be known, and for each control the files of its run that can change what it reports must not be seen to reach outside of their process. A spec whose helper takes a lock on a file, listens on a fixed port or looks at the clock can quietly do less while another run is there, and then a gate that this spec covers looks as if only its own spec covered it. Nothing in the output of such a run tells. A spec can only cover a gate it loads, and the control of a gate leaves out the spec of that gate. So the control of a gate is started next to others unless, in its run,
+
+- a spec of another gate loads the gate (directly or through other files), and that spec or a file it loads reaches outside;
+- a spec of another gate may load any gate: one of its imports cannot be followed, or one of its files loads a module whose name is computed;
+- a script the gate config names (a setup file, a reporter; also in the project files the config imports) reaches outside or cannot be followed: those run with every spec, so this keeps every control on its own.
+
+A spec that reaches outside but loads no other gate, which is what the spec of a gate that needs a clock, a file or a package usually is, keeps no control from running next to others; it is left out of the run of its own gate. A file reaches outside when it
 
 - mentions `process.`, `globalThis`, `global.` or `import.meta.env`; the clock or a wait (`Date.now`, `new Date()`, `performance.now`, `setTimeout`, `setInterval`, `setImmediate`, `waitFor`, `waitUntil`, `expect.poll`, `retryTimes`, `retry:`); the network (`fetch(`, `WebSocket`, `XMLHttpRequest`); or `navigator`, `Atomics`, `WeakRef`, `FinalizationRegistry`, `eval(`, `Function(`,
 - imports a built-in module of Node.js, also one that only computes (`path`): with Jest the spec files of one worker share the objects of the built-in modules, so a setting that one spec changes there is seen by the next, and which spec comes next depends on Jest's cache of run times,
 - imports a package other than the runner's (`vitest`, `@jest/globals`). Packages are not looked into. With `settings.imports.mode: "allowlist"`, the packages that `settings.imports.allow` lists by name are taken too: the project already vouches for them as imports of a gate,
-- loads a module whose name is computed, or imports something that is neither a file nor an installed package (an alias that `settings.importAliases` does not have),
+- loads a module whose name is computed.
 
-every control runs on its own, and the first line says why:
+The controls kept apart run one at a time after the others. The first lines name every one of them: a line for each spec (or the gate config) that keeps controls apart, with the gates whose controls it keeps apart and every file of it that reaches outside:
 
 ```
-test-gates selfcheck: one negative control at a time (src/support/lock.ts imports node:fs, and may meet what another run is doing)
+test-gates selfcheck: 2 of 30 negative control(s) run one at a time, since in their runs something that loads the gate also loads a file that may meet what another run is doing:
+  src/tax.ts, src/age.ts: loaded by src/fee.spec.ts, in which src/support/lock.ts imports node:fs
 ```
 
-The same happens when the gate command is anything but `jest` or `vitest run` with `--config` and options for the number of workers (`--runInBand`, `-i`, `--ci`, `--maxWorkers`, `-w` for Jest; `--no-file-parallelism`, `--fileParallelism=false`, `--maxWorkers`, `--minWorkers`, `--pool=forks`, `--pool=threads` for Vitest), when the gate config does not use the helper, and with `settings.selfcheck.failurePattern`. This is a search by text: a comment that names `setTimeout` counts, and `new Date('2024-01-01')` does not.
+Every control runs on its own, and the first line says why, when the gate command is anything but `jest` or `vitest run` with `--config` and options for the number of workers (`--runInBand`, `-i`, `--ci`, `--maxWorkers`, `-w` for Jest; `--no-file-parallelism`, `--fileParallelism=false`, `--maxWorkers`, `--minWorkers`, `--pool=forks`, `--pool=threads` for Vitest), when the gate config does not use the helper, and with `settings.selfcheck.failurePattern`:
+
+```
+test-gates selfcheck: one negative control at a time (the gate config does not use createVitestGatesConfig)
+```
+
+This is a search by text: a comment that names `setTimeout` counts, and `new Date('2024-01-01')` does not. Which spec loads which gate is also read from the text: the imports, also those of a component (`.vue`, `.svelte`, `.astro`, `.mdx`), and paths handed to the runner (`vi.mock('./rates')`). A spec that loads modules by a name it computes, or by `import.meta.glob`, or that loads a component (which can use others that it does not import), may load any gate. A package that loads files of the project by itself (by a glob, for one) is not seen to load them.
 
 _Of each run next to others_, the result is taken only when the control held and the runner itself sums the run up as undisturbed: every spec file but the one left out passed, every test passed and none was skipped (` Test Files  13 passed (13)` and `Tests  14 passed (14)` of Vitest, `Test Suites: 13 passed, 13 total` and `Tests: 14 passed, 14 total` of Jest), every threshold the run reports is that of this gate, the process ended by itself, and no other line speaks of a failure, a timeout, an error or a retry. Anything less (a test that timed out under the load, a reporter that prints no summary) and the control is run again on its own after the others have ended, and that run counts. So a control that does **not** hold is always reported from a run of its own, with the output of that run. The first line says how many controls were run again:
 
@@ -489,9 +509,9 @@ Each of the `<n>` lines of runs has a directory of its own, outside of the proje
 
 | What the project does                                                                                                | What now keeps it from being reported as holding                             |
 | -------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| a helper of a spec takes a lock on a file and, when another run has it, leaves out the calls that cover another gate | the helper imports `fs`: one control at a time                               |
-| the same with a server on a fixed port                                                                               | the helper imports `net`: one control at a time                              |
-| the same in a setup file named in the gate config                                                                    | the files the gate config names are read too                                 |
+| a helper of a spec takes a lock on a file and, when another run has it, leaves out the calls that cover another gate | the helper imports `fs`: that control on its own                             |
+| the same with a server on a fixed port                                                                               | the helper imports `net`: that control on its own                            |
+| the same in a setup file named in the gate config                                                                    | the files the gate config names are read too: every control on its own       |
 | a test skips itself when it does not get the lock (the lock is taken inside a package)                               | the summary of the run says `1 skipped`: that control runs again on its own  |
 | with Jest, a test fails there, and a reporter of the project prints no failures                                      | there is no summary that says all passed: that control runs again on its own |
 | with Vitest, the gate command names the coverage directory, so all runs share it                                     | a gate command with such an argument: one control at a time                  |
@@ -499,6 +519,8 @@ Each of the `<n>` lines of runs has a directory of its own, outside of the proje
 The first three and the last are in `test/cli.test.ts`, the other two in `test/selfcheck-runners-*.test.ts` with the real runners. One kind is left, and it is the reason for the default: **a package the project vouches for that reaches outside of its process after all**, and quietly. With the lock of the fourth row taken inside a package listed in `settings.imports.allow`, and the test neither skipped nor failed but simply doing less, `--jobs` still reports the control as holding. Code that hides what it uses (a property of `globalThis` is found, a name put together from strings is not) is the same kind. No search by text closes that, so `--jobs` is for projects whose specs are what the specs of pure modules usually are: calls of the gate with fixed values.
 
 A second kind came out of a check afterwards. `--jobs` leaves out of the shared runs the specs that use the clock or timers, but it finds them by a list of names, so a spec that measures elapsed time in a way that is not on the list (`+new Date`, `AbortSignal.timeout`, `performance.mark`, or a package the project vouches for) is not seen. If which path such a spec takes depends on how long something took, the lines it covers change with the load, and a control that does not hold one at a time can be counted as holding with `--jobs`. Do the final check without `--jobs`.
+
+That the controls kept apart are chosen one by one, rather than all of them for any file that reaches outside, does not make `--jobs` safer or less safe for a control that runs next to others: what can disturb it is looked for in the same files as before, those of the specs that load its gate and those the gate config names. It makes the option work in projects where some specs need a clock, a file or a package. Before, a single such file anywhere kept every control on its own. `test/selfcheck-runners-*.test.ts` has a project of five gates, with a real Jest and a real Vitest, in which a spec that reads files loads another gate: that control runs on its own, the others next to each other, and the lines and the exit code are those of one control at a time, also for a gate that another spec covers.
 
 **The number of workers is the gate command's.** Every run starts its own workers, and both runners take about as many as the machine has cores: `--jobs 4` is then four times that many processes. Say how many a run may take in the gate command: `"gateCommand": ["jest", "--config", "jest.gates.config.js", "--runInBand"]` (or `--maxWorkers=2`), and for Vitest `--no-file-parallelism` or `--maxWorkers=2`. `selfcheck` does not add such an option on its own: one worker per run is slower for a single run, and which is faster in sum depends on the project. TBD-SPEED
 
@@ -772,7 +794,7 @@ The time grows with the number of mutants and depends heavily on cores and on `c
 - **CI: full.** `npm run test:gates:mutation -- --force`. CI has no incremental file to start from anyway, and the full run is the one that counts.
 - If even CI is too slow, split by subproject (each has its own `test-gates.json`) before you think about sampling.
 
-The negative control (`selfcheck`) is the step that grows fastest: a run of the gate command per gate, each executing the specs of all the other gates, grows up to the square of the number of gates. With `--quick` it uses one run for the gates that only their own spec touches (see [`selfcheck`](#commands) for what that takes for granted). Measured on a project written for this measurement: N gates of 20 lines each, one spec of five tests per gate, Vitest 3.2 with istanbul or Jest 30 with ts-jest, Stryker 10 without a `concurrency` setting; an Apple M2 Max (12 cores), Node 22.22, other jobs running. Read the growth, not the seconds:
+The negative control (`selfcheck`) is the step that grows fastest: a run of the gate command per gate, each executing the specs of all the other gates, grows up to the square of the number of gates. With `--quick` it uses one run for the gates that only their own spec touches (see [`selfcheck`](#commands) for what that takes for granted). Measured on a project written for this measurement: N gates of 20 lines each, one spec of five tests per gate, Vitest 3.2 with istanbul or Jest 30 with ts-jest, Stryker 10 with its own default `concurrency` (one fewer than the cores, before the helper set half of them); an Apple M2 Max (12 cores), Node 22.22, other jobs running. Read the growth, not the seconds:
 
 | Gates | Runner | Gate run | `selfcheck` | `selfcheck --quick` | `mutation -- --force` |
 | ----- | ------ | -------- | ----------- | ------------------- | --------------------- |

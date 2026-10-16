@@ -3,10 +3,12 @@ import { builtinModules } from 'node:module';
 import path from 'node:path';
 import { isProjectImport } from '../core/import-policy.js';
 import { parseImports } from '../core/imports.js';
-import type { LoadedFile } from '../core/jobs.js';
+import type { LoadedFile, LoadRoot } from '../core/jobs.js';
 import type { LoadedManifest } from '../load.js';
 
 export const SCRIPT = /\.[cm]?[jt]sx?$/;
+/** Components, whose imports (in their scripts, or the frontmatter of Astro) are read as text. */
+export const COMPONENT = /\.(?:vue|svelte|astro|mdx)$/;
 const EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'];
 export const QUOTED = /(['"`])([^'"`\n]+)\1/g;
 // A module that is named to the runner instead of imported: jest.requireActual('fs').
@@ -50,18 +52,20 @@ export function installed(specifier: string, from: string): boolean {
 }
 
 /**
- * Every file a gate run loads, as far as its text shows: the spec of every gate, the files the
- * gate config names (a setup file, a reporter), and all the project files those import. For
+ * Every file a gate run loads, as far as its text shows, and where each comes from: the spec of
+ * every gate, the files the gate config names (a setup file, a reporter; also in the project
+ * files the config imports), and all the project files those import. For
  * `test-gates selfcheck --jobs`, which asks of each of them whether it reaches outside of its
- * process (see src/core/jobs.ts).
+ * process, and of each gate which specs load it (see src/core/jobs.ts).
  *
  * @param configFile The gate config, relative to the subproject; null when it is not known.
- * @returns `lost`: the first import that leads to no file and to no installed package.
+ * @returns `files`: each file once. `roots`: a root for the spec of every gate, and one for the
+ *   files the gate config names, each with every file it loads.
  */
 export function loadedFiles(
   manifest: LoadedManifest,
   configFile: string | null
-): { files: LoadedFile[]; lost: string | null } {
+): { files: LoadedFile[]; roots: LoadRoot[] } {
   const aliases = manifest.settings.importAliases;
   const relative = (file: string) => path.relative(manifest.dir, file).split(path.sep).join('/');
   const target = (specifier: string, from: string): string | null => {
@@ -119,31 +123,29 @@ export function loadedFiles(
     }
   }
 
-  const queue = [
-    ...manifest.gates.flatMap((gate) =>
-      gate.existingSpecs.map((spec) => path.join(manifest.dir, spec))
-    ),
-    ...named,
-  ];
-  const seen = new Set(queue);
-  const follow = (found: string) => {
-    if (SCRIPT.test(found) && !seen.has(found)) {
-      seen.add(found);
-      queue.push(found);
+  // Each file is read once: what it is, the project files it leads to, and the first of its
+  // imports that leads nowhere.
+  const known = new Map<string, { file: LoadedFile; next: string[]; lost: string | null }>();
+  const visit = (file: string) => {
+    const done = known.get(file);
+    if (done !== undefined) {
+      return done;
     }
-  };
-  const files: LoadedFile[] = [];
-  let lost: string | null = null;
-  for (let file = queue.shift(); file !== undefined; file = queue.shift()) {
     const { source, specifiers, strings } = read(file);
     const imports: LoadedFile['imports'] = [];
+    const next: string[] = [];
+    // A component can use others that it does not import (registered by a plugin): what it loads
+    // is not all in its text.
+    let lost: string | null = COMPONENT.test(file)
+      ? `${relative(file)} is a component, which can use others that it does not import`
+      : null;
     for (const specifier of specifiers) {
       if (isProjectImport(specifier, aliases)) {
         const found = target(specifier, file);
         if (found === null) {
           lost ??= `${specifier} (imported by ${relative(file)})`;
         } else {
-          follow(found);
+          next.push(found);
         }
       } else if (specifier.startsWith('node:') || builtinModules.includes(specifier)) {
         imports.push({ specifier, builtin: true });
@@ -158,10 +160,39 @@ export function loadedFiles(
     for (const text of strings.filter((one) => one.startsWith('.'))) {
       const found = resolveFile(path.resolve(path.dirname(file), text));
       if (found !== null) {
-        follow(found);
+        next.push(found);
       }
     }
-    files.push({ path: relative(file), source, imports });
-  }
-  return { files, lost };
+    const visited = {
+      file: { path: relative(file), source, imports },
+      // A component imports like a script (see COMPONENT); data imports nothing.
+      next: next.filter((found) => SCRIPT.test(found) || COMPONENT.test(found)),
+      lost,
+    };
+    known.set(file, visited);
+    return visited;
+  };
+  const closure = (spec: string | null, starts: string[]): LoadRoot => {
+    const queue = [...starts];
+    const seen = new Set(queue);
+    const files: string[] = [];
+    let lost: string | null = null;
+    for (let file = queue.shift(); file !== undefined; file = queue.shift()) {
+      const visited = visit(file);
+      files.push(visited.file.path);
+      lost ??= visited.lost;
+      for (const found of visited.next.filter((one) => !seen.has(one))) {
+        seen.add(found);
+        queue.push(found);
+      }
+    }
+    return { spec, files, lost };
+  };
+
+  const specs = [...new Set(manifest.gates.flatMap((gate) => gate.existingSpecs))];
+  const roots = [
+    closure(null, [...named]),
+    ...specs.map((spec) => closure(spec, [path.join(manifest.dir, spec)])),
+  ];
+  return { files: [...known.values()].map((visited) => visited.file), roots };
 }

@@ -4,7 +4,14 @@ import path from 'node:path';
 import { gateDependencies, kindOf } from './core/affected.js';
 import { isProjectImport } from './core/import-policy.js';
 import { findUncheckableImports, parseImports } from './core/imports.js';
-import { installed, QUOTED, resolveFile, RUNNER_LOAD, SCRIPT } from './commands/loaded-files.js';
+import {
+  COMPONENT,
+  installed,
+  QUOTED,
+  resolveFile,
+  RUNNER_LOAD,
+  SCRIPT,
+} from './commands/loaded-files.js';
 import type { ImportAlias } from './core/types.js';
 import type { LoadedManifest } from './load.js';
 
@@ -30,8 +37,6 @@ const FILE_MODULES = new Set([
   'globby',
 ]);
 const bare = (specifier: string): string => specifier.replace(/^node:/, '');
-/** Components, whose imports are read like those of a script. */
-const COMPONENT = /\.(?:vue|svelte|astro|mdx)$/;
 
 /**
  * Where `node_modules/<package>` of the nearest node_modules that has it leads, when that is a

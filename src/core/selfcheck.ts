@@ -193,7 +193,7 @@ const SURROUNDINGS =
   /\bprocess\s*\.\s*env\b|\bimport\.meta\.env\b|['"`](?:node:)?(?:fs|fs\/promises|child_process|worker_threads|net|http|https)['"`]/;
 
 /** Whether the environment says that the run is one of CI. */
-function inCi(env: Record<string, string | undefined>): boolean {
+export function inCi(env: Record<string, string | undefined>): boolean {
   // Providers write it as true, 1, True, TRUE or their own name: anything but empty, false or 0.
   const ci = (env.CI ?? '').trim().toLowerCase();
   return ci !== '' && ci !== 'false' && ci !== '0';

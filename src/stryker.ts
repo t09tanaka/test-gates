@@ -1,3 +1,5 @@
+import os from 'node:os';
+import { inCi } from './core/selfcheck.js';
 import { loadGates } from './load.js';
 import { resolveRootDir } from './shared.js';
 
@@ -20,11 +22,28 @@ const WEAKENING_OPTIONS = ['ignoreStatic', 'ignorers'];
 export const DEFAULT_MAX_TEST_RUNNER_REUSE = 50;
 
 /**
+ * How many test runners Stryker starts when neither the config nor the command line says
+ * (`concurrency`). Stryker's own default is one fewer than the cores (on more than four), but
+ * each of its runners is a Jest or Vitest that does work besides the tests (transforms, coverage),
+ * and the machine is rarely free for the run alone: half of the cores, at most 8. Measured on
+ * two projects on a machine with 12 cores, 6 runners took about half the time of 2, with the
+ * same numbers of killed, survived and timed-out mutants. In CI (`CI` set) 2, the cores of the
+ * usual hosted runner: more runners than cores only make the mutants run out of time.
+ *
+ * @param parallelism What `os.availableParallelism()` says.
+ */
+export function defaultConcurrency(parallelism: number, ci: boolean): number {
+  return ci ? 2 : Math.min(8, Math.max(1, Math.floor(parallelism / 2)));
+}
+
+/**
  * Stryker config for the gates: mutate exactly the gates, never fail on the score
  * (`thresholds.break: null`), and write the JSON report that `test-gates mutation` judges.
  *
  * `mutate`, `thresholds.break` and `jsonReporter.fileName` are always set here, and `json` is
  * always among the reporters. Options that take mutants out of the evaluation are rejected.
+ * `concurrency` is defaultConcurrency unless the options set it; `--concurrency` on Stryker's
+ * command line wins over both.
  */
 export function createStrykerGatesConfig(
   options: StrykerGatesOptions = {}
@@ -63,6 +82,7 @@ export function createStrykerGatesConfig(
     incrementalFile: 'reports/stryker-incremental.json',
     tempDirName: '.stryker-tmp',
     maxTestRunnerReuse: DEFAULT_MAX_TEST_RUNNER_REUSE,
+    concurrency: defaultConcurrency(os.availableParallelism(), inCi(process.env)),
     clearTextReporter: { logTests: false, reportTests: false },
     ...overrides,
     mutate: manifest.gates.map((gate) => gate.path),
