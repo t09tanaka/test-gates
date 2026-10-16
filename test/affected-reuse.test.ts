@@ -187,6 +187,72 @@ describe.skipIf(!strykerRuns)('test-gates mutation --affected with a real Stryke
   );
 });
 
+describe.skipIf(!strykerRuns)('a run without --affected, with a real Stryker', () => {
+  it(
+    'writes down what each gate depends on for the next run with --affected, but not with --gate or in CI',
+    { timeout: 600_000 },
+    async () => {
+      const dir = fixture();
+      const plain = (args: string[] = [], env: NodeJS.ProcessEnv = {}) =>
+        testGatesAsync(['mutation', '--dir', dir, ...args], env);
+      const affected = () => testGatesAsync(['mutation', '--dir', dir, '--affected']);
+      let edits = 0;
+      const changeFee = () => {
+        edits += 1;
+        write(dir, {
+          'src/fee.ts': `export const fee = (kg: number) => (kg > 2 ? 9 : 5); // ${edits}\n`,
+        });
+      };
+      const onlyFee = async () => {
+        changeFee();
+        const run = await affected();
+        expect(run.stdout).toContain(
+          'test-gates mutation --affected: 2 of 3 gate(s) reused, 1 run again'
+        );
+        expect(run.stdout).toContain('  src/fee.ts: changed src/fee.ts');
+        expect(run.stdout).toContain(OK);
+        expect(run.status).toBe(0);
+      };
+
+      // A first run of every mutant, then a change that only `fee` depends on.
+      const first = await plain();
+      expect(first.stdout).toContain(OK);
+      expect(first.status).toBe(0);
+      await onlyFee();
+
+      // A run that takes every result over keeps what was written down about the gates.
+      const reused = await plain();
+      expect(reused.stdout).not.toContain('running every mutant again');
+      expect(reused.status).toBe(0);
+      await onlyFee();
+
+      // A full run by hand.
+      const forced = await plain(['--', '--force']);
+      expect(forced.stdout).toContain(OK);
+      expect(forced.status).toBe(0);
+      await onlyFee();
+
+      // A run of one gate leaves no record.
+      const part = await plain(['--gate', 'src/fee.ts']);
+      expect(part.status).toBe(0);
+      const afterPart = await affected();
+      expect(afterPart.stdout).toContain(
+        `${FULL}, the results of the last run are not reused: there is no record of the run that wrote the incremental file`
+      );
+
+      // A run in CI writes nothing about the gates: after a change, every mutant is run.
+      const ci = await plain([], { CI: 'true' });
+      expect(ci.status).toBe(0);
+      changeFee();
+      const afterCi = await affected();
+      expect(afterCi.stdout).toContain(
+        `${FULL}, the results of the last run are not reused: the last run did not write down what each gate depends on`
+      );
+      expect(afterCi.status).toBe(0);
+    }
+  );
+});
+
 // `countUp` has two mutants that can never end; test-gates.json lists them as expected
 // timeouts. A timeout may also come from a loaded machine, where the mutant would have
 // survived, so a timeout is never taken over from the last run.

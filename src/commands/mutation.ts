@@ -279,6 +279,11 @@ export function decideReuse(
       force = failure;
     } else if (!affected) {
       force = refuseReuse({ record: stored, incremental, snapshot });
+      if (force === null) {
+        // Every result is taken over: what the last run wrote down about each gate still holds.
+        const read = readRecord({ record: stored, incremental, snapshot });
+        last = 'record' in read ? read.record.affected : undefined;
+      }
     } else if (ci !== null) {
       force = ci;
     } else {
@@ -360,7 +365,7 @@ function guardIncremental(
         }
       : nothing;
   }
-  const { snapshot, root, plan, last, ci, configs, force } = decision;
+  const { snapshot, root, plan, last, configs, force } = decision;
   const incrementalFile = decision.incrementalFile as string;
   const recordFile = decision.recordFile as string;
   const incremental = decision.incrementalHash;
@@ -396,6 +401,13 @@ function guardIncremental(
     }
   }
   const subset = rerun !== null && rerun.length > 0 && everyGate === null ? rerun : [];
+  // The gates whose mutants all run again (null: every gate). Without --affected that is all
+  // of them or none: the others take over their results, and with them what was written down.
+  const ran = affected
+    ? rerun
+    : everyGate !== null || options.force || incremental === null
+      ? null
+      : [];
   let said: string[] = [];
   if (affected && !options.force) {
     if (force !== null) {
@@ -428,8 +440,11 @@ function guardIncremental(
         return;
       }
       const record: GuardRecord = { format: RECORD_FORMAT, incremental: written, snapshot };
-      if (affected && ci === null && judged !== null) {
-        record.affected = affectedRecord(judged, rerun, last);
+      // Also without --affected (a run by hand with -- --force, for one), so that the next run
+      // with it can tell the gates apart. Not in CI: --affected is refused there, and a run with
+      // it in CI writes nothing about the gates either.
+      if (affectedRefused(process.env) === null && judged !== null) {
+        record.affected = affectedRecord(judged, ran, last);
       }
       try {
         fs.writeFileSync(recordFile, `${JSON.stringify(record)}\n`);

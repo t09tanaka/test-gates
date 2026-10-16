@@ -440,7 +440,7 @@ describe('planAffected', () => {
         gates,
       })
     ).toEqual({
-      full: 'the last run did not write down what each gate depends on (it ran without --affected)',
+      full: 'the last run did not write down what each gate depends on (it ran in CI, with an older version, or could not tell)',
     });
   });
 });

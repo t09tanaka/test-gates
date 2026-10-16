@@ -130,7 +130,7 @@ export function planAffected(input: {
   const recorded = input.before.affected;
   if (recorded === undefined) {
     return {
-      full: 'the last run did not write down what each gate depends on (it ran without --affected)',
+      full: 'the last run did not write down what each gate depends on (it ran in CI, with an older version, or could not tell)',
     };
   }
   const changed = differingKeys(input.before.files, input.now);
