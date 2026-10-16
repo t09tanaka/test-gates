@@ -285,42 +285,39 @@ function globSource(glob: string): string {
 /**
  * Whether Stryker leaves a file out of the run by the ignorePatterns of its config, which it
  * reads as a .gitignore: a pattern without a `/` matches a name at any depth, one with a `/` the
- * path from the subproject, one that ends in `/` a directory only, `!` takes a file back. What
- * lies in a directory that is left out is left out with it.
+ * path from the subproject, one that ends in `/` a directory only. What lies in a directory that
+ * is left out is left out with it. Where a pattern takes files back (`!`), nothing is left out:
+ * Stryker then keeps files below a directory that is left out, and to leave out more than it does
+ * would compare less than the run reads.
  *
  * @param config The Stryker config as loaded (its default export).
  * @returns A test of a path relative to the subproject, with `/` between its parts.
  */
 export function strykerIgnores(config: unknown): (relative: string) => boolean {
-  const rules = [objectOf(config).ignorePatterns]
+  const patterns = [objectOf(config).ignorePatterns]
     .flat()
-    .filter((pattern): pattern is string => typeof pattern === 'string')
-    .map((pattern) => {
-      const negate = pattern.startsWith('!');
-      let body = negate ? pattern.slice(1) : pattern;
-      const directoryOnly = body.endsWith('/');
-      body = body.replace(/\/+$/, '');
-      const anchored = body.includes('/');
-      const expression = new RegExp(`^${globSource(body.replace(/^\//, ''))}$`, 'i');
-      return { negate, directoryOnly, anchored, expression };
-    });
+    .filter((pattern): pattern is string => typeof pattern === 'string');
+  if (patterns.some((pattern) => pattern.startsWith('!'))) {
+    return () => false;
+  }
+  const rules = patterns.map((pattern) => {
+    const directoryOnly = pattern.endsWith('/');
+    const body = pattern.replace(/\/+$/, '');
+    const anchored = body.includes('/');
+    const expression = new RegExp(`^${globSource(body.replace(/^\//, ''))}$`, 'i');
+    return { directoryOnly, anchored, expression };
+  });
   return (relative) => {
     const parts = relative.split('/');
-    let ignored = false;
-    for (const rule of rules) {
-      // the file itself, and each directory it lies in
-      const matches = parts.some((part, index) => {
-        const directory = index < parts.length - 1;
-        if (rule.directoryOnly && !directory) {
+    // the file itself, and each directory it lies in
+    return rules.some((rule) =>
+      parts.some((part, index) => {
+        if (rule.directoryOnly && index === parts.length - 1) {
           return false;
         }
         const target = rule.anchored ? parts.slice(0, index + 1).join('/') : part;
         return rule.expression.test(target);
-      });
-      if (matches) {
-        ignored = !rule.negate;
-      }
-    }
-    return ignored;
+      })
+    );
   };
 }

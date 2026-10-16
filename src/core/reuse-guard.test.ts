@@ -306,7 +306,7 @@ describe('strykerIgnores', () => {
   it('leaves out nothing without patterns', () => {
     expect(strykerIgnores(undefined)('a.ts')).toBe(false);
     expect(strykerIgnores({ ignorePatterns: 1 })('1')).toBe(false);
-    expect(ignored([1, '', '!'], ['a.ts', '1'])).toEqual([]);
+    expect(ignored([1, ''], ['a.ts', '1'])).toEqual([]);
   });
 
   it('matches a name at any depth, and what lies below it', () => {
@@ -378,14 +378,11 @@ describe('strykerIgnores', () => {
     ]);
   });
 
-  it('takes a file back with !, the last pattern that matches winning', () => {
-    expect(
-      ignored(
-        ['reports', '!reports/keep.json', 'reports/keep.json.bak'],
-        ['reports/a.html', 'reports/keep.json', 'reports/keep.json.bak']
-      )
-    ).toEqual(['reports/a.html', 'reports/keep.json.bak']);
-    expect(ignored(['!a.ts', 'a.ts', '!b.ts'], ['a.ts', 'b.ts'])).toEqual(['a.ts']);
+  it('leaves out nothing where a pattern takes files back with !', () => {
+    const files = ['reports/a.html', 'reports/keep.json', '.eslintcache'];
+    expect(ignored(['reports', '.eslintcache'], files)).toEqual(files);
+    expect(ignored(['reports', '!reports/keep.json', '.eslintcache'], files)).toEqual([]);
+    expect(ignored(['!b.ts', 'a.ts'], ['a.ts'])).toEqual([]);
   });
 
   it('tells no case of letters apart, as Stryker does', () => {
