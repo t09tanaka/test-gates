@@ -54,7 +54,7 @@ function loadStrykerConfig(manifest: LoadedManifest, config: string): unknown {
     'incremental: config.incremental, force: config.force,' +
     'incrementalFile: config.incrementalFile, tempDirName: config.tempDirName,' +
     'testRunner: config.testRunner, vitestConfig: config.vitest?.configFile,' +
-    'jestConfig: config.jest?.configFile,' +
+    'jestConfig: config.jest?.configFile, checkers: config.checkers,' +
     `}) + ${JSON.stringify(CONFIG_MARK)});`;
   const result = spawnSync(process.execPath, ['--input-type=module', '--eval', script], {
     cwd: manifest.dir,

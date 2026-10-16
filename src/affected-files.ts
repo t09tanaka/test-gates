@@ -3,7 +3,7 @@ import { builtinModules } from 'node:module';
 import path from 'node:path';
 import { gateDependencies, kindOf } from './core/affected.js';
 import { isProjectImport } from './core/import-policy.js';
-import { findUncheckableImports, parseImports } from './core/imports.js';
+import { findUncheckableImports, type ImportRef, parseImports } from './core/imports.js';
 import {
   COMPONENT,
   installed,
@@ -74,13 +74,22 @@ function realpath(file: string): string {
 export interface RunConfigs {
   /** Absolute paths that exist. */
   files: string[];
+  /** The test runner; when it is not known, imports of types are followed (see typesErased). */
+  runner?: 'jest' | 'vitest';
+  /** Whether the Stryker config names checkers (`checkers: ['typescript']`). */
+  checkers?: boolean;
 }
 
 /** Where the config of the test runner is, from the options the Stryker config gives it. */
 export function runnerConfigs(
   dir: string,
   stryker: string,
-  options: { testRunner?: unknown; vitestConfig?: unknown; jestConfig?: unknown }
+  options: {
+    testRunner?: unknown;
+    vitestConfig?: unknown;
+    jestConfig?: unknown;
+    checkers?: unknown;
+  }
 ): RunConfigs {
   const files = [path.resolve(dir, stryker)];
   const named = options.testRunner === 'vitest' ? options.vitestConfig : options.jestConfig;
@@ -103,7 +112,155 @@ export function runnerConfigs(
       }
     }
   }
-  return { files: files.filter((file) => fs.existsSync(file)).map(realpath) };
+  return {
+    files: files.filter((file) => fs.existsSync(file)).map(realpath),
+    runner: options.testRunner,
+    checkers: Array.isArray(options.checkers) && options.checkers.length > 0,
+  };
+}
+
+/** Whether the run takes imports of types into account; see typesErased. */
+export interface TypeImports {
+  /** `import type …` and `export type … from` load nothing. */
+  erased: boolean;
+  /** `import { type A } from …` loads nothing either. */
+  inline: boolean;
+}
+
+/** Words in a config that may make a run check types. */
+const CHECKS_TYPES = /\bcheckers\b|typescript-checker|\btypecheck\b/;
+/** Options of ts-jest that make it only strip types, without checking them. */
+const TS_JEST_STRIPS = /["']?(?:isolatedModules["']?\s*:\s*true|diagnostics["']?\s*:\s*false)/;
+/** Jest transforms that only strip types. */
+const STRIPPING_TRANSFORMS = /@swc\/jest|babel-jest|esbuild-jest|@sucrase\/jest/;
+/** Options that make the compiler keep an import of type names (as `import {} from …`). */
+const KEEPS_IMPORTS =
+  /\b(?:verbatimModuleSyntax|preserveValueImports|importsNotUsedAsValues|onlyRemoveTypeImports)\b/;
+/** Files that tell the compiler what to do with imports. */
+const COMPILER_CONFIG =
+  /^(?:[jt]sconfig(?:\..+)?\.json|\.swcrc|\.babelrc(?:\..+)?|babel\.config\..+)$/;
+
+/**
+ * Whether a run never loads what a gate or a spec imports for its types only. Such an import is
+ * dropped by the compiler, so a change of the file it names cannot change a result, unless the
+ * run checks types: then a change of a type can make a spec, or a mutant, fail to compile.
+ * In doubt the imports are kept (followed, as a file the gate depends on).
+ *
+ * - The TypeScript checker of Stryker checks every mutant: kept.
+ * - Vitest strips types (esbuild), unless its typecheck is on: kept where a config names it.
+ * - Jest: ts-jest checks types unless `isolatedModules: true` or `diagnostics: false`. Another
+ *   transform (`@swc/jest`, `babel-jest`) strips them, but a preset may bring ts-jest. With
+ *   nothing of this in its config, what transforms the specs is not known: kept.
+ *
+ * `import { type A } from './a'` is still loaded, as `import {} from './a'`, where the compiler
+ * keeps imports as they are written (`verbatimModuleSyntax`): it is dropped only when a
+ * tsconfig.json tells, with every file it extends, that they are not kept.
+ *
+ * @param texts The Stryker config, the runner config, and the files they import.
+ * @param compiler The tsconfig.json, .swcrc and Babel configs that apply to the subproject, with
+ *   what they extend; the text is null where one extends a file that cannot be read.
+ */
+export function typesErased(
+  configs: RunConfigs,
+  texts: string[],
+  compiler: Array<{ file: string; text: string | null }>
+): TypeImports {
+  const all = texts.join('\n');
+  let erased = false;
+  if (configs.checkers !== true && !CHECKS_TYPES.test(all)) {
+    if (configs.runner === 'vitest') {
+      erased = true;
+    } else if (configs.runner === 'jest') {
+      erased = /\bts-jest\b/.test(all)
+        ? TS_JEST_STRIPS.test(all)
+        : STRIPPING_TRANSFORMS.test(all) && !/\bpreset\b/.test(all);
+    }
+  }
+  const inline =
+    erased &&
+    !KEEPS_IMPORTS.test(all) &&
+    compiler.some(({ file }) => /^tsconfig/.test(path.basename(file))) &&
+    compiler.every(({ text }) => text !== null && !KEEPS_IMPORTS.test(text));
+  return { erased, inline };
+}
+
+/**
+ * The compiler configs that apply to the subproject: those in it, and the tsconfig.json files of
+ * the directories above it up to the root, with every file they extend.
+ */
+function compilerConfigs(
+  dir: string,
+  root: string,
+  keys: string[]
+): Array<{ file: string; text: string | null }> {
+  const above = new Set<string>();
+  for (let current = path.dirname(dir); ; current = path.dirname(current)) {
+    const relative = path.relative(root, current);
+    if (relative.startsWith('..') || path.isAbsolute(relative)) {
+      break;
+    }
+    above.add(current);
+    if (current === path.dirname(current)) {
+      break;
+    }
+  }
+  const starts = keys
+    .map((key) => path.join(root, key))
+    .filter((file) => COMPILER_CONFIG.test(path.basename(file)))
+    .filter(
+      (file) =>
+        file.startsWith(`${dir}${path.sep}`) ||
+        (above.has(path.dirname(file)) && /^tsconfig/.test(path.basename(file)))
+    );
+  const found: Array<{ file: string; text: string | null }> = [];
+  const seen = new Set<string>();
+  const queue = [...starts];
+  for (let file = queue.shift(); file !== undefined; file = queue.shift()) {
+    if (seen.has(file)) {
+      continue;
+    }
+    seen.add(file);
+    let text: string | null;
+    try {
+      text = fs.readFileSync(file, 'utf8');
+    } catch {
+      text = null;
+    }
+    found.push({ file, text });
+    for (const base of text === null ? [] : valuesOf(text, 'extends')) {
+      queue.push(extended(base, file) ?? `${file} extends ${base}`);
+    }
+  }
+  return found;
+}
+
+/** The file a config extends (`./tsconfig.base.json`, `@acme/tsconfig/base.json`), or null. */
+function extended(base: string, from: string): string | null {
+  const candidates = (start: string): string[] => [
+    start,
+    `${start}.json`,
+    path.join(start, 'tsconfig.json'),
+  ];
+  if (base.startsWith('.') || path.isAbsolute(base)) {
+    return candidates(path.resolve(path.dirname(from), base)).find(isFile) ?? null;
+  }
+  for (let current = path.dirname(from); ; current = path.dirname(current)) {
+    const file = candidates(path.join(current, 'node_modules', base)).find(isFile);
+    if (file !== undefined) {
+      return file;
+    }
+    if (current === path.dirname(current)) {
+      return null;
+    }
+  }
+}
+
+function isFile(file: string): boolean {
+  try {
+    return fs.statSync(file).isFile();
+  } catch {
+    return false;
+  }
 }
 
 export interface Edges {
@@ -126,9 +283,9 @@ export interface Edges {
  */
 export function fileEdges(
   file: string,
-  context: { dir: string; aliases: ImportAlias[]; cache: Map<string, Edges> }
+  context: { dir: string; aliases: ImportAlias[]; cache: Map<string, Edges>; types?: TypeImports }
 ): Edges {
-  const { dir, aliases, cache } = context;
+  const { dir, aliases, cache, types } = context;
   const known = cache.get(file);
   if (known !== undefined) {
     return known;
@@ -171,10 +328,23 @@ export function fileEdges(
   } else if (runtime !== null) {
     found.unknown = `${shown(file)} uses ${runtime[0]}, which can reach files that no import names`;
   }
+  // An import of types only, where the run drops it (see typesErased), loads nothing; a module
+  // that is also imported for a value, or named to the runner, is still followed.
+  const refs = parseImports(source);
+  const dropped = (ref: ImportRef): boolean =>
+    types !== undefined &&
+    types.erased &&
+    (ref.typeOnly || (types.inline && ref.inlineTypes === true));
   const specifiers = new Set([
-    ...parseImports(source).map((ref) => ref.module),
+    ...refs.filter((ref) => !dropped(ref)).map((ref) => ref.module),
     ...[...source.matchAll(RUNNER_LOAD)].map((match) => match[2] as string),
   ]);
+  const typesOnly = new Set(
+    refs
+      .filter(dropped)
+      .map((ref) => ref.module)
+      .filter((module) => !specifiers.has(module))
+  );
   for (const specifier of specifiers) {
     if (path.isAbsolute(specifier) || specifier.startsWith('file:')) {
       const resolved = resolveFile(
@@ -208,7 +378,7 @@ export function fileEdges(
   // A path given to the runner as text: vi.mock('./rates', …).
   for (const match of source.matchAll(QUOTED)) {
     const text = match[2] as string;
-    if (text.startsWith('.') && !specifiers.has(text)) {
+    if (text.startsWith('.') && !specifiers.has(text) && !typesOnly.has(text)) {
       const resolved = resolveFile(path.resolve(path.dirname(file), text));
       if (resolved !== null) {
         found.loads.push(realpath(resolved));
@@ -260,8 +430,27 @@ export function affectedInputs(
     return toPosix(relative);
   };
   const shown = (file: string): string => toPosix(path.relative(dir, file));
+  // The texts of the configs and of what they import, read before imports of types are dropped.
+  const plain = new Map<string, Edges>();
+  const configTexts: string[] = [];
+  const reached = new Set(input.configs.files);
+  const pending = [...input.configs.files];
+  for (let file = pending.shift(); file !== undefined; file = pending.shift()) {
+    configTexts.push(fs.readFileSync(file, 'utf8'));
+    for (const next of fileEdges(file, { dir, aliases, cache: plain }).loads) {
+      if (!reached.has(next) && SCRIPT.test(next)) {
+        reached.add(next);
+        pending.push(next);
+      }
+    }
+  }
+  const types = typesErased(
+    input.configs,
+    configTexts,
+    compilerConfigs(dir, realpath(input.root), Object.keys(input.files))
+  );
   const edges = new Map<string, Edges>();
-  const edgesOf = (file: string): Edges => fileEdges(file, { dir, aliases, cache: edges });
+  const edgesOf = (file: string): Edges => fileEdges(file, { dir, aliases, cache: edges, types });
   /** The file and what it loads, directly or not. */
   const closure = (start: string, strict: boolean): string[] => {
     const seen = new Set([start]);

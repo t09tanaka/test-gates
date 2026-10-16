@@ -383,17 +383,166 @@ describe('affectedInputs', () => {
     expect(inputs(dir).config).toEqual(['stryker.gates.config.mjs', 'vitest.gates.config.ts']);
   });
 
-  it('ignores a package, a builtin and an import of a type', () => {
+  it('ignores a package and a builtin', () => {
     const dir = fixture({
       'node_modules/money-kit/package.json': '{ "name": "money-kit" }',
       'src/c.ts':
-        "import type { Rate } from './types';\nimport { add } from 'money-kit';\nimport { EOL } from 'node:os';\nimport path from 'path';\nexport const c = (x: number) => add(x, -1) + EOL.length + path.sep.length;\n",
-      'src/types.ts': 'export type Rate = number;\n',
+        "import { add } from 'money-kit';\nimport { EOL } from 'node:os';\nimport path from 'path';\nexport const c = (x: number) => add(x, -1) + EOL.length + path.sep.length;\n",
     });
-    expect(inputs(dir).gates['src/c.ts']?.files).toEqual([
+    expect(inputs(dir).gates['src/c.ts']?.files).toEqual(['src/c.spec.ts', 'src/c.ts']);
+  });
+});
+
+describe('an import of types only', () => {
+  const TYPES = {
+    'src/c.ts':
+      "import type { Rate } from './rate';\nexport type { Fee } from './fee';\nimport { type Tax, type Due } from './tax';\nexport const c = (x: Rate): Tax => x - 1;\n",
+    'src/rate.ts': 'export type Rate = number;\n',
+    'src/fee.ts': 'export type Fee = number;\n',
+    'src/tax.ts': 'export type Tax = number;\nexport type Due = number;\n',
+    'tsconfig.json': '{ "compilerOptions": { "strict": true } }\n',
+  };
+  const ALL = ['src/c.spec.ts', 'src/c.ts', 'src/fee.ts', 'src/rate.ts', 'src/tax.ts'];
+
+  /** The files of gate c, with a Stryker config and a runner config of the given text. */
+  function filesOf(
+    files: Record<string, string | null>,
+    runner: 'vitest' | 'jest' = 'vitest',
+    checkers?: string[]
+  ): string[] | undefined {
+    const config = runner === 'vitest' ? 'vitest.gates.config.ts' : 'jest.gates.config.cjs';
+    const dir = fixture({
+      ...TYPES,
+      'stryker.gates.config.mjs': `export default { testRunner: '${runner}' };\n`,
+      'jest.gates.config.cjs': 'module.exports = {};\n',
+      ...Object.fromEntries(Object.entries(files).filter(([, text]) => text !== null)),
+    });
+    for (const [file, text] of Object.entries(files)) {
+      if (text === null) {
+        fs.rmSync(path.join(dir, file));
+      }
+    }
+    const { snapshot, root } = snapshotOf({ dir, written: [], args: [] });
+    const configs = runnerConfigs(dir, 'stryker.gates.config.mjs', {
+      testRunner: runner,
+      vitestConfig: config,
+      jestConfig: config,
+      checkers,
+    });
+    return affectedInputs(readManifest(dir), {
+      root,
+      files: snapshot.files,
+      configs,
+      tests: [],
+      covering: {},
+    }).gates['src/c.ts']?.files;
+  }
+
+  it('leaves them out where the run does not check types (Vitest)', () => {
+    expect(filesOf({})).toEqual(['src/c.spec.ts', 'src/c.ts']);
+  });
+
+  it('keeps a module that is also imported for a value', () => {
+    expect(
+      filesOf({
+        'src/c.spec.ts': `${H}import { c } from './c';\nimport { rate } from './rate';\nit('c', () => { expect(c(rate)).toBe(0); });\n`,
+        'src/rate.ts': 'export type Rate = number;\nexport const rate = 1;\n',
+      })
+    ).toEqual(['src/c.spec.ts', 'src/c.ts', 'src/rate.ts']);
+  });
+
+  it('keeps a module whose path the runner is given as text', () => {
+    expect(
+      filesOf({
+        'src/c.spec.ts': `${H}import { c } from './c';\nimport type { Rate } from './rate';\nvi.mock('./rate');\nit('c', () => {});\n`,
+      })
+    ).toEqual(['src/c.spec.ts', 'src/c.ts', 'src/rate.ts']);
+  });
+
+  it.each([
+    ['verbatimModuleSyntax', '{ "compilerOptions": { "verbatimModuleSyntax": true } }\n'],
+    ['preserveValueImports', '{ "compilerOptions": { "preserveValueImports": true } }\n'],
+    ['a base it extends', '{ "extends": "./tsconfig.base.json" }\n'],
+    ['a base it extends that is not there', '{ "extends": "@acme/tsconfig/base.json" }\n'],
+  ])(
+    'keeps an import of type names, which may still load the module, with %s',
+    (_name, tsconfig) => {
+      expect(
+        filesOf({
+          'tsconfig.json': tsconfig,
+          'tsconfig.base.json': '{ "compilerOptions": { "verbatimModuleSyntax": true } }\n',
+        })
+      ).toEqual(['src/c.spec.ts', 'src/c.ts', 'src/tax.ts']);
+    }
+  );
+
+  it('leaves out an import of type names with a base it extends that does not keep them', () => {
+    expect(
+      filesOf({
+        'tsconfig.json': '{ "extends": "./tsconfig.base.json" }\n',
+        'tsconfig.base.json': '{ "compilerOptions": { "strict": true } }\n',
+      })
+    ).toEqual(['src/c.spec.ts', 'src/c.ts']);
+  });
+
+  it('keeps an import of type names without a tsconfig.json to tell', () => {
+    expect(filesOf({ 'tsconfig.json': null })).toEqual(['src/c.spec.ts', 'src/c.ts', 'src/tax.ts']);
+  });
+
+  it.each([
+    [
+      'Vitest with typecheck',
+      'vitest',
+      { 'vitest.gates.config.ts': 'export default { test: { typecheck: { enabled: true } } };\n' },
+    ],
+    [
+      'the TypeScript checker of Stryker, in its config',
+      'vitest',
+      {
+        'stryker.gates.config.mjs':
+          "export default { testRunner: 'vitest', checkers: ['typescript'] };\n",
+      },
+    ],
+    ['ts-jest', 'jest', { 'jest.gates.config.cjs': "module.exports = { preset: 'ts-jest' };\n" }],
+    [
+      'ts-jest as a transform',
+      'jest',
+      {
+        'jest.gates.config.cjs': "module.exports = { transform: { '^.+\\\\.ts$': 'ts-jest' } };\n",
+      },
+    ],
+    [
+      'Jest with a preset',
+      'jest',
+      {
+        'jest.gates.config.cjs':
+          "module.exports = { preset: '@acme/jest-preset', transform: { '^.+\\\\.ts$': '@swc/jest' } };\n",
+      },
+    ],
+    ['Jest with no transform it names', 'jest', {}],
+  ] as const)('keeps them where the run may check types: %s', (_name, runner, files) => {
+    expect(filesOf(files, runner)).toEqual(ALL);
+  });
+
+  it('keeps them where the Stryker config names a checker', () => {
+    expect(filesOf({}, 'vitest', ['typescript'])).toEqual(ALL);
+  });
+
+  it.each([
+    [
+      'ts-jest with isolatedModules',
+      "module.exports = { transform: { '^.+\\\\.ts$': ['ts-jest', { isolatedModules: true }] } };\n",
+    ],
+    [
+      'ts-jest without diagnostics',
+      "module.exports = { transform: { '^.+\\\\.ts$': ['ts-jest', { diagnostics: false }] } };\n",
+    ],
+    ['@swc/jest', "module.exports = { transform: { '^.+\\\\.ts$': '@swc/jest' } };\n"],
+    ['babel-jest', "module.exports = { transform: { '^.+\\\\.ts$': 'babel-jest' } };\n"],
+  ])('leaves them out where Jest only strips types: %s', (_name, config) => {
+    expect(filesOf({ 'jest.gates.config.cjs': config }, 'jest')).toEqual([
       'src/c.spec.ts',
       'src/c.ts',
-      'src/types.ts',
     ]);
   });
 });

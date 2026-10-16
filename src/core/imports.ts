@@ -11,6 +11,12 @@ export interface ImportRef {
    * `require()` or `import()`. Named-import rules then fall back to scanning the source.
    */
   whole: boolean;
+  /**
+   * True when every name in the braces is marked `type` (`import { type A, type B } from 'm'`):
+   * the compiler drops the import, unless it is told to keep it (`verbatimModuleSyntax`).
+   * Left out otherwise.
+   */
+  inlineTypes?: true;
 }
 
 // `import X, { a, type B, c as d } from 'm'` / `export { a } from 'm'` / `export * as ns from 'm'`.
@@ -43,6 +49,12 @@ export function parseImports(source: string): ImportRef[] {
     const clause = match[3] as string;
     const module = match[5] as string;
     const braces = /\{([^}]*)\}/.exec(clause);
+    const entries = braces
+      ? (braces[1] as string)
+          .split(',')
+          .map((part) => part.trim())
+          .filter((part) => part !== '')
+      : [];
     const names = braces
       ? (braces[1] as string)
           .split(',')
@@ -60,6 +72,12 @@ export function parseImports(source: string): ImportRef[] {
       typeOnly: match[2] !== undefined,
       names,
       whole: outsideBraces !== '',
+      ...(match[2] === undefined &&
+      outsideBraces === '' &&
+      entries.length > 0 &&
+      entries.every((part) => /^type\s/.test(part))
+        ? { inlineTypes: true as const }
+        : {}),
     });
   }
   for (const match of source.matchAll(SIDE_EFFECT_IMPORT)) {
