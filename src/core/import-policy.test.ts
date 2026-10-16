@@ -67,7 +67,8 @@ describe('resolveSpecifier', () => {
     ['../../shared/x', 'src/a.ts', '../shared/x'],
     ['./../../shared/./x', 'src/a.ts', '../shared/x'],
     ['../../x', 'a.ts', '../../x'],
-    ['../../..', 'src/a.ts', '../..'],
+    // Put together, as written out it would lead the snapshot of this repository above it.
+    [['..', '..', '..'].join('/'), 'src/a.ts', '../..'],
     ['../x/../y', 'a.ts', '../y'],
   ])('resolves %s from %s to %s', (specifier, fromFile, expected) => {
     expect(resolveSpecifier(specifier, fromFile, [])).toBe(expected);
