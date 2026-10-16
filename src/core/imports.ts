@@ -89,6 +89,9 @@ export function parseImports(source: string): ImportRef[] {
   }
   for (const match of source.matchAll(CALL_IMPORT)) {
     const module = match[2] as string;
+    if (match[1] === '`' && module.includes('${')) {
+      continue; // a template with a value in it: not written out (see findUncheckableImports)
+    }
     found.push({
       module,
       line: lineAt(source, match.index + match[0].lastIndexOf(module)),
@@ -101,13 +104,18 @@ export function parseImports(source: string): ImportRef[] {
   return found.sort((a, b) => a.line - b.line);
 }
 
-// `require(name)` / `import(name)`: the argument does not start with a quote. `import.meta`
-// and a method such as `loader.require(x)` are not matched.
-const COMPUTED_CALL_IMPORT = /(?<![.\w$])(?:require|import)\s*\(\s*(?!['"`\s)])/g;
+// `require(name)` / `import(name)`, `import('./locales/' + lang)`, `import(\`./${lang}\`)`,
+// `import('./x.json', { with: … })`: anything but one string literal (a template without a
+// value in it) and the closing parenthesis. `import.meta`, `require.resolve(…)` and a method
+// such as `loader.require(x)` are not matched, nor is `require()` without an argument.
+const COMPUTED_CALL_IMPORT =
+  /(?<![.\w$])(?:require|import)\s*\((?!\s*(?:\)|(?:'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|`(?:[^`\\$]|\\.|\$(?!\{))*`)\s*\)))/g;
 
 /**
- * Lines with a `require()` / `import()` whose specifier is not a string literal. Such an
- * import cannot be judged from the text; allowlist mode rejects it.
+ * Lines with a `require()` / `import()` whose argument is not one string literal: a variable,
+ * strings put together (`'./rules/' + lang`), a template with a value in it, or a second
+ * argument. Such an import cannot be judged from the text; allowlist mode rejects it, and
+ * `mutation --affected` cannot tell what the file loads.
  */
 export function findUncheckableImports(source: string): number[] {
   return [...source.matchAll(COMPUTED_CALL_IMPORT)].map((match) => lineAt(source, match.index));

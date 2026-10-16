@@ -218,6 +218,27 @@ describe('affectedInputs', () => {
       'src/round.ts:2 imports a module whose path is not written out',
     ],
     [
+      'an import put together from strings',
+      {
+        'src/round.ts':
+          "export const round = async (lang: string) => import('./locales/' + lang + '.ts');\n",
+      },
+      'src/round.ts:1 imports a module whose path is not written out',
+    ],
+    [
+      'a require put together from strings',
+      { 'src/round.ts': "export const round = (lang: string) => require('./rules/' + lang);\n" },
+      'src/round.ts:1 imports a module whose path is not written out',
+    ],
+    [
+      'an import from a template with a value in it',
+      {
+        'src/round.ts':
+          'export const round = async (lang: string) => import(`./locales/${lang}`);\n',
+      },
+      'src/round.ts:1 imports a module whose path is not written out',
+    ],
+    [
       'a file read by a path from __dirname',
       {
         'src/settings.ts': `import { join } from 'node:path';\nexport const env = readFileSync(join(__dirname, '..', '.env'));\n`,

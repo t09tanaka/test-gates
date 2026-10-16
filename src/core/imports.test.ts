@@ -158,9 +158,25 @@ describe('findUncheckableImports', () => {
   });
 
   it.each([
+    ["import('./locales/' + lang + '.ts')"],
+    ["require('./rules/' + lang)"],
+    ['require("./rules/" +\n  lang)'],
+    ['import(`./locales/${lang}.ts`)'],
+    ["import('./x.json', { with: { type: 'json' } })"],
+    ["require('./a', './b')"],
+    ["require('./a')[key]; require('./b' + c)"],
+  ])('finds an argument that is more than one string literal: %s', (source) => {
+    expect(findUncheckableImports(`const x = 1;\n${source};`)).toEqual([2]);
+  });
+
+  it.each([
     "const a = require('fs');",
     'const b = await import("./x");',
     'const c = require(`pg`);',
+    "const c = require( './x' );",
+    'const d = import(`./price-$1`);',
+    "const e = require('./it\\'s');",
+    "const r = require.resolve('./a' + b);",
     'const url = import.meta.url;',
     'loader.require(name);',
     'this.$import(name);',
