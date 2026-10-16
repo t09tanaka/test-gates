@@ -16,6 +16,10 @@ export interface ReportMutant {
   replacement?: string;
   status: string;
   location: ReportLocation;
+  /** Ids of the tests that ran the mutated code (`coverageAnalysis: perTest`). */
+  coveredBy?: string[];
+  /** Ids of the tests that failed with the mutant. */
+  killedBy?: string[];
 }
 
 export interface ReportFile {
@@ -26,6 +30,8 @@ export interface ReportFile {
 /** The part of the mutation-testing-elements JSON report that the verdict depends on. */
 export interface MutationReport {
   files?: Record<string, ReportFile>;
+  /** The spec files, with the ids of their tests (read by `mutation --affected`). */
+  testFiles?: Record<string, { tests?: Array<{ id: string }> }>;
 }
 
 /** A survivor that no allowance covers. `allowance` can be pasted into `equivalentMutants`. */

@@ -157,7 +157,7 @@ done
 
 for project in backend frontend; do
   printf '%s\n' "$changed" | grep -q "^$project/" || continue
-  (cd "$project" && npm run --silent test:gates && npm run --silent test:gates:mutation) || exit 1
+  (cd "$project" && npm run --silent test:gates && npm run --silent test:gates:mutation -- --affected) || exit 1
 done
 ```
 
@@ -227,7 +227,7 @@ Static checks, before the gate run. Reports every violation as `file:line: reaso
 - The Stryker config does not use `excludedMutations`, `ignoreStatic` or `ignorers`.
 - A Vitest gate run below Vitest 4 does not use the plain v8 coverage provider (since 0.3.0), see [Vitest: v8 or istanbul](#vitest-v8-or-istanbul).
 
-### `test-gates mutation [--gate <path>…] [-- <stryker arguments>]`
+### `test-gates mutation [--gate <path>…] [--affected] [-- <stryker arguments>]`
 
 Runs `stryker run <config>` from the project's own `node_modules`, then judges the JSON report (see `mutation-result`). Unknown arguments, and everything after `--`, are handed to Stryker. If Stryker itself fails, the exit code is 1 and nothing is judged. A report from an earlier run is deleted first, so a run that writes none cannot pass on old results.
 
@@ -256,7 +256,7 @@ What is compared:
 - What is installed (`node_modules/.package-lock.json`, or what yarn and pnpm write in its place), the versions of Node.js, of this package, of Stryker and of the test runners, and the arguments handed to Stryker.
 - The incremental file itself: it has to be the one the recorded run wrote.
 
-With git, "every file" is what git tracks plus the untracked files it does not ignore. Without git, or when git ignores the subproject, every file is read except `node_modules`, `.git` and what the run writes itself, up to the nearest directory that has a `.git` entry, else the topmost one that declares workspaces, else only the subproject. Such a listing also contains what git would ignore (coverage output, an HTML report, logs), so a file that changes between two runs makes every run a full one; reuse is meant for a checkout with git.
+With git, "every file" is what git tracks plus the untracked files it does not ignore. In a git hook of a linked worktree, git sets `GIT_DIR` and not `GIT_WORK_TREE`; then git would take the subproject for the top of the repository, so test-gates calls git without `GIT_DIR` in that case and lets it find the repository from the subproject. Without git, or when git ignores the subproject, every file is read except `node_modules`, `.git` and what the run writes itself, up to the nearest directory that has a `.git` entry, else the topmost one that declares workspaces, else only the subproject. Such a listing also contains what git would ignore (coverage output, an HTML report, logs), so a file that changes between two runs makes every run a full one; reuse is meant for a checkout with git.
 
 The record is removed before each run and written only after a run that Stryker ended without an error and in which it wrote the incremental file, so a run that failed, was interrupted or was a dry run is followed by a full one. A run that is given `--force` is not changed. When Stryker does not run in incremental mode, nothing is recorded or compared.
 
@@ -288,6 +288,37 @@ So a run with `--gate`
 - **is refused when `CI` is set** in the environment (to anything but an empty value, `false` or `0`), with exit code 2, like `selfcheck --quick`.
 
 `--gate` is written before `--`, and cannot be combined with a `--mutate` of your own.
+
+#### `--affected`: run again only the gates a change can affect
+
+Without the option, a change to any file that is compared makes the run one of every mutant. That is the safe answer, but in a pre-push hook that only runs for the subprojects a push touches, it is the answer every time. `test-gates mutation --affected` (`npm run test:gates:mutation -- --affected`) decides gate by gate instead: a gate whose results cannot have changed keeps them, and every mutant of a gate that may have changed is run again. It never relies on Stryker's judgement per mutant, which is what reused the old "Killed" in the measurements above.
+
+The results of a gate depend on
+
+- the gate and every file it imports,
+- its own spec, every spec that imports it (directly or through other files), and every spec whose tests covered or killed one of its mutants in the last run, with every file those specs import. A spec that does not load the gate cannot see its mutants: Jest and Vitest give each spec file a module registry of its own. This is the way a change reaches another gate: when the spec of `next` checks its result through the gate `same`, a change of `same` runs `next` again, and so does a weakened spec of `next` for `same`,
+- snapshots next to a spec (`__snapshots__/<spec>.snap`) and data a spec or a gate imports.
+
+Imports are followed when they are relative, absolute, or start with a prefix of `settings.importAliases`; type imports count too. Paths written as text for the runner (`vi.mock('./rates')`) are followed as well. A package is taken to be what the lock file and the versions of the tools say it is, unless it is a link to a package of the same repository: see below.
+
+A change elsewhere decides for every gate:
+
+- **Every mutant is run** after a change of a config (the Stryker config and the config of the test runner, what they import, the setup files and other files they name, `package.json`, `test-gates.json`, `tsconfig*.json`, `*.config.*`, Babel configs, dotfiles, declaration files `.d.ts`, anything below `__mocks__`), of a lock file or of what is installed, of the tools or of the arguments; after a change of a file at the top of the subproject or outside of it that no gate depends on; and after a change of a file whose kind is not known (`.yaml`, `.html` and the like) that no gate depends on. Such a file that a gate does depend on runs that gate again, as any other file does.
+- **Nothing is run again** for a change of a source, data, a snapshot, a style or an image below the subproject that no gate depends on, or of a document (`.md`, `.txt` and the like).
+
+When what a gate depends on cannot be told from the text, every mutant is run, and the first line says why: an import whose path is not written out (`import(name)`, `require(name)`), an import that leads to no file, a specifier that is neither a file nor an installed package (an alias defined only in a config: name it in `settings.importAliases`), a file read at run time (`node:fs`, `readFileSync`, `__dirname`, `import.meta.url`, `process.cwd`, `toMatchFileSnapshot`), a file that is loaded but not compared (git ignores it), a gate loaded for every spec by a setup file, a package of the same repository linked into `node_modules` (`@acme/shared`, also when it lies in the subproject), a component whose imports are in a block of its own (`.vue`, `.svelte`, `.astro`, `.mdx`), and a test runner other than Jest and Vitest. Every mutant is also run when there is no record of a run with `--affected`, when the record cannot be read, with `--force`, and **when `CI` is set**: CI keeps running every mutant, and is the final check.
+
+A gate with a survivor or a timeout that the allow lists do not cover is not reused: it runs again until it is clean. A mutant that timed out in the last run is never taken over either, also not in a gate whose other results are, and also not in a run without `--affected` after no change: on a loaded machine a mutant that would survive can time out instead, and a reused timeout would keep that. Those mutants alone are run again (`--mutate` with their ranges); the first lines count them. The run is judged as one of every gate, and its first lines say what was reused:
+
+```
+test-gates mutation --affected: 1 of 3 gate(s) reused, 2 run again
+  src/same.ts: changed src/same.ts
+  src/next.ts: changed src/same.ts
+```
+
+To run only some gates, `--affected` hands them to Stryker as `--mutate` with `--force`, and Stryker takes the results of the others over from its incremental file, which has to be the one the recorded run wrote. `--affected` cannot be combined with `--gate` or with a `--mutate` of your own, and is written before `--`. `test/affected-reuse.test.ts` runs each of these cases with a real Stryker.
+
+What it does not see, besides what is listed for the comparison above: a file that a spec or a gate reaches in a way the text does not show and that is not a config by its name (a script that a tool loads by a name built at run time), and a spec that changes what another spec sees (Vitest with `isolate: false`, a shared global set by one spec file and read by another). Keep the CI run without the option.
 
 ### `test-gates mutation-result [--report <path>]`
 
@@ -715,7 +746,7 @@ Mutation testing is the expensive step. Numbers for this repository's own gates:
 
 The time grows with the number of mutants and depends heavily on cores and on `concurrency`. Twenty gates of this size on a slow machine are well past ten minutes for a full run. The setup that has held up in practice:
 
-- **pre-push: incremental.** `test-gates mutation` as is. Stryker's incremental file (`reports/stryker-incremental.json`, not committed) makes a run after no change take seconds; the first run after a clone is a full one, and so is every run after a change in the subproject or in what it depends on (see [When the results of the last run are reused](#when-the-results-of-the-last-run-are-reused)).
+- **pre-push: incremental.** `test-gates mutation --affected` (or `test-gates mutation` as is, which runs every mutant after any change). Stryker's incremental file (`reports/stryker-incremental.json`, not committed) makes a run after no change take seconds; the first run after a clone is a full one, and so is every run after a change in the subproject or in what it depends on (see [When the results of the last run are reused](#when-the-results-of-the-last-run-are-reused)).
 - **CI: full.** `npm run test:gates:mutation -- --force`. CI has no incremental file to start from anyway, and the full run is the one that counts.
 - If even CI is too slow, split by subproject (each has its own `test-gates.json`) before you think about sampling.
 

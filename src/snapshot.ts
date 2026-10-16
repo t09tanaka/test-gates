@@ -85,8 +85,28 @@ function toPosix(file: string): string {
   return file.split(path.sep).join('/');
 }
 
+/**
+ * The environment for git. A hook of a linked worktree runs with `GIT_DIR` set and without
+ * `GIT_WORK_TREE`: git then takes the directory it is called in for the top of the work tree,
+ * and a subproject looks like the whole repository. Without `GIT_WORK_TREE` the variable is left
+ * out, so that git finds the repository from the directory, as it does outside of a hook.
+ */
+export function gitEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  if (env.GIT_DIR === undefined || env.GIT_WORK_TREE !== undefined) {
+    return env;
+  }
+  const rest = { ...env };
+  delete rest.GIT_DIR;
+  return rest;
+}
+
 function git(cwd: string, args: string[]): string | null {
-  const result = spawnSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 1024 * 1024 * 1024 });
+  const result = spawnSync('git', args, {
+    cwd,
+    env: gitEnvironment(process.env),
+    encoding: 'utf8',
+    maxBuffer: 1024 * 1024 * 1024,
+  });
   return result.error || result.status !== 0 ? null : result.stdout;
 }
 
@@ -265,6 +285,18 @@ function ownVersion(): string {
  *   listed.
  */
 export function takeSnapshot(input: { dir: string; written: string[]; args: string[] }): Snapshot {
+  return snapshotOf(input).snapshot;
+}
+
+/**
+ * The snapshot (see takeSnapshot), and the directory its keys are relative to.
+ *
+ * @throws SnapshotError as takeSnapshot does.
+ */
+export function snapshotOf(input: { dir: string; written: string[]; args: string[] }): {
+  snapshot: Snapshot;
+  root: string;
+} {
   const dir = fs.realpathSync(input.dir);
   const top = git(dir, ['rev-parse', '--show-toplevel']);
   let root = top === null ? dir : fs.realpathSync(top.trim());
@@ -481,10 +513,5 @@ export function takeSnapshot(input: { dir: string; written: string[]; args: stri
     }
   }
 
-  return {
-    mode,
-    environment,
-    args: input.args,
-    files,
-  };
+  return { snapshot: { mode, environment, args: input.args, files }, root: listRoot };
 }

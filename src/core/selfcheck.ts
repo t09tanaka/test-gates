@@ -224,6 +224,14 @@ export function gateRunRefused(env: Record<string, string | undefined>): string 
     : null;
 }
 
+/**
+ * Why `mutation --affected` runs every mutant all the same; null when it may reuse results. In
+ * CI the run is the final check.
+ */
+export function affectedRefused(env: Record<string, string | undefined>): string | null {
+  return inCi(env) ? 'CI is set, and there every mutant is run (the final check)' : null;
+}
+
 /** What is said in the last line of a mutation run of the gates named with `--gate`. */
 export function gateRunCaveat(judged: number, all: number): string {
   return `. Only ${judged} of ${all} gate(s) were run and judged (--gate), and a change in one gate can make a mutant of another survive: run without --gate for the final check`;

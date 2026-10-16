@@ -2,7 +2,15 @@
 
 ## Unreleased
 
+### Added
+
+- `test-gates mutation --affected` runs again only the gates that a change since the last run can affect, and keeps the results of the others. The unit is the gate: every mutant of a gate that may have changed is run again, and Stryker's judgement per mutant is not relied on. A gate depends on itself, its own spec, every spec that imports it or whose tests covered or killed one of its mutants, and what all of those import. A change of a config, a lock file, a tool or the arguments, a file whose imports cannot be followed or that reads files at run time, a run with `--force`, and a run in CI (`CI` set) run every mutant, and the first line says why; otherwise the first lines say how many gates were reused and which file made each of the others run again. A package of the same repository linked into `node_modules`, and a component (`.vue`, `.svelte`, `.astro`, `.mdx`) that a gate or a spec loads, also run every mutant: what they import is not followed. A gate with an unallowed survivor or timeout always runs again. A mutant that timed out in the last run is run again on its own (`--mutate` with its range), also in a reused gate, since a timeout on a loaded machine can stand for a survivor. It is an option: without it a change of any compared file still runs every mutant. See "`--affected`" in the README.
+
 ### Changed
+
+- `test-gates mutation` no longer takes over a timeout from the last run after no change: the mutants that timed out are run again on their own, the other results are reused as before.
+- In a git hook of a linked worktree (`GIT_DIR` set, `GIT_WORK_TREE` not), `test-gates mutation` lists the files from the top of the repository. Before, git took the subproject for it, a path to a sibling directory led "outside of the repository", and every run was a full one.
+- The record next to the incremental file is of a new format (2), with what a run with `--affected` writes down about each gate. The first run after the update is one of every mutant.
 
 - `test-gates mutation` compares fewer files outside the subproject before it reuses the results of the last run, so that a change elsewhere in a repository no longer turns every run into a full one:
   - A path that leads up from a file and back into the subproject (`'../helper'` from `src/` to a file at the top of the subproject) no longer makes every file of the repository part of the comparison. It was taken for a path to a directory above the subproject.

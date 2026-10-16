@@ -3,6 +3,7 @@ import {
   comparableArgs,
   incrementalOptions,
   parseRecord,
+  readRecord,
   RECORD_FORMAT,
   refuseReuse,
   type Snapshot,
@@ -16,7 +17,7 @@ const snapshot = (changes: Partial<Snapshot> = {}): Snapshot => ({
   ...changes,
 });
 const record = (changes: object = {}) => ({
-  format: 1,
+  format: 2,
   incremental: 'hash-of-incremental',
   snapshot: snapshot(),
   ...changes,
@@ -26,7 +27,7 @@ const ask = (stored: unknown, now: Snapshot = snapshot(), incremental = 'hash-of
 
 describe('refuseReuse', () => {
   it('allows the reuse when nothing but gates and specs can have changed', () => {
-    expect(RECORD_FORMAT).toBe(1);
+    expect(RECORD_FORMAT).toBe(2);
     expect(ask(record())).toBeNull();
     // The order of the keys says nothing.
     expect(
@@ -48,8 +49,8 @@ describe('refuseReuse', () => {
     ['null', null],
     ['a string', 'x'],
     ['an array', [record()]],
-    ['another format', record({ format: 2 })],
-    ['a format written as text', record({ format: '1' })],
+    ['another format', record({ format: 1 })],
+    ['a format written as text', record({ format: '2' })],
     ['no format', record({ format: undefined })],
     ['no hash of the incremental file', record({ incremental: undefined })],
     ['a hash that is not text', record({ incremental: 1 })],
@@ -70,6 +71,21 @@ describe('refuseReuse', () => {
       'a hash of a file that is not text',
       record({ snapshot: { ...snapshot(), files: { a: null } } }),
     ],
+    ['an affected part that is null', record({ affected: null })],
+    ['an affected part without tests', record({ affected: { gates: {} } })],
+    ['tests that are not text', record({ affected: { tests: [1], gates: {} } })],
+    ['no gates in the affected part', record({ affected: { tests: [] } })],
+    ['gates that are null', record({ affected: { tests: [], gates: null } })],
+    ['gates that are a list', record({ affected: { tests: [], gates: [] } })],
+    ['a gate that is null', record({ affected: { tests: [], gates: { 'src/a.ts': null } } })],
+    [
+      'a gate without specs',
+      record({ affected: { tests: [], gates: { 'src/a.ts': { files: [] } } } }),
+    ],
+    [
+      'a gate with files that are not text',
+      record({ affected: { tests: [], gates: { 'src/a.ts': { specs: [], files: [1] } } } }),
+    ],
   ])('refuses a record that is %s', (_name, stored) => {
     expect(parseRecord(stored)).toBeNull();
     expect(ask(stored)).toBe('the record of the last run is not one this version can read');
@@ -80,6 +96,29 @@ describe('refuseReuse', () => {
     const walked = record({ snapshot: snapshot({ mode: 'walk', args: [], files: {} }) });
     expect(parseRecord(walked)).toEqual(walked);
     expect(parseRecord({ ...record(), extra: 1 })).toEqual(record());
+    const affected = {
+      tests: ['src/a.spec.ts'],
+      gates: {
+        'src/a.ts': { specs: ['src/a.spec.ts'], files: ['src/a.ts', 'src/a.spec.ts'] },
+        constructor: { specs: [], files: [] },
+      },
+    };
+    expect(parseRecord(record({ affected }))).toEqual(record({ affected }));
+    expect(parseRecord(record({ affected: { ...affected, extra: 1 } }))?.affected).toEqual(
+      affected
+    );
+  });
+
+  it('gives the record back from readRecord when only the files differ', () => {
+    const changed = snapshot({ files: { 'src/rates.ts': 'b2' } });
+    expect(
+      readRecord({ record: record(), incremental: 'hash-of-incremental', snapshot: changed })
+    ).toEqual({
+      record: record(),
+    });
+    expect(readRecord({ record: undefined, incremental: 'x', snapshot: changed })).toEqual({
+      refused: 'there is no record of the run that wrote the incremental file',
+    });
   });
 
   it('refuses when the incremental file is not the one the recorded run wrote', () => {
