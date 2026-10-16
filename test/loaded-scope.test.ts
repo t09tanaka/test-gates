@@ -3,7 +3,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { loadedScope, runnerConfigs } from '../src/affected-files';
 import { readManifest } from '../src/load';
 import { SnapshotError, snapshotOf } from '../src/snapshot';
-import { cleanup, project, write } from './helpers';
+import { cleanup, project } from './helpers';
 
 afterAll(cleanup);
 
