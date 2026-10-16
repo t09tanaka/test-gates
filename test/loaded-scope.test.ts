@@ -76,6 +76,7 @@ describe('the paths the snapshot follows', () => {
       'fee-rules/eslint.config.js': `export default [{ rules: { 'no-restricted-imports': ['error', { patterns: ['${up(1)}/'] }] } }];\n`,
       'fee-rules/.idea/vcs.xml': `<mapping directory="$PROJECT_DIR$/${up(1)}" vcs="Git" />\n`,
       'fee-rules/src/banner.ts': `export const banner = require('${up(2)}');\n`,
+      'fee-rules/package.json': { scripts: { report: `open ${up(1)}/coverage` } },
     });
     const { keys, followed } = snapshot(root);
     expect(keys).not.toContain(ELSEWHERE);
@@ -84,6 +85,7 @@ describe('the paths the snapshot follows', () => {
         'fee-rules/eslint.config.js',
         'fee-rules/.idea/vcs.xml',
         'fee-rules/src/banner.ts',
+        'fee-rules/package.json',
       ])
     );
     const shown = [...(followed ?? [])].map((file) => path.relative(root, file)).sort();
@@ -113,12 +115,16 @@ describe('the paths the snapshot follows', () => {
     expect(snapshot(root).keys).toContain(ELSEWHERE);
   });
 
-  it('follows what an alias the settings do not name leads to, by the end of its path', () => {
+  it.each([
+    ['without its extension', '@shared/money/near', 'fee-rules/lib/money/near.ts'],
+    ['with its extension', '@shared/money/near.js', 'fee-rules/lib/money/near.js'],
+    ['to an index file', '@shared/money', 'fee-rules/lib/money/index.ts'],
+  ])('follows what an alias the settings do not name leads to, %s', (_name, specifier, file) => {
     const root = repository({
       'fee-rules/src/fee.spec.ts':
-        `${H}import { fee } from './fee';\nimport { near } from '@shared/money/near';\n` +
+        `${H}import { fee } from './fee';\nimport { near } from '${specifier}';\n` +
         "it('fee', () => { expect(near(fee(1), 2)).toBe(true); });\n",
-      'fee-rules/lib/money/near.ts': `export const near = '${up(3)}';\n`,
+      [file]: `export const near = '${up(3)}';\n`,
     });
     const { keys, followed } = snapshot(root);
     expect(followed).not.toBeNull();
@@ -129,6 +135,13 @@ describe('the paths the snapshot follows', () => {
     [
       'a runner config this tool did not make',
       { 'fee-rules/vitest.gates.config.ts': 'export default { test: {} };\n' },
+    ],
+    [
+      'a runner config that is given projects of its own',
+      {
+        'fee-rules/vitest.gates.config.ts':
+          "import { createVitestGatesConfig } from '@t09tanaka/test-gates/vitest';\nexport default createVitestGatesConfig({ test: { projects: ['packages/*'] } });\n",
+      },
     ],
     [
       'an import whose path is not written out',

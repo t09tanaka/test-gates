@@ -355,9 +355,12 @@ export function affectedInputs(
   return { subproject, config: keysOf([...config]).sort(), gates };
 }
 
-/** Files the tools of a run read by their names, at the top of the subproject. */
+/**
+ * Files the tools of a run read by their names, at the top of the subproject. Not package.json:
+ * with a runner config of the helpers, what it holds for the runner is not read, and its scripts
+ * name paths that the run does not use.
+ */
 const READ_BY_NAME = [
-  /^package\.json$/,
   /^test-gates\.json$/,
   /^[jt]sconfig(?:\..+)?\.json$/,
   /^babel\.config\.[cm]?[jt]s(?:on)?$/,
@@ -387,10 +390,12 @@ export function loadedScope(
   listed: string[]
 ): Set<string> | null {
   const dir = realpath(manifest.dir);
-  // Only a config made with the helpers of this tool runs the specs of the gates and no others.
+  // Only a config made with the helpers of this tool runs the specs of the gates and no others,
+  // unless it is given projects of its own, which the helpers pass on.
   const own = /@t09tanaka\/test-gates\/(?:jest|vitest)\b/;
-  const runner = configs.files.slice(1);
-  if (runner.length === 0 || !runner.every((file) => own.test(fs.readFileSync(file, 'utf8')))) {
+  const widened = /\b(?:projects|workspace)\b/;
+  const runner = configs.files.slice(1).map((file) => fs.readFileSync(file, 'utf8'));
+  if (runner.length === 0 || !runner.every((text) => own.test(text) && !widened.test(text))) {
     return null;
   }
   const cache = new Map<string, Edges>();
@@ -460,7 +465,8 @@ function endingAs(specifier: string, files: string[]): string[] {
     return [];
   }
   return files.filter((file) => {
-    const bare = toPosix(file).replace(/\.[^./]+$/, '');
-    return bare.endsWith(`/${rest}`) || bare.endsWith(`/${rest}/index`);
+    const posix = toPosix(file);
+    const bare = posix.replace(/\.[^./]+$/, '');
+    return [posix, bare, bare.replace(/\/index$/, '')].some((one) => one.endsWith(`/${rest}`));
   });
 }
