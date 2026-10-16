@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { AffectedError, affectedInputs, runnerConfigs } from '../src/affected-files';
+import { decideReuse } from '../src/commands/mutation';
 import { readManifest } from '../src/load';
 import { snapshotOf } from '../src/snapshot';
 import { cleanup, project, write } from './helpers';
@@ -337,7 +338,9 @@ describe('affectedInputs', () => {
     const dir = fixture({
       'vitest.gates.config.ts':
         "export default { test: { setupFiles: ['./test/setup.ts'], coverage: { exclude: ['src/components/Widget.vue', 'src/data/rates.json'] } }, root: import.meta.dirname };\n",
-      'src/components/Widget.vue': '<template><p /></template>\n',
+      'src/components/Widget.vue':
+        '<template><p /></template>\n<script setup lang="ts">\nimport { format } from \'../format\';\n</script>\n',
+      'src/format.ts': 'export const format = (x: number) => String(x);\n',
       'src/data/rates.json': '{ "one": 1 }\n',
     });
     const found = inputs(dir);
@@ -623,6 +626,17 @@ describe('an import of types only', () => {
 });
 
 describe('runnerConfigs', () => {
+  it.each([
+    [[], false],
+    [['--checkers', 'typescript'], true],
+    [['--checkers=typescript'], true],
+    [['--concurrency', '2'], false],
+  ])('sees checkers given to Stryker as arguments: %j', (args, checkers) => {
+    const dir = fixture();
+    const decision = decideReuse(readManifest(dir), 'stryker.gates.config.mjs', args, false, true);
+    expect(decision.configs().checkers).toBe(checkers);
+  });
+
   it('finds the config the Stryker config names, or the default of the runner', () => {
     const dir = project({
       'stryker.gates.config.mjs': 'export default {};\n',

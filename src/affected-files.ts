@@ -521,11 +521,10 @@ export function affectedInputs(
         } else {
           // Not run, but maybe read for every spec (`moduleNameMapper` to a JSON or a stub), or
           // not at all (`coverage.exclude: ['src/Widget.vue']`). Either way a change of it
-          // reruns every gate, and a component it is cannot stop the gates from being told
-          // apart, as it would when followed as strictly as a setup file.
-          closure(realpath(found), false)
-            .filter(isCompared)
-            .forEach((one) => config.add(one));
+          // reruns every gate. What a component imports is not followed from here: it is not
+          // run for every spec, and it cannot stop the gates from being told apart, as it would
+          // when followed as strictly as a setup file.
+          config.add(realpath(found));
         }
       }
     }
