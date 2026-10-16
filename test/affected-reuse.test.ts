@@ -169,7 +169,7 @@ describe.skipIf(!strykerRuns)('test-gates mutation --affected with a real Stryke
 
       // 8. (e): an import that cannot be followed makes the run one of every mutant.
       write(dir, {
-        'src/fee.spec.ts': `${fs.readFileSync(path.join(dir, 'src/fee.spec.ts'), 'utf8')}// require(name)\n`,
+        'src/fee.spec.ts': `${fs.readFileSync(path.join(dir, 'src/fee.spec.ts'), 'utf8')}export const load = (name: string) => require(name);\n`,
       });
       const unknown = await run();
       expect(unknown.stdout).toContain(

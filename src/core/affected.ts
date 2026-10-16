@@ -77,8 +77,8 @@ export function kindOf(key: string, subproject: string): FileKind {
 
 /** The parts of the path of a key, from the subproject on when it lies inside of it. */
 function localSegments(key: string, subproject: string): string[] {
-  const inside = subproject === '' || key.startsWith(`${subproject}/`);
-  return (inside && subproject !== '' ? key.slice(subproject.length + 1) : key).split('/');
+  // A key is never absolute: with the subproject at the root ('') nothing is cut off.
+  return (key.startsWith(`${subproject}/`) ? key.slice(subproject.length + 1) : key).split('/');
 }
 
 /** Whether a key lies in a `__mocks__` that is not the one at the top of the subproject. */
