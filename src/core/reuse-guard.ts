@@ -263,41 +263,23 @@ export function reportFiles(config: unknown): string[] {
   ];
 }
 
-/** A pattern of ignorePatterns as a regular expression: `*` within a part, `**` across parts. */
+/** What the wildcards of a pattern of ignorePatterns stand for. */
+const WILDCARDS = new Map([
+  ['**/', '(?:.*/)?'],
+  ['*', '[^/]*'],
+  ['?', '[^/]'],
+]);
+
+/**
+ * A pattern of ignorePatterns as a regular expression: `*` and `?` within a part, a part `**`
+ * for any parts before the next. Brackets and braces are taken as they are written, which
+ * leaves out less than Stryker does.
+ */
 function globSource(glob: string): string {
-  let source = '';
-  for (let at = 0; at < glob.length; at += 1) {
-    const char = glob[at] as string;
-    if (glob.startsWith('**/', at)) {
-      source += '(?:.*/)?';
-      at += 2;
-    } else if (glob.startsWith('**', at)) {
-      source += '.*';
-      at += 1;
-    } else if (char === '*') {
-      source += '[^/]*';
-    } else if (char === '?') {
-      source += '[^/]';
-    } else if (char === '[' && glob.indexOf(']', at + 2) !== -1) {
-      const end = glob.indexOf(']', at + 2);
-      source += `[${glob
-        .slice(at + 1, end)
-        .replace(/^!/, '^')
-        .replace(/\\/g, '\\\\')}]`;
-      at = end;
-    } else if (char === '{' && glob.indexOf('}', at) !== -1) {
-      const end = glob.indexOf('}', at);
-      source += `(?:${glob
-        .slice(at + 1, end)
-        .split(',')
-        .map(globSource)
-        .join('|')})`;
-      at = end;
-    } else {
-      source += char.replace(/[.+^${}()|[\]\\/]/g, '\\$&');
-    }
-  }
-  return source;
+  return glob
+    .split(/(\*\*\/|\*|\?)/)
+    .map((part) => WILDCARDS.get(part) ?? part.replace(/\W/g, '\\$&'))
+    .join('');
 }
 
 /**
@@ -310,9 +292,9 @@ function globSource(glob: string): string {
  * @returns A test of a path relative to the subproject, with `/` between its parts.
  */
 export function strykerIgnores(config: unknown): (relative: string) => boolean {
-  const patterns = objectOf(config).ignorePatterns;
-  const rules = (Array.isArray(patterns) ? patterns : [])
-    .filter((pattern): pattern is string => typeof pattern === 'string' && pattern.trim() !== '')
+  const rules = [objectOf(config).ignorePatterns]
+    .flat()
+    .filter((pattern): pattern is string => typeof pattern === 'string')
     .map((pattern) => {
       const negate = pattern.startsWith('!');
       let body = negate ? pattern.slice(1) : pattern;

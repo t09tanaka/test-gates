@@ -458,8 +458,8 @@ function snapshotNow(input: Parameters<typeof snapshotOf>[0]): ReturnType<typeof
       // there from either, a file that appears later at one of them is followed then, and its
       // files change the snapshot. Where what is there from the subproject lies out of what can
       // be listed, the snapshot is refused, as for any path there; where it is a directory that
-      // holds all that can be listed (a way up to the top in a nested file), where the path leads is not
-      // known, and every file that can be listed is compared.
+      // holds all that can be listed (a way up to the top in a nested file), where the path
+      // leads is not known, and every file that can be listed is compared.
       const fromRun = from(dir);
       if (fromRun.found && !fromFile.found) {
         targets[0] = fromRun;

@@ -1038,7 +1038,7 @@ const SCHEME = /(?:^|[^\w$.+-])[A-Za-z][\w+.-]*:$/;
 /**
  * Where a regular expression that may open at `at` closes: at its `/`, on the same line. One
  * where a `/` may only divide is taken for a regular expression only when it closes before a
- * comment could start (`a / b // c` divides). Otherwise the `/` stands alone: `at`.
+ * comment or a string could start (`a / b // c` divides). Otherwise the `/` stands alone: `at`.
  */
 function patternEnd(text: string, at: number, pattern: boolean): number {
   let inClass = false;
@@ -1054,6 +1054,8 @@ function patternEnd(text: string, at: number, pattern: boolean): number {
     } else if (char === '/' && !inClass) {
       const comment = text[end + 1] === '/' || text[end + 1] === '*';
       return pattern || !comment ? end : at;
+    } else if (!pattern && (char === "'" || char === '"' || char === '`')) {
+      return at; // a string after a divide: `n / 2 + '/'`
     }
   }
   // Not closed on its line: a regular expression keeps the rest of the line, and its end.

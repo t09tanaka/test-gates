@@ -636,6 +636,10 @@ describe('comments', () => {
       "const n = (s: string) => (s.length) /\\/*/.exec(s)?.length;\nexport const c = () => readFileSync('x');\n/* */\n",
     ],
     [
+      'a divide before a string with //',
+      "const half = (s: string) => s.length / 2 + '/' + '//x'; export const c = () => readFileSync('x');\n",
+    ],
+    [
       'a URL in the text of JSX',
       'export const Link = () => <a href="/x">https://example.com</a>; export const c = () => readFileSync(\'x\');\n',
     ],

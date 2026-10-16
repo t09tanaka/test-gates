@@ -305,8 +305,8 @@ describe('strykerIgnores', () => {
 
   it('leaves out nothing without patterns', () => {
     expect(strykerIgnores(undefined)('a.ts')).toBe(false);
-    expect(strykerIgnores({ ignorePatterns: 'a.ts' })('a.ts')).toBe(false);
-    expect(ignored([1, '', '  '], ['a.ts', ' '])).toEqual([]);
+    expect(strykerIgnores({ ignorePatterns: 1 })('1')).toBe(false);
+    expect(ignored([1, '', '!'], ['a.ts', '1'])).toEqual([]);
   });
 
   it('matches a name at any depth, and what lies below it', () => {
@@ -329,59 +329,52 @@ describe('strykerIgnores', () => {
   });
 
   it('matches a pattern that ends in / to a directory only', () => {
+    expect(ignored(['cache//'], ['cache', 'cache/x'])).toEqual(['cache/x']);
     expect(ignored(['cache/'], ['cache', 'cache/x', 'a/cache/x'])).toEqual([
       'cache/x',
       'a/cache/x',
     ]);
   });
 
-  it('reads * within a part, ** across parts, ? and [] for one character, {} for either', () => {
+  it('reads * and ? within a part, and a part ** for any parts', () => {
     const files = [
       'a.tsbuildinfo',
       'x/a.tsbuildinfo',
       'out/a/b/c.map',
       'out/c.map',
       'outc.map',
+      'out/a.mapx',
       'log1.txt',
       'log12.txt',
-      'logb.txt',
-      'notes.md',
-      'notes.mdx',
-      'a.html',
-      'a.htm',
-      'a.js',
-      'a.b',
-      'axb',
-      'a+b',
+      'log/1.txt',
+      'deep',
+      'x/y/deep/z',
+      'xdeep',
+      'src/a/b.d.ts',
     ];
     expect(
-      ignored(
-        ['*.tsbuildinfo', 'out/**/*.map', 'log?.txt', 'notes.{md,txt}', '*.htm[l]', 'a.b', 'a+b'],
-        files
-      )
+      ignored(['*.tsbuildinfo', 'out/**/*.map', 'log?.txt', '**/deep', 'src/*.d.ts'], files)
     ).toEqual([
       'a.tsbuildinfo',
       'x/a.tsbuildinfo',
       'out/a/b/c.map',
       'out/c.map',
       'log1.txt',
-      'logb.txt',
-      'notes.md',
-      'a.html',
-      'a.b',
-      'a+b',
+      'deep',
+      'x/y/deep/z',
     ]);
-    expect(
-      ignored(
-        ['log[!a].txt', '**/deep', 'w**'],
-        ['loga.txt', 'logb.txt', 'deep', 'x/y/deep/z', 'wa/b']
-      )
-    ).toEqual(['logb.txt', 'deep', 'x/y/deep/z', 'wa/b']);
-    expect(ignored(['[a\\]x', 'p[q', 'r{s'], ['ax', '\\x', 'bx', 'p[q', 'r{s'])).toEqual([
-      'ax',
-      '\\x',
-      'p[q',
-      'r{s',
+  });
+
+  it('takes every other character as it is written', () => {
+    const patterns = ['a.b+c', 'p[q]', 'r{s,t}', '(u|v)', 'w^x$', 'y\\z'];
+    const files = ['a.b+c', 'axb+c', 'a.bbc', 'p[q]', 'pq', 'r{s,t}', 'rs', '(u|v)', 'u', 'w^x$'];
+    expect(ignored(patterns, [...files, 'y\\z', 'yz'])).toEqual([
+      'a.b+c',
+      'p[q]',
+      'r{s,t}',
+      '(u|v)',
+      'w^x$',
+      'y\\z',
     ]);
   });
 
