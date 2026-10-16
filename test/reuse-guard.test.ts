@@ -642,11 +642,24 @@ describe.each(['git', 'walk'] as const)(
         expect(mutation(sub(root))).toEqual(REUSED);
       });
 
-      it('looks at every file of the repository when a config extends one above the subproject', () => {
+      it('compares no more when a config extends a file directly in a directory above the subproject', () => {
         const root = monorepo({ 'fee-rules/tsconfig.json': { extends: '../tsconfig.base.json' } });
         mutation(sub(root));
         write(root, { 'catalog-site/src/listing.ts': 'export const listing = 1;\n' });
-        expect(mutation(sub(root))).toEqual(forcedBy(`${CHANGED}catalog-site/src/listing.ts`));
+        expect(mutation(sub(root))).toEqual(REUSED);
+        write(root, { 'tsconfig.base.json': { changed: true } });
+        expect(mutation(sub(root))).toEqual(forcedBy(`${CHANGED}tsconfig.base.json`));
+      });
+
+      it.each([
+        ['a file that is not there', `${up(1)}/tsconfig.missing.json`],
+        ['a directory', `${up(1)}/pricing-kit`],
+        ['a file deeper above the subproject', `${up(1)}/pricing-kit/labels/label-set.ts`],
+      ])('still looks at more when a plain path leads up to %s', (_name, reference) => {
+        const root = monorepo({ 'fee-rules/tsconfig.json': { extends: reference } });
+        mutation(sub(root));
+        write(root, { 'pricing-kit/labels/label-set.ts': 'export const labels = 2;\n' });
+        expect(mutation(sub(root)).forced).toBe(true);
       });
 
       it.each([
@@ -965,5 +978,148 @@ describe('test-gates mutation, reuse of the last run (git only)', () => {
     expect(JSON.parse(fs.readFileSync(path.join(dir, RECORD), 'utf8')).snapshot.mode).toBe('walk');
     write(dir, { 'src/expect-true.ts': '// weaker\n' });
     expect(mutation(dir).reason).toBe(`${CHANGED}generated/fee-rules/src/expect-true.ts`);
+  });
+});
+
+describe('test-gates mutation, reuse of the last run (what the comparison reaches)', () => {
+  const STRYKER_WITH_HELPER =
+    "export default { incremental: true, testRunner: 'vitest', vitest: { configFile: 'vitest.gates.config.ts' } };\n";
+  const VITEST_WITH_HELPER =
+    "import { createVitestGatesConfig } from '@t09tanaka/test-gates/vitest';\nexport default createVitestGatesConfig();\n";
+  /** A repository with a workspace `fee-rules` and the given files besides. */
+  const repository = (extra: Record<string, string | object> = {}, sub = 'fee-rules') =>
+    create(
+      {
+        'package.json': { name: 'root', private: true, workspaces: [sub] },
+        'package-lock.json': { lockfileVersion: 3 },
+        'catalog-site/src/listing.ts': 'export {};\n',
+        ...subproject(`${sub}/`),
+        ...extra,
+      },
+      'git',
+      sub
+    );
+
+  it('compares a directory outside the subproject whose name has glob characters', () => {
+    const root = repository({
+      'shared/[rates]/rate.ts': 'export const rate = 1;\n',
+      'fee-rules/src/rate.ts': `export { rate } from '${up(2)}/shared/[rates]/rate';\n`,
+    });
+    const dir = path.join(root, 'fee-rules');
+    mutation(dir);
+    const record = JSON.parse(fs.readFileSync(path.join(dir, RECORD), 'utf8'));
+    expect(record.snapshot.files['shared/[rates]/rate.ts']).toMatch(/^[0-9a-f]{64}$/);
+    write(root, { 'shared/[rates]/rate.ts': 'export const rate = 2;\n' });
+    expect(mutation(dir)).toEqual(forcedBy(`${CHANGED}shared/[rates]/rate.ts`));
+  });
+
+  // (Not a backslash: Node.js does not import a module from such a path.)
+  it.each(['[app]', 'app*', 'app?'])('lists a subproject named %s with git', (name) => {
+    const sub = `apps/${name}`;
+    const root = repository({ [`${sub}/scratch.log`]: '' }, sub);
+    const dir = path.join(root, sub);
+    mutation(dir);
+    const record = JSON.parse(fs.readFileSync(path.join(dir, RECORD), 'utf8'));
+    expect(record.snapshot.mode).toBe('git');
+    // git ignores the log: a change to it is no reason to run every mutant.
+    write(dir, { 'scratch.log': 'noise\n' });
+    expect(mutation(dir)).toEqual(REUSED);
+    write(dir, { 'src/expect-true.ts': '// weaker\n' });
+    expect(mutation(dir)).toEqual(forcedBy(`${CHANGED}${sub}/src/expect-true.ts`));
+  });
+
+  it.each([
+    [
+      'a spec that reads a file',
+      'fee-rules/src/rate.spec-data.ts',
+      `export const rate = JSON.parse(readFileSync('${up(1)}/shared-data/rate.json', 'utf8'));\n`,
+    ],
+    [
+      'a setup file that resolves a path',
+      'fee-rules/test/setup.ts',
+      `globalThis.rateFile = path.resolve('${up(1)}/shared-data/rate.json');\n`,
+    ],
+  ])('follows a way up from the directory the run starts in, for %s', (_name, file, source) => {
+    const root = repository({ 'shared-data/rate.json': { rate: 1 }, [file]: source });
+    const dir = path.join(root, 'fee-rules');
+    mutation(dir);
+    write(root, { 'catalog-site/src/listing.ts': 'export const listing = 1;\n' });
+    expect(mutation(dir)).toEqual(REUSED);
+    write(root, { 'shared-data/rate.json': { rate: 2 } });
+    expect(mutation(dir)).toEqual(forcedBy(`${CHANGED}shared-data/rate.json`));
+  });
+
+  it('notices a file that appears where a way up from the directory the run starts in leads', () => {
+    const root = repository({
+      'fee-rules/src/rate.spec-data.ts': `export const rate = readFileSync('${up(1)}/shared-data/rate.json');\n`,
+    });
+    const dir = path.join(root, 'fee-rules');
+    mutation(dir);
+    expect(mutation(dir)).toEqual(REUSED);
+    write(root, { 'shared-data/rate.json': { rate: 2 } });
+    expect(mutation(dir)).toEqual(forcedBy(`${CHANGED}shared-data/rate.json`));
+  });
+
+  it('compares a file git ignores when the run loads it, with the helper of the runner config', () => {
+    const root = repository({
+      '.gitignore': `${IGNORE}generated/\ntest-fixtures/\n`,
+      'fee-rules/stryker.gates.config.mjs': STRYKER_WITH_HELPER,
+      'fee-rules/vitest.gates.config.ts': VITEST_WITH_HELPER,
+      'fee-rules/src/generated/limit.ts': 'export const limit = 18;\n',
+      'fee-rules/test-fixtures/cases.json': { ages: [18] },
+      'fee-rules/test-fixtures/unused.json': { ages: [] },
+      'fee-rules/src/age.spec.ts':
+        "import { limit } from './generated/limit';\n" +
+        `import cases from '${up(1)}/test-fixtures/cases.json';\n` +
+        SPEC_SOURCE,
+    });
+    const dir = path.join(root, 'fee-rules');
+    mutation(dir);
+    expect(mutation(dir)).toEqual(REUSED);
+    // Ignored and not loaded: not compared.
+    write(dir, { 'test-fixtures/unused.json': { ages: [1] } });
+    expect(mutation(dir)).toEqual(REUSED);
+    write(dir, { 'src/generated/limit.ts': 'export const limit = 21;\n' });
+    expect(mutation(dir)).toEqual(forcedBy(`${CHANGED}fee-rules/src/generated/limit.ts`));
+    write(dir, { 'test-fixtures/cases.json': { ages: [] } });
+    expect(mutation(dir)).toEqual(forcedBy(`${CHANGED}fee-rules/test-fixtures/cases.json`));
+    expect(mutation(dir)).toEqual(REUSED);
+  });
+
+  it.each([
+    ['the root', 'patches/kit+1.0.0.patch'],
+    ['the subproject', 'fee-rules/patches/kit+1.0.0.patch'],
+  ])('compares the patches of patch-package in %s', (_name, file) => {
+    const root = repository({ [file]: 'a patch\n' });
+    const dir = path.join(root, 'fee-rules');
+    mutation(dir);
+    expect(mutation(dir)).toEqual(REUSED);
+    write(root, { [file]: 'another patch\n' });
+    expect(mutation(dir)).toEqual(forcedBy(`${CHANGED}${file}`));
+  });
+
+  it('runs every mutant again when Stryker would start under another Node.js', () => {
+    const dir = create(subproject(), 'git');
+    // A node on PATH, as the shebang of node_modules/.bin/stryker finds it, that says it is
+    // another version and otherwise is the real one.
+    const bin = path.join(dir, '.stryker-tmp/bin');
+    fs.mkdirSync(bin, { recursive: true });
+    const fake = path.join(bin, 'node');
+    const run = (version: string) => {
+      fs.writeFileSync(
+        fake,
+        `#!/bin/sh\nif [ "$1" = "--version" ]; then echo ${version}; else exec ${JSON.stringify(process.execPath)} "$@"; fi\n`
+      );
+      fs.chmodSync(fake, 0o755);
+      const result = testGates(['mutation', '--dir', dir], {
+        env: { PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}` },
+      });
+      return result.stdout.split('\n').find((line) => line.startsWith(NOTE)) ?? null;
+    };
+    run('v1.0.0');
+    expect(run('v1.0.0')).toBeNull();
+    expect(run('v2.0.0')).toBe(
+      `${NOTE}the tools changed since the last run: Node.js on PATH v1.0.0 → v2.0.0`
+    );
   });
 });
