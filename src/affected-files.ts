@@ -358,8 +358,37 @@ export function affectedInputs(
 
 /** A runner config made with the helpers of this tool. */
 const OWN = /@t09tanaka\/test-gates\/(?:jest|vitest)\b/;
-/** What can make a runner config of the helpers run more than the specs of the gates. */
-const WIDENING = /\b(?:projects|workspace|mergeConfig|testMatch|testRegex|include)\b/;
+/** Options that make a runner config of the helpers run more than the specs of the gates. */
+const PROJECTS = /\b(?:projects|workspace)\b/;
+const HELPERS = ['createJestGatesConfig', 'createVitestGatesConfig'];
+
+/**
+ * Whether what a runner config exports is what a helper returns: `export default helper(…)`,
+ * `module.exports = helper(…)`, also inside `defineConfig(…)`, by another name it is imported
+ * under, or through a variable that is exported as it is.
+ */
+function isHelperResult(text: string): boolean {
+  const names = new Set(HELPERS);
+  for (const match of text.matchAll(
+    /\b(?:createJestGatesConfig|createVitestGatesConfig)\s*(?::|\bas\b)\s*([\w$]+)/g
+  )) {
+    names.add(match[1] as string);
+  }
+  const escaped = [...names].map((name) => name.replace(/\$/g, '\\$'));
+  const call = `(?:defineConfig\\s*\\(\\s*)?(?:${escaped.join('|')})\\s*\\(`;
+  const exported = '(?:export\\s+default|module\\.exports\\s*=)\\s*';
+  if (new RegExp(`${exported}${call}`).test(text)) {
+    return true;
+  }
+  const variable = new RegExp(`\\b(?:const|let|var)\\s+([\\w$]+)\\s*=\\s*${call}`).exec(text);
+  return (
+    variable !== null &&
+    new RegExp(`${exported}${(variable[1] as string).replace(/\$/g, '\\$')}\\s*(?:;|$)`, 'm').test(
+      text
+    ) &&
+    !new RegExp(`\\b${(variable[1] as string).replace(/\$/g, '\\$')}\\s*(?:\\.|\\[)`).test(text)
+  );
+}
 
 /**
  * Files the tools of a run read by their names, at the top of the subproject. Not package.json:
@@ -398,11 +427,13 @@ export function loadedScope(
   const dir = realpath(manifest.dir);
   const cache = new Map<string, Edges>();
   const context = { dir, aliases: manifest.settings.importAliases, cache };
-  // Only a config made with the helpers of this tool runs the specs of the gates and no others.
-  // What could add specs to it, in it or in a file it is put together from, is not looked
-  // through: projects of its own, a config merged after it, a set of specs given anew.
+  // Only a config that is what a helper of this tool returns runs the specs of the gates and no
+  // others: the helper sets them after the options it is given. Not one that changes what the
+  // helper returns (merged with another config, spread with more after it), and not one given
+  // projects of its own, which the helper passes on, also from a file it is put together from.
   const runner = configs.files.slice(1);
-  if (runner.length === 0 || !runner.every((file) => OWN.test(fs.readFileSync(file, 'utf8')))) {
+  const texts = runner.map((file) => withoutComments(fs.readFileSync(file, 'utf8')));
+  if (runner.length === 0 || !texts.every((text) => OWN.test(text) && isHelperResult(text))) {
     return null;
   }
   const parts = new Set(runner.map(realpath));
@@ -411,7 +442,7 @@ export function loadedScope(
       fileEdges(file, context).loads.forEach((loaded) => parts.add(loaded));
     }
   }
-  if ([...parts].some((file) => WIDENING.test(withoutComments(fs.readFileSync(file, 'utf8'))))) {
+  if ([...parts].some((file) => PROJECTS.test(withoutComments(fs.readFileSync(file, 'utf8'))))) {
     return null;
   }
   const named = fs
@@ -461,8 +492,8 @@ export function loadedScope(
     }
     // What a config names as text: a setup file, an environment, `<rootDir>/test/setup.ts`.
     if (naming.has(file) || (SCRIPT.test(file) && path.dirname(file) === dir)) {
-      for (const match of fs.readFileSync(file, 'utf8').matchAll(QUOTED)) {
-        const text = (match[2] as string).replace(/^<rootDir>\//, '');
+      for (const named of namedIn(file)) {
+        const text = named.replace(/^<rootDir>\//, '');
         const found =
           resolveFile(path.resolve(path.dirname(file), text), false) ??
           resolveFile(path.resolve(dir, text), false);
@@ -498,7 +529,81 @@ function endingAs(specifier: string, files: string[]): string[] {
   });
 }
 
-/** The text without its comments, as far as a simple search can tell them. */
+/**
+ * The paths a config names as text. In a script, every string. In data (`tsconfig.json`, a
+ * `.babelrc`), only what the tools of a run take from it: what it extends, and the plugins and
+ * presets it names. Its `files`, `include` and `exclude` are inputs of the compiler, not of a run.
+ */
+function namedIn(file: string): string[] {
+  const text = fs.readFileSync(file, 'utf8');
+  if (SCRIPT.test(file)) {
+    return [...text.matchAll(QUOTED)].map((match) => match[2] as string);
+  }
+  return ['extends', 'plugins', 'presets'].flatMap((key) => valuesOf(text, key));
+}
+
+/**
+ * The strings of the value of `"key":` in JSON (also with comments, as tsconfig.json has them): a
+ * string, or every string in an array that follows it. Read from the text, so that a file JSON
+ * cannot parse is read as well.
+ */
+function valuesOf(text: string, key: string): string[] {
+  const found: string[] = [];
+  for (const match of text.matchAll(new RegExp(`"${key}"\\s*:\\s*`, 'g'))) {
+    let at = (match.index ?? 0) + match[0].length;
+    if (text[at] === '"') {
+      const end = text.indexOf('"', at + 1);
+      found.push(text.slice(at + 1, end === -1 ? undefined : end));
+      continue;
+    }
+    if (text[at] !== '[') {
+      continue;
+    }
+    // To the bracket that closes the array, past the strings in it.
+    let depth = 0;
+    for (; at < text.length; at += 1) {
+      const char = text[at];
+      if (char === '"') {
+        const end = text.indexOf('"', at + 1);
+        found.push(text.slice(at + 1, end === -1 ? undefined : end));
+        at = end === -1 ? text.length : end;
+      } else if (char === '[') {
+        depth += 1;
+      } else if (char === ']') {
+        depth -= 1;
+        if (depth === 0) {
+          break;
+        }
+      }
+    }
+  }
+  return found;
+}
+
+/**
+ * The text without its comments. Strings are read past, so that a glob or a URL in
+ * one is not taken for the start of a comment; a comment ends a line or at its closing mark.
+ */
 function withoutComments(text: string): string {
-  return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`])\/\/.*$/gm, '$1');
+  let out = '';
+  for (let at = 0; at < text.length; at += 1) {
+    const char = text[at] as string;
+    if (char === "'" || char === '"' || char === '`') {
+      let end = at + 1;
+      while (end < text.length && text[end] !== char && text[end] !== '\n') {
+        end += text[end] === '\\' ? 2 : 1;
+      }
+      out += text.slice(at, end + 1);
+      at = end;
+    } else if (char === '/' && text[at + 1] === '/') {
+      const end = text.indexOf('\n', at);
+      at = end === -1 ? text.length : end - 1;
+    } else if (char === '/' && text[at + 1] === '*') {
+      const end = text.indexOf('*/', at + 2);
+      at = end === -1 ? text.length : end + 1;
+    } else {
+      out += char;
+    }
+  }
+  return out;
 }

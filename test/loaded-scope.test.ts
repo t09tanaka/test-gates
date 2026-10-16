@@ -77,6 +77,8 @@ describe('the paths the snapshot follows', () => {
       'fee-rules/.idea/vcs.xml': `<mapping directory="$PROJECT_DIR$/${up(1)}" vcs="Git" />\n`,
       'fee-rules/src/banner.ts': `export const banner = require('${up(2)}');\n`,
       'fee-rules/package.json': { scripts: { report: `open ${up(1)}/coverage` } },
+      // What the compiler is given is not what the run loads.
+      'fee-rules/tsconfig.build.json': { files: ['src/banner.ts'], include: ['src'] },
     });
     const { keys, followed } = snapshot(root);
     expect(keys).not.toContain(ELSEWHERE);
@@ -86,6 +88,7 @@ describe('the paths the snapshot follows', () => {
         'fee-rules/.idea/vcs.xml',
         'fee-rules/src/banner.ts',
         'fee-rules/package.json',
+        'fee-rules/tsconfig.build.json',
       ])
     );
     const shown = [...(followed ?? [])].map((file) => path.relative(root, file)).sort();
@@ -96,6 +99,7 @@ describe('the paths the snapshot follows', () => {
       'fee-rules/stryker.gates.config.mjs',
       'fee-rules/test-gates.json',
       'fee-rules/test/setup.ts',
+      'fee-rules/tsconfig.build.json',
       'fee-rules/vitest.gates.config.ts',
     ]);
   });
@@ -149,6 +153,19 @@ describe('the paths the snapshot follows', () => {
       'fee-rules/config/tsconfig.shared.json',
     ],
     [
+      'a plugin that .babelrc names',
+      { 'fee-rules/.babelrc': { plugins: [['./babel/plugin.js', { loose: true }]] } },
+      'fee-rules/babel/plugin.js',
+    ],
+    [
+      'a config that a tsconfig.json with comments extends',
+      {
+        'fee-rules/tsconfig.json':
+          '{\n  // shared\n  "extends": "./config/base.json", /* and */\n  "include": ["src"],\n}\n',
+      },
+      'fee-rules/config/base.json',
+    ],
+    [
       'an import written in another case than the file',
       { 'fee-rules/src/near.ts': "export { near } from './Helper';\n" },
       'fee-rules/src/helper.ts',
@@ -160,6 +177,37 @@ describe('the paths the snapshot follows', () => {
     });
     expect(snapshot(root).keys).toContain(ELSEWHERE);
   });
+
+  it.each([
+    [
+      'inside defineConfig, with another config spread into its options',
+      "import { defineConfig } from 'vitest/config';\nimport { createVitestGatesConfig } from '@t09tanaka/test-gates/vitest';\nimport base from './vitest.base';\nexport default defineConfig(createVitestGatesConfig({ ...base, test: { ...base.test } }));\n",
+    ],
+    [
+      'after a comment that holds a glob',
+      "// The specs are src/*.spec.ts\nconst { createJestGatesConfig } = require('@t09tanaka/test-gates/jest');\n/** @type {import('jest').Config} */\nmodule.exports = createJestGatesConfig({});\n",
+    ],
+    [
+      'imported under another name',
+      "const { createVitestGatesConfig: gates } = require('@t09tanaka/test-gates/vitest');\nmodule.exports = gates({});\n",
+    ],
+    [
+      'kept in a variable that is exported as it is',
+      "import { createVitestGatesConfig } from '@t09tanaka/test-gates/vitest';\nconst config = createVitestGatesConfig({});\nexport default config;\n",
+    ],
+  ])(
+    'narrows the search for a runner config that is what the helper returns, %s',
+    (_name, config) => {
+      const root = repository({
+        'fee-rules/vitest.gates.config.ts': config,
+        'fee-rules/vitest.base.ts': "export default { test: { include: ['src/**/*.test.ts'] } };\n",
+        'fee-rules/eslint.config.js': `export default '${up(1)}';\n`,
+      });
+      const { keys, followed } = snapshot(root);
+      expect(followed).not.toBeNull();
+      expect(keys).not.toContain(ELSEWHERE);
+    }
+  );
 
   it.each([
     [
@@ -188,6 +236,13 @@ describe('the paths the snapshot follows', () => {
           "import { createVitestGatesConfig } from '@t09tanaka/test-gates/vitest';\nimport shared from './vitest.shared';\nexport default { ...createVitestGatesConfig(), ...shared };\n",
         'fee-rules/vitest.shared.ts':
           "export default { test: { include: ['src/**/*.test.ts'] } };\n",
+      },
+    ],
+    [
+      'a runner config that changes what the helper returns',
+      {
+        'fee-rules/vitest.gates.config.ts':
+          "import { createVitestGatesConfig } from '@t09tanaka/test-gates/vitest';\nconst config = createVitestGatesConfig({});\nconfig.test.include = ['src/**/*.test.ts'];\nexport default config;\n",
       },
     ],
     [
