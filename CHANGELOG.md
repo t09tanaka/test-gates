@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
+
+Most of this release is about runs that were full ones although little had changed. `test-gates doctor` tells why a project's runs are full ones. `mutation --affected` runs again only the gates a change can affect. The comparison before a run covers only what the run loads. Two changes of behaviour: Stryker's `concurrency` now defaults to half of the cores, and the record of a run has a new format, so the first run after the update is one of every mutant.
 
 ### Added
 
@@ -14,7 +16,6 @@
 - `test-gates mutation` no longer takes over a timeout from the last run after no change: the mutants that timed out are run again on their own, the other results are reused as before.
 - In a git hook of a linked worktree (`GIT_DIR` set, `GIT_WORK_TREE` not), `test-gates mutation` lists the files from the top of the repository. Before, git took the subproject for it, a path to a sibling directory led "outside of the repository", and every run was a full one.
 - The record next to the incremental file is of a new format (2), with what a run with `--affected` writes down about each gate. The first run after the update is one of every mutant.
-
 - `test-gates mutation` compares fewer files outside the subproject before it reuses the results of the last run, so that a change elsewhere in a repository no longer turns every run into a full one:
   - A path that leads up from a file and back into the subproject (`'../helper'` from `src/` to a file at the top of the subproject) no longer makes every file of the repository part of the comparison. It was taken for a path to a directory above the subproject.
   - A path that starts at the directory of its own file is followed: `` `${__dirname}/../shared` ``, and `__dirname, '..', 'shared'` handed to `path.join` or `path.resolve` (also with `import.meta.dirname`). Before, every file of the repository was compared. When such a path ends in a directory above the subproject, only the files directly in it are compared, as they always are; when an unknown part follows it (`join(__dirname, '..', name)`, or something added to what the call returns), every file still is. A way up after a placeholder (`` `../x/${name}/../..` ``) now also makes every file part of the comparison; before, only the part before the placeholder was followed.
