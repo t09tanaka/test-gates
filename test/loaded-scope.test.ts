@@ -53,7 +53,7 @@ function snapshot(root: string): { keys: string[]; followed: Set<string> | null 
     written: [],
     args: [],
     scope: (listed) => {
-      followed = loadedScope(
+      const found = loadedScope(
         readManifest(dir),
         runnerConfigs(dir, 'stryker.gates.config.mjs', {
           testRunner: 'vitest',
@@ -61,6 +61,7 @@ function snapshot(root: string): { keys: string[]; followed: Set<string> | null 
         }),
         listed
       );
+      followed = 'files' in found ? found.files : null;
       return followed;
     },
   });

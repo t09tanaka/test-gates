@@ -47,6 +47,8 @@ const LOCK_FILES = [
 /** Directories that are never part of a snapshot. */
 const NEVER = ['node_modules', '.git'];
 
+/** How many of the paths that widen a snapshot to every file are kept, for a message. */
+const WIDENED_SHOWN = 5;
 /** Larger files are hashed but not searched for paths. */
 const SCAN_LIMIT = 8 * 1024 * 1024;
 /** A string literal with `..` as a part of a path: it may lead out of the directory of its file. */
@@ -310,6 +312,11 @@ export function snapshotOf(input: {
 }): {
   snapshot: Snapshot;
   root: string;
+  /**
+   * The files, and the paths in them, that made every file that can be listed part of the
+   * snapshot (the first few); empty when none did.
+   */
+  widened: string[];
 } {
   const dir = fs.realpathSync(input.dir);
   const top = git(dir, ['rev-parse', '--show-toplevel']);
@@ -348,6 +355,7 @@ export function snapshotOf(input: {
 
   // The subproject, then every directory its files (and the files of those directories) lead to.
   const regions = [dir];
+  const widened: string[] = [];
   const queued = new Set(regions);
   /**
    * @param reference The path as it is written in `from`, for the message.
@@ -368,6 +376,10 @@ export function snapshotOf(input: {
       throw new SnapshotError(
         `${toPosix(path.relative(dir, from))} points outside of what can be listed${written} (${directory})`
       );
+    }
+    if (directory === listRoot && listRoot !== dir && widened.length < WIDENED_SHOWN) {
+      const written = reference === undefined ? '' : ` ${JSON.stringify(reference)}`;
+      widened.push(`${toPosix(path.relative(listRoot, from))}${written}`);
     }
     if (![...queued].some((region) => isInside(region, directory))) {
       queued.add(directory);
@@ -451,7 +463,7 @@ export function snapshotOf(input: {
       ) {
         // `<rootDir>/../shared`, a lone `..` handed to path.join, or a way up after a
         // placeholder (`${__dirname}/${name}/../..`): where it leads is not known.
-        enqueue(listRoot, file);
+        enqueue(listRoot, file, literal);
       } else {
         follow(fixed, open, here !== null, file, literal);
       }
@@ -543,5 +555,5 @@ export function snapshotOf(input: {
     }
   }
 
-  return { snapshot: { mode, environment, args: input.args, files }, root: listRoot };
+  return { snapshot: { mode, environment, args: input.args, files }, root: listRoot, widened };
 }

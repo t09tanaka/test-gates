@@ -394,6 +394,9 @@ export function affectedInputs(
   return { subproject, config: keysOf([...config]).sort(), gates };
 }
 
+/** Why every file is followed when the runner config is not made with the helpers. */
+export const NOT_THE_HELPER =
+  'the runner config is not made with createJestGatesConfig or createVitestGatesConfig';
 /** A runner config made with the helpers of this tool. */
 const OWN = /@t09tanaka\/test-gates\/(?:jest|vitest)\b/;
 /** Options that make a runner config of the helpers run more than the specs of the gates. */
@@ -461,14 +464,14 @@ const READ_BY_NAME = [
  *
  * @param configs The Stryker config and the config of the test runner.
  * @param listed The files of the subproject, as absolute paths.
- * @returns null when the specs the run starts are not known, or when a file loads a module whose
- *   path is not written out: then every file is followed.
+ * @returns `every`, with the reason, when the specs the run starts are not known, or when a file
+ *   loads modules that are not followed: then every file is followed.
  */
 export function loadedScope(
   manifest: LoadedManifest,
   configs: RunConfigs,
   listed: string[]
-): Set<string> | null {
+): { files: Set<string> } | { every: string } {
   const dir = realpath(manifest.dir);
   const cache = new Map<string, Edges>();
   const context = { dir, aliases: manifest.settings.importAliases, cache };
@@ -478,8 +481,14 @@ export function loadedScope(
   // projects of its own, which the helper passes on, also from a file it is put together from.
   const runner = configs.files.slice(1);
   const texts = runner.map((file) => withoutComments(fs.readFileSync(file, 'utf8')));
-  if (runner.length === 0 || !texts.every((text) => OWN.test(text) && isHelperResult(text))) {
-    return null;
+  if (runner.length === 0 || !texts.every((text) => OWN.test(text))) {
+    return { every: NOT_THE_HELPER };
+  }
+  if (!texts.every(isHelperResult)) {
+    return {
+      every:
+        'what the runner config exports is not what the helper returns (merged with another config, or changed after the call)',
+    };
   }
   const parts = new Set(runner.map(realpath));
   for (const file of [...parts]) {
@@ -488,7 +497,9 @@ export function loadedScope(
     }
   }
   if ([...parts].some((file) => PROJECTS.test(withoutComments(fs.readFileSync(file, 'utf8'))))) {
-    return null;
+    return {
+      every: 'the runner config, or a file it is put together from, names projects or a workspace',
+    };
   }
   const named = fs
     .readdirSync(dir)
@@ -524,7 +535,7 @@ export function loadedScope(
     }
     const edges = fileEdges(file, context);
     if (edges.computed) {
-      return null;
+      return { every: edges.unknown ?? 'a file loads modules that are not followed' };
     }
     edges.loads.forEach(add);
     for (const specifier of edges.unnamed) {
@@ -552,7 +563,7 @@ export function loadedScope(
       }
     }
   }
-  return seen;
+  return { files: seen };
 }
 
 /**

@@ -47,6 +47,12 @@
           "original": "next + 1",
           "replacement": "next - 1",
           "reason": "After an option with a separate value the parser would return to the option itself and read it again forever"
+        },
+        {
+          "mutator": "ArithmeticOperator",
+          "original": "index + 1",
+          "replacement": "index - 1",
+          "reason": "The value of an option given apart from it would be read from the argument before the option, and the parser would return to the option and read it again forever"
         }
       ]
     },
@@ -64,6 +70,11 @@
       "path": "src/core/affected.ts",
       "decides": "With mutation --affected: which gates are run again after a change, which keep the results of the last run, and which changes make the run one of every mutant",
       "impact": "A gate keeps an old Killed after a change of a file its results depend on (its spec, a helper, the spec of another gate that imports it, a config), and a mutant that now survives passes"
+    },
+    {
+      "path": "src/core/doctor.ts",
+      "decides": "What test-gates doctor reports as a problem that makes mutation runs full ones, and what it tells to change",
+      "impact": "A subproject whose runs are always full ones is reported as healthy, or a healthy one fails the doctor, and the fix it gives sends the user the wrong way"
     },
     {
       "path": "src/core/vitest-coverage.ts",

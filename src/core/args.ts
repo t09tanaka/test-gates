@@ -1,4 +1,11 @@
-export const COMMANDS = ['check', 'mutation', 'mutation-result', 'selfcheck', 'lcov'] as const;
+export const COMMANDS = [
+  'check',
+  'mutation',
+  'mutation-result',
+  'selfcheck',
+  'lcov',
+  'doctor',
+] as const;
 export type Command = (typeof COMMANDS)[number];
 
 export interface ParsedArgs {
@@ -62,6 +69,7 @@ const OPTIONS_BY_COMMAND: Record<Command, string[]> = {
   'mutation-result': ['--dir', '--report'],
   selfcheck: ['--dir', '--all', '--first', '--gate', '--shard', '--quick', '--jobs'],
   lcov: ['--dir', '--file'],
+  doctor: ['--dir'],
 };
 
 /**

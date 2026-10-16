@@ -31,7 +31,7 @@ describe('test-gates (general)', () => {
   it('prints help that lists every command', () => {
     const result = testGates(['--help']);
     expect(result.status).toBe(0);
-    for (const command of ['check', 'mutation', 'mutation-result', 'selfcheck', 'lcov']) {
+    for (const command of ['check', 'mutation', 'mutation-result', 'selfcheck', 'lcov', 'doctor']) {
       expect(result.stdout).toMatch(new RegExp(`^  ${command}\\b`, 'm'));
     }
     // The tracefile can come from settings.lcov.file, so the option is shown as optional.

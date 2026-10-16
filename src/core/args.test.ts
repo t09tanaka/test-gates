@@ -18,12 +18,19 @@ const base = {
 };
 
 describe('parseArgs', () => {
-  it.each(['check', 'mutation', 'mutation-result', 'selfcheck', 'lcov'] as const)(
+  it.each(['check', 'mutation', 'mutation-result', 'selfcheck', 'lcov', 'doctor'] as const)(
     'reads the command %s with defaults',
     (command) => {
       expect(parseArgs([command])).toEqual({ ...base, command });
     }
   );
+
+  it('takes --dir for doctor, and nothing else', () => {
+    expect(parseArgs(['doctor', '--dir', 'client']).dir).toBe('client');
+    expect(() => parseArgs(['doctor', '--gate', 'src/a.ts'])).toThrow(
+      new UsageError('unknown argument for doctor: --gate')
+    );
+  });
 
   it('reads no arguments as no command', () => {
     expect(parseArgs([])).toEqual(base);
