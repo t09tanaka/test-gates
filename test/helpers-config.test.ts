@@ -1,12 +1,14 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
 import { createJestGatesConfig } from '../src/jest';
 import { gateSpecs, loadGates, readManifest } from '../src/load';
 import { existsExact, findLocalBin } from '../src/fs';
-import { createStrykerGatesConfig } from '../src/stryker';
+import { createStrykerGatesConfig, defaultConcurrency } from '../src/stryker';
+import { inCi } from '../src/core/selfcheck';
 import { createVitestGatesConfig } from '../src/vitest';
 import { cleanup, gateEntry, project, repoRoot, validProject, write } from './helpers';
 
@@ -342,7 +344,36 @@ describe('createStrykerGatesConfig', () => {
       clearTextReporter: { logTests: false, reportTests: false },
       tempDirName: '.stryker-tmp',
       maxTestRunnerReuse: 50,
+      concurrency: defaultConcurrency(os.availableParallelism(), inCi(process.env)),
     });
+  });
+
+  it('starts half of the cores as runners, at least 1 and at most 8, and 2 in CI', () => {
+    expect([1, 2, 3, 4, 12, 16, 17, 64].map((cores) => defaultConcurrency(cores, false))).toEqual([
+      1, 1, 1, 2, 6, 8, 8, 8,
+    ]);
+    expect([1, 2, 12, 64].map((cores) => defaultConcurrency(cores, true))).toEqual([2, 2, 2, 2]);
+  });
+
+  it('takes the concurrency the project sets, and its own default from the variable CI', () => {
+    expect(createStrykerGatesConfig({ rootDir: validProject(), concurrency: 3 }).concurrency).toBe(
+      3
+    );
+    const before = process.env.CI;
+    try {
+      process.env.CI = 'true';
+      expect(createStrykerGatesConfig({ rootDir: validProject() }).concurrency).toBe(2);
+      process.env.CI = '0';
+      expect(createStrykerGatesConfig({ rootDir: validProject() }).concurrency).toBe(
+        defaultConcurrency(os.availableParallelism(), false)
+      );
+    } finally {
+      if (before === undefined) {
+        delete process.env.CI;
+      } else {
+        process.env.CI = before;
+      }
+    }
   });
 
   it('lets the project set its own maxTestRunnerReuse, and leaves timeoutMS to Stryker', () => {
