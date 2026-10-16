@@ -484,10 +484,13 @@ export function affectedInputs(
   // The texts of the configs and of what they import, read before imports of types are dropped.
   const plain = new Map<string, Edges>();
   const configTexts: string[] = [];
+  const runnerSources: Source[] = [];
   const reached = new Set(input.configs.files);
   const pending = [...input.configs.files];
   for (let file = pending.shift(); file !== undefined; file = pending.shift()) {
-    configTexts.push(fs.readFileSync(file, 'utf8'));
+    const text = fs.readFileSync(file, 'utf8');
+    configTexts.push(text);
+    runnerSources.push({ file, text });
     for (const next of fileEdges(file, { dir, aliases, cache: plain }).loads) {
       if (!reached.has(next) && SCRIPT.test(next)) {
         reached.add(next);
@@ -495,11 +498,17 @@ export function affectedInputs(
       }
     }
   }
-  const types = typesErased(
-    input.configs,
-    configTexts,
-    compilerConfigs(dir, realpath(input.root), Object.keys(input.files))
-  );
+  const compiler = compilerConfigs(dir, realpath(input.root), Object.keys(input.files));
+  const types = typesErased(input.configs, configTexts, compiler);
+  const maps = unexplainedMaps({
+    dir,
+    aliases,
+    runner: [...runnerSources, ...jestInPackage(dir, input.configs)],
+    compiler,
+  });
+  if (maps !== null) {
+    throw new AffectedError(maps);
+  }
   const edges = new Map<string, Edges>();
   const edgesOf = (file: string): Edges => fileEdges(file, { dir, aliases, cache: edges, types });
   /** The file and what it loads, directly or not. */
@@ -758,6 +767,21 @@ export function loadedScope(
     .readdirSync(dir)
     .filter((name) => READ_BY_NAME.some((pattern) => pattern.test(name)))
     .map((name) => path.join(dir, name));
+  // A map of the runner can lead to a file that no text names (an installed package mapped to a
+  // shim of the project): such a file would not be compared at all.
+  const maps = unexplainedMaps({
+    dir,
+    aliases: manifest.settings.importAliases,
+    runner: [configs.files[0] as string, ...parts]
+      .filter((file) => SCRIPT.test(file) || file.endsWith('.json'))
+      .map((file) => ({ file, text: fs.readFileSync(file, 'utf8') })),
+    compiler: named
+      .filter((file) => path.basename(file) !== 'test-gates.json')
+      .map((file) => ({ file, text: fs.readFileSync(file, 'utf8') })),
+  });
+  if (maps !== null) {
+    return { every: maps };
+  }
   const mocks = path.join(dir, '__mocks__');
   const seeds = [
     ...configs.files,
@@ -914,4 +938,262 @@ function withoutComments(text: string): string {
     }
   }
   return out;
+}
+
+/** package.json, where Jest reads its config from when no other config file is there. */
+function jestInPackage(dir: string, configs: RunConfigs): Array<Source & { mapperOnly: true }> {
+  const file = path.join(dir, 'package.json');
+  return configs.runner === 'jest' && configs.files.length === 1 && fs.existsSync(file)
+    ? [{ file, text: fs.readFileSync(file, 'utf8'), mapperOnly: true }]
+    : [];
+}
+
+/** A text the run reads: where it lies, and what it holds. */
+interface Source {
+  file: string;
+  text: string;
+}
+
+const STRING_LITERAL = String.raw`'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"`;
+
+/** The value of a text that is one string literal, or null. */
+function stringValue(text: string): string | null {
+  const match = new RegExp(`^\\s*(${STRING_LITERAL})\\s*$`).exec(text);
+  return match === null ? null : (match[1] as string).slice(1, -1).replace(/\\(.)/g, '$1');
+}
+
+/**
+ * The parts of the list or object whose opening bracket is at `at`, split at the commas that are
+ * not in a string or a nested bracket; null when the bracket is not closed.
+ */
+function partsOf(text: string, at: number): { parts: string[]; end: number } | null {
+  const parts: string[] = [];
+  let depth = 0;
+  let start = at + 1;
+  for (let index = at; index < text.length; index += 1) {
+    const char = text[index] as string;
+    if (char === "'" || char === '"' || char === '`') {
+      let end = index + 1;
+      while (end < text.length && text[end] !== char) {
+        end += text[end] === '\\' ? 2 : 1;
+      }
+      index = end;
+    } else if ('{[('.includes(char)) {
+      depth += 1;
+    } else if ('}])'.includes(char)) {
+      depth -= 1;
+      if (depth === 0) {
+        parts.push(text.slice(start, index));
+        return { parts: parts.filter((part) => part.trim() !== ''), end: index };
+      }
+    } else if (char === ',' && depth === 1) {
+      parts.push(text.slice(start, index));
+      start = index + 1;
+    }
+  }
+  return null;
+}
+
+/** `key: value` of an object, with the key as a string; null for anything else (`...more`). */
+function property(part: string): { key: string; value: string } | null {
+  const match = new RegExp(`^\\s*(${STRING_LITERAL}|[\\w$]+)\\s*:([\\s\\S]*)$`).exec(part);
+  if (match === null) {
+    return null;
+  }
+  const key = match[1] as string;
+  return { key: stringValue(key) ?? key, value: (match[2] as string).trim() };
+}
+
+/**
+ * The directory a value of a Vite alias names, built from where the config lies:
+ * `path.resolve(__dirname, 'src')`, `path.join(import.meta.dirname, 'src')`,
+ * `fileURLToPath(new URL('./src', import.meta.url))`. Null for anything else.
+ */
+function aliasPath(value: string, file: string): string | null {
+  const here = path.dirname(file);
+  const call = new RegExp(
+    `^(?:path\\.)?(?:resolve|join)\\(\\s*(?:__dirname|import\\.meta\\.dirname)\\s*((?:,\\s*(?:${STRING_LITERAL})\\s*)*)\\)$`
+  ).exec(value);
+  if (call !== null) {
+    const parts = [...(call[1] as string).matchAll(new RegExp(STRING_LITERAL, 'g'))];
+    return path.resolve(here, ...parts.map((part) => stringValue(part[0]) as string));
+  }
+  const url = new RegExp(
+    `^(?:(?:url\\.)?fileURLToPath\\(\\s*new URL\\(\\s*(${STRING_LITERAL})\\s*,\\s*import\\.meta\\.url\\s*\\)\\s*\\)|new URL\\(\\s*(${STRING_LITERAL})\\s*,\\s*import\\.meta\\.url\\s*\\)\\.pathname)$`
+  ).exec(value);
+  const relative = url === null ? null : (url[1] ?? url[2] ?? null);
+  return relative === null ? null : path.resolve(here, stringValue(relative) as string);
+}
+
+/** The prefix of a pattern of moduleNameMapper that maps a prefix: `^@/(.*)$` is `@/`. */
+function mapperPrefix(pattern: string): string | null {
+  const match = /^\^((?:[\w@~#%/-]|\\[./@~#-])*)\(\.\*\)\$?$/.exec(pattern);
+  return match === null ? null : (match[1] as string).replace(/\\(.)/g, '$1');
+}
+
+/** Values of rootDir that are the directory of the config itself. */
+const ROOT_DIR_HERE = new Set([
+  '__dirname',
+  'import.meta.dirname',
+  'import.meta.url',
+  "'.'",
+  '"."',
+  "'./'",
+  '"./"',
+]);
+
+/**
+ * Why the module maps of a run cannot be told from settings.importAliases, or null.
+ *
+ * A runner config can map a specifier to a file that the text of the importing file does not
+ * show: `resolve.alias` of Vite, `moduleNameMapper` of Jest, tsconfig `paths` (with a plugin that
+ * applies them), `module-resolver` of Babel. It can map the name of an installed package to a
+ * file of the project, which this tool takes for the package, or give one specifier more than one
+ * target, of which this tool follows one. A map is taken only where it does what an alias of
+ * settings.importAliases does: the same prefix to the same directory, one target. Then the files
+ * that are followed are the ones the runner loads. Besides, an entry of moduleNameMapper that maps
+ * to one fixed module (`'\\.css$': '<rootDir>/test/style-stub.js'`, or a package) is taken: the
+ * config names that file, so that a change of it runs every gate again (a package is compared
+ * through the lock file). Anything else, also what cannot be read from the text (a variable, a
+ * regular expression, a spread), makes what a gate depends on unknown.
+ *
+ * @param input.runner The runner configs and the files they import, read for `alias` and
+ *   `moduleNameMapper`; `mapperOnly` for package.json, where only Jest is read.
+ * @param input.compiler The compiler configs (see compilerConfigs).
+ */
+export function unexplainedMaps(input: {
+  dir: string;
+  aliases: ImportAlias[];
+  runner: Array<Source & { mapperOnly?: boolean }>;
+  compiler: Array<{ file: string; text: string | null }>;
+}): string | null {
+  const { dir, aliases } = input;
+  const shown = (file: string): string => toPosix(path.relative(dir, file));
+  // `src/` for the target `src/$1`, `src` + `/` for `src$1` after `src`: what the rest is put after.
+  const under = (base: string, rest: string): string =>
+    rest === '' ? `${base}/` : path.join(base, rest);
+  const named = (prefix: string, target: string): boolean =>
+    aliases.some(
+      (alias) =>
+        alias.prefix === prefix &&
+        path.resolve(dir, alias.target) === path.resolve(target) &&
+        alias.target.endsWith('/') === target.endsWith('/')
+    );
+  for (const { file, text: raw, mapperOnly } of input.runner) {
+    const text = withoutComments(raw);
+    const words = mapperOnly === true ? /\bmoduleNameMapper\b/g : /\b(?:alias|moduleNameMapper)\b/g;
+    for (const match of text.matchAll(words)) {
+      const word = match[0];
+      const opening = /^['"]?\s*:\s*/.exec(text.slice(match.index + word.length));
+      const at = opening === null ? -1 : match.index + word.length + opening[0].length;
+      const found = at === -1 ? null : partsOf(text, at);
+      const unreadable = `${shown(file)} names ${word} in a way that cannot be read as a list of aliases`;
+      if (found === null || (text[at] !== '{' && !(word === 'alias' && text[at] === '['))) {
+        return unreadable;
+      }
+      const missing = (key: string) =>
+        `${shown(file)} maps ${key} with ${word} in a way settings.importAliases does not name`;
+      for (const part of found.parts) {
+        let entry: { key: string; value: string } | null;
+        if (text[at] === '[') {
+          // `[{ find: '@', replacement: path.resolve(__dirname, 'src') }]`
+          const object = /^\s*\{/.exec(part) === null ? null : partsOf(part, part.indexOf('{'));
+          const fields = Object.fromEntries(
+            (object?.parts ?? []).map(property).map((one) => [one?.key ?? '', one?.value ?? ''])
+          );
+          const key = stringValue(fields.find ?? '');
+          entry =
+            object === null ||
+            key === null ||
+            Object.keys(fields).sort().join() !== 'find,replacement' ||
+            part.slice(object.end + 1).trim() !== ''
+              ? null
+              : { key, value: fields.replacement as string };
+        } else {
+          entry = property(part);
+        }
+        if (entry === null) {
+          return unreadable;
+        }
+        if (word === 'alias') {
+          // Vite maps `@` and what starts with `@/`: the alias `@/` of settings.importAliases.
+          const target = aliasPath(entry.value, file);
+          if (target === null || entry.key.endsWith('/') || !named(`${entry.key}/`, `${target}/`)) {
+            return missing(entry.key);
+          }
+          continue;
+        }
+        const value = stringValue(entry.value);
+        if (value !== null && !value.includes('$')) {
+          continue; // one fixed module, which the config names
+        }
+        // <rootDir> is where the config lies, unless it is set to another directory.
+        for (const root of text.matchAll(/\brootDir\b['"]?\s*:\s*([^,}\n]+)/g)) {
+          const set = (root[1] as string).trim();
+          if (!ROOT_DIR_HERE.has(set)) {
+            return `${shown(file)} sets rootDir to a directory that cannot be told: ${set}`;
+          }
+        }
+        const prefix = mapperPrefix(entry.key);
+        const target = value === null ? null : /^<rootDir>\/(.*)\$1$/.exec(value);
+        if (
+          prefix === null ||
+          target === null ||
+          !named(prefix, under(path.dirname(file), target[1] as string))
+        ) {
+          return missing(entry.key);
+        }
+      }
+    }
+  }
+  const tsconfigs = input.compiler.filter(({ file }) => /^[jt]sconfig/.test(path.basename(file)));
+  const withBase = tsconfigs.filter(({ text }) => text !== null && /"baseUrl"\s*:/.test(text));
+  for (const { file, text } of input.compiler) {
+    if (text === null) {
+      continue;
+    }
+    const plain = withoutComments(text);
+    if (!/^[jt]sconfig/.test(path.basename(file))) {
+      // Babel (module-resolver) and SWC (jsc.paths) map modules too. In package.json, which
+      // holds more than a Babel config, only the plugin is looked for.
+      const maps =
+        path.basename(file) === 'package.json'
+          ? /module-resolver/.exec(plain)
+          : /module-resolver|\balias\b|"paths"/.exec(plain);
+      if (maps !== null) {
+        return `${shown(file)} maps modules (${maps[0].replace(/"/g, '')}), which cannot be told`;
+      }
+      continue;
+    }
+    const paths = /"paths"\s*:\s*/.exec(plain);
+    if (paths === null) {
+      continue;
+    }
+    const at = paths.index + paths[0].length;
+    const found = plain[at] === '{' ? partsOf(plain, at) : null;
+    if (found === null) {
+      return `${shown(file)} names paths in a way that cannot be read as a list of aliases`;
+    }
+    // Paths are relative to baseUrl, else to the tsconfig.json that names them; a baseUrl of
+    // another file of the chain is not looked into.
+    const own = /"baseUrl"\s*:\s*"([^"]*)"/.exec(plain);
+    if (own === null && withBase.length > 0) {
+      return `${shown(file)} names paths, and baseUrl is set in another file`;
+    }
+    const base = path.resolve(path.dirname(file), own?.[1] ?? '.');
+    for (const part of found.parts) {
+      const entry = property(part);
+      const list = entry === null || !entry.value.startsWith('[') ? null : partsOf(entry.value, 0);
+      const target = list?.parts.length === 1 ? stringValue(list.parts[0] as string) : null;
+      if (entry === null) {
+        return `${shown(file)} names paths in a way that cannot be read as a list of aliases`;
+      }
+      const prefix = entry.key.endsWith('*') ? entry.key.slice(0, -1) : null;
+      const directory = target?.endsWith('*') ? target.slice(0, -1) : null;
+      if (prefix === null || directory === null || !named(prefix, under(base, directory))) {
+        return `${shown(file)} maps ${entry.key} with paths in a way settings.importAliases does not name`;
+      }
+    }
+  }
+  return null;
 }

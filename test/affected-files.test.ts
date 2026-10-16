@@ -503,6 +503,198 @@ describe('affectedInputs', () => {
   });
 });
 
+describe('the module maps of the runner config', () => {
+  const ALIASES = { settings: { importAliases: [{ prefix: '@/', target: 'src/' }] } };
+  const vitest = (resolve: string) =>
+    "import path from 'node:path';\nimport { fileURLToPath } from 'node:url';\n" +
+    `export default { resolve: ${resolve}, test: { setupFiles: ['./test/setup.ts'] }, root: import.meta.dirname };\n`;
+  /** The files of gate c, or why they cannot be told, with a config of `runner`. */
+  const told = (
+    files: Record<string, string | object>,
+    manifest: object = ALIASES,
+    runner: 'jest' | 'vitest' = 'vitest'
+  ): string[] | string => {
+    const dir = fixture(files, manifest);
+    const { snapshot, root } = snapshotOf({ dir, written: ['reports'], args: [] });
+    const configs = runnerConfigs(dir, 'stryker.gates.config.mjs', {
+      testRunner: runner,
+      ...(runner === 'vitest' ? { vitestConfig: 'vitest.gates.config.ts' } : {}),
+    });
+    try {
+      const found = affectedInputs(readManifest(dir), {
+        root,
+        files: snapshot.files,
+        configs,
+        tests: [],
+        covering: {},
+      });
+      return found.gates['src/c.ts']?.files ?? [];
+    } catch (error) {
+      expect(error).toBeInstanceOf(AffectedError);
+      return (error as Error).message;
+    }
+  };
+  const C = ['src/c.spec.ts', 'src/c.ts'];
+
+  it.each([
+    ['path.resolve', "{ alias: { '@': path.resolve(__dirname, './src') } }"],
+    ['path.join', "{ alias: { '@': path.join(__dirname, 'src') } }"],
+    ['import.meta.dirname', "{ alias: { '@': path.resolve(import.meta.dirname, 'src') } }"],
+    ['a URL', "{ alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) } }"],
+    ['a list', "{ alias: [{ find: '@', replacement: path.resolve(__dirname, 'src') }] }"],
+  ])(
+    'tells the gates apart with a Vite alias that settings.importAliases names (%s)',
+    (_n, resolve) => {
+      expect(told({ 'vitest.gates.config.ts': vitest(resolve) })).toEqual(C);
+    }
+  );
+
+  it.each([
+    ['one of the same path', "'^@/(.*)$': '<rootDir>/src/$1'", ALIASES],
+    [
+      'one into the directory above',
+      "'^@common/(.*)$': '<rootDir>/../common/$1'",
+      { settings: { importAliases: [{ prefix: '@common/', target: '../common/' }] } },
+    ],
+    ['a stub', "'\\\\.(css|less)$': '<rootDir>/test/style-stub.js'", ALIASES],
+    ['a package', "'\\\\.(css|less)$': 'identity-obj-proxy'", ALIASES],
+  ])('tells the gates apart with a moduleNameMapper of %s', (_n, entry, manifest) => {
+    const found = told(
+      {
+        'jest.config.cjs': `module.exports = { rootDir: __dirname, moduleNameMapper: { ${entry} } };\n`,
+        'test/style-stub.js': 'module.exports = {};\n',
+      },
+      manifest,
+      'jest'
+    );
+    expect(found).toEqual(C);
+  });
+
+  it('tells the gates apart with tsconfig paths that settings.importAliases names', () => {
+    expect(
+      told({ 'tsconfig.json': '{ "compilerOptions": { "paths": { "@/*": ["./src/*"] } } }\n' })
+    ).toEqual(C);
+    expect(
+      told({
+        'tsconfig.json': '{ "compilerOptions": { "baseUrl": "src", "paths": { "@/*": ["*"] } } }\n',
+      })
+    ).toEqual(C);
+  });
+
+  it.each([
+    [
+      'an installed package mapped to a file of the project',
+      vitest("{ alias: { 'left-pad': path.join(root, 'src', 'shims', 'left-pad.ts') } }").replace(
+        'export default',
+        'const root = import.meta.dirname;\nexport default'
+      ),
+      'vitest.gates.config.ts maps left-pad with alias in a way settings.importAliases does not name',
+    ],
+    [
+      'an alias settings.importAliases does not name',
+      vitest("{ alias: { '~': path.resolve(__dirname, 'src') } }"),
+      'vitest.gates.config.ts maps ~ with alias in a way settings.importAliases does not name',
+    ],
+    [
+      'an alias to another directory',
+      vitest("{ alias: { '@': path.resolve(__dirname, 'lib') } }"),
+      'vitest.gates.config.ts maps @ with alias in a way settings.importAliases does not name',
+    ],
+    [
+      'an alias found by a regular expression',
+      vitest("{ alias: [{ find: /^@\\//, replacement: path.resolve(__dirname, 'src') + '/' }] }"),
+      'vitest.gates.config.ts names alias in a way that cannot be read as a list of aliases',
+    ],
+    [
+      'aliases of a variable',
+      'const aliases = {};\nexport default { test: { alias: aliases } };\n',
+      'vitest.gates.config.ts names alias in a way that cannot be read as a list of aliases',
+    ],
+  ])('refuses %s in a Vite config', (_n, config, message) => {
+    expect(told({ 'vitest.gates.config.ts': config })).toBe(message);
+  });
+
+  it.each([
+    [
+      'more than one target',
+      "{ '^@/(.*)$': ['<rootDir>/src/override/$1', '<rootDir>/src/$1'] }",
+      'jest.config.cjs maps ^@/(.*)$ with moduleNameMapper in a way settings.importAliases does not name',
+    ],
+    [
+      'a package mapped to files of the project',
+      "{ '^left-pad/(.*)$': '<rootDir>/src/shims/$1' }",
+      'jest.config.cjs maps ^left-pad/(.*)$ with moduleNameMapper in a way settings.importAliases does not name',
+    ],
+    [
+      'a pattern that is not a prefix',
+      "{ '^(.*)/legacy/(.*)$': '<rootDir>/src/$2' }",
+      'jest.config.cjs maps ^(.*)/legacy/(.*)$ with moduleNameMapper in a way settings.importAliases does not name',
+    ],
+  ])('refuses a moduleNameMapper with %s', (_n, mapper, message) => {
+    expect(
+      told(
+        { 'jest.config.cjs': `module.exports = { moduleNameMapper: ${mapper} };\n` },
+        ALIASES,
+        'jest'
+      )
+    ).toBe(message);
+  });
+
+  it('refuses a moduleNameMapper of a rootDir that is not where the config lies', () => {
+    expect(
+      told(
+        {
+          'jest.config.cjs':
+            "module.exports = { rootDir: 'src', moduleNameMapper: { '^@/(.*)$': '<rootDir>/$1' } };\n",
+        },
+        ALIASES,
+        'jest'
+      )
+    ).toBe("jest.config.cjs sets rootDir to a directory that cannot be told: 'src'");
+  });
+
+  it('reads the moduleNameMapper of package.json when there is no Jest config', () => {
+    expect(
+      told(
+        {
+          'package.json': {
+            name: 'fixture',
+            private: true,
+            jest: { moduleNameMapper: { '^@/(.*)$': ['<rootDir>/a/$1', '<rootDir>/src/$1'] } },
+          },
+        },
+        ALIASES,
+        'jest'
+      )
+    ).toBe(
+      'package.json maps ^@/(.*)$ with moduleNameMapper in a way settings.importAliases does not name'
+    );
+  });
+
+  it.each([
+    [
+      'more than one target',
+      { compilerOptions: { paths: { '@/*': ['./src/override/*', './src/*'] } } },
+      'tsconfig.json maps @/* with paths in a way settings.importAliases does not name',
+    ],
+    [
+      'a package mapped to a file',
+      { compilerOptions: { paths: { 'left-pad': ['./src/shims/left-pad.ts'] } } },
+      'tsconfig.json maps left-pad with paths in a way settings.importAliases does not name',
+    ],
+  ])('refuses tsconfig paths with %s', (_n, tsconfig, message) => {
+    expect(told({ 'tsconfig.json': tsconfig })).toBe(message);
+  });
+
+  it('refuses a Babel config that maps modules', () => {
+    expect(
+      told({
+        'babel.config.json': { plugins: [['module-resolver', { alias: { '@': './src' } }]] },
+      })
+    ).toBe('babel.config.json maps modules (module-resolver), which cannot be told');
+  });
+});
+
 describe('an import of types only', () => {
   const TYPES = {
     'src/c.ts':

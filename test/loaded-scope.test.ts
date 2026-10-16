@@ -211,6 +211,32 @@ describe('the paths the snapshot follows', () => {
     }
   );
 
+  it('follows every file for a map of the runner config that settings.importAliases does not name', () => {
+    // The shim would not be compared at all: no text names it.
+    const helper = (alias: string) =>
+      "import path from 'node:path';\n" +
+      "import { createVitestGatesConfig } from '@t09tanaka/test-gates/vitest';\n" +
+      `export default createVitestGatesConfig({ resolve: { alias: ${alias} } });\n`;
+    const shimmed = repository({
+      'fee-rules/vitest.gates.config.ts': helper(
+        "{ 'left-pad': path.join(import.meta.dirname, 'src/shims/left-pad.ts') }"
+      ),
+      'fee-rules/src/shims/left-pad.ts': 'export default () => 1;\n',
+    });
+    expect(snapshot(shimmed).followed).toBeNull();
+    const named = repository({
+      'fee-rules/vitest.gates.config.ts': helper(
+        "{ '@': path.resolve(import.meta.dirname, 'src') }"
+      ),
+      'fee-rules/test-gates.json': {
+        gates: [{ path: 'src/fee.ts', decides: 'a fee', impact: 'a wrong fee' }],
+        candidates: [],
+        settings: { importAliases: [{ prefix: '@/', target: 'src/' }] },
+      },
+    });
+    expect(snapshot(named).followed).not.toBeNull();
+  });
+
   it('follows what a component a spec loads imports', () => {
     const root = repository({
       'fee-rules/src/fee.spec.ts': `${H}import { fee } from './fee';\nimport Widget from './Widget.vue';\nit('fee', () => { expect(fee(1) && Widget).toBeTruthy(); });\n`,
