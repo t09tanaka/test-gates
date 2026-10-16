@@ -496,7 +496,9 @@ function guardIncremental(
       }
       return { tests: Object.keys(judged.report.testFiles ?? {}).sort(), gates: recorded };
     } catch (error) {
-      if (error instanceof AffectedError) {
+      // Without --affected the run did not ask for this part: whatever keeps it from being
+      // worked out leaves it out, and the next run with --affected runs every mutant.
+      if (error instanceof AffectedError || !affected) {
         return undefined;
       }
       throw error;
