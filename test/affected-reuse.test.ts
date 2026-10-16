@@ -193,7 +193,8 @@ describe.skipIf(!strykerRuns)('a run without --affected, with a real Stryker', (
     { timeout: 600_000 },
     async () => {
       const dir = fixture();
-      const plain = (args: string[] = [], env: NodeJS.ProcessEnv = {}) =>
+      // Not in CI unless a step says so: a run there writes nothing about the gates.
+      const plain = (args: string[] = [], env: NodeJS.ProcessEnv = { CI: 'false' }) =>
         testGatesAsync(['mutation', '--dir', dir, ...args], env);
       const affected = () => testGatesAsync(['mutation', '--dir', dir, '--affected']);
       let edits = 0;
