@@ -254,9 +254,17 @@ describe('affectedInputs', () => {
       {
         'src/settings.ts':
           "import { vi } from 'vitest';\nimport { join } from 'node:path';\n" +
-          "vi.mock(join(__dirname, 'rates'));\nexport const env = 1;\n",
+          "vi.mock(\n  join(__dirname, 'rates')\n);\nexport const env = 1;\n",
       },
       'src/settings.ts uses __dirname and mock, which can reach files that no import names',
+    ],
+    [
+      'a mock named by a template from __dirname',
+      {
+        'src/settings.ts':
+          "import { vi } from 'vitest';\nvi.mock(`${__dirname}/rates`);\nexport const env = 1;\n",
+      },
+      'src/settings.ts imports ${__dirname}/rates, which is neither a file nor an installed package (name an alias in settings.importAliases)',
     ],
     [
       'a file read with fs',

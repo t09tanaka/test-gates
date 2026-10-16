@@ -424,7 +424,7 @@ export function fileEdges(
         !LOCATION_SAFE.has(bare(specifier))
     );
     if (reads !== null) {
-      found.unknown ??= `${shown(file)} uses ${location[0]} and ${reads[0].replace(/\($/, '')}, which can reach files that no import names`;
+      found.unknown ??= `${shown(file)} uses ${location[0]} and ${reads[0].replace(/\(\s*$/, '')}, which can reach files that no import names`;
     } else if (reader !== undefined) {
       found.unknown ??= `${shown(file)} uses ${location[0]} and imports ${reader}, which can read files by it that no import names`;
     }
