@@ -81,10 +81,12 @@ export function gateDependencies(input: {
   covering: Record<string, string[]>;
   closures: Record<string, string[]>;
 }): Record<string, { specs: string[]; files: string[] }> {
-  const closureOf = (key: string): string[] => input.closures[key] ?? [key];
+  const closureOf = (key: string): string[] =>
+    Object.hasOwn(input.closures, key) ? (input.closures[key] as string[]) : [key];
   const result = Object.create(null) as Record<string, { specs: string[]; files: string[] }>;
   for (const gate of input.gates) {
-    const specs = new Set([...gate.specs, ...(input.covering[gate.key] ?? [])]);
+    const covering = Object.hasOwn(input.covering, gate.key) ? input.covering[gate.key] : [];
+    const specs = new Set([...gate.specs, ...(covering as string[])]);
     for (const test of input.tests) {
       if (closureOf(test).includes(gate.key)) {
         specs.add(test);
@@ -145,7 +147,7 @@ export function planAffected(input: {
   const rerun: GateRerun[] = [];
   const reused: string[] = [];
   for (const gate of input.gates) {
-    const last = recorded.gates[gate.path];
+    const last = Object.hasOwn(recorded.gates, gate.path) ? recorded.gates[gate.path] : undefined;
     if (last === undefined) {
       rerun.push({ gate: gate.path, changed: [] });
       continue;

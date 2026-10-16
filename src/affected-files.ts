@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import { builtinModules } from 'node:module';
 import path from 'node:path';
-import { gateDependencies } from './core/affected.js';
+import { gateDependencies, kindOf } from './core/affected.js';
 import { isProjectImport } from './core/import-policy.js';
 import { findUncheckableImports, parseImports } from './core/imports.js';
 import { installed, QUOTED, resolveFile, RUNNER_LOAD, SCRIPT } from './commands/loaded-files.js';
@@ -271,7 +271,12 @@ export function affectedInputs(
       realpath(path.join(dir, file))
     )
   );
-  for (const file of named.filter((one) => !config.has(one) && !runAsSuch.has(one))) {
+  // A setup file runs in every spec: what it loads is checked as strictly as what a spec loads.
+  // A config it names (one put together from parts) is not.
+  const subprojectKey = toPosix(path.relative(input.root, dir));
+  const isConfig = (file: string): boolean =>
+    input.configs.files.includes(file) || kindOf(keyOf(file), subprojectKey) === 'config';
+  for (const file of named.filter((one) => !isConfig(one) && !runAsSuch.has(one))) {
     for (const loaded of closure(file, true)) {
       const gate = gatePaths.get(loaded);
       if (gate !== undefined) {
