@@ -383,6 +383,7 @@ describe('strykerIgnores', () => {
     expect(ignored(['reports', '.eslintcache'], files)).toEqual(files);
     expect(ignored(['reports', '!reports/keep.json', '.eslintcache'], files)).toEqual([]);
     expect(ignored(['!b.ts', 'a.ts'], ['a.ts'])).toEqual([]);
+    expect(strykerIgnores({ ignorePatterns: ['!b.ts', 'a.ts'] })('a.ts')).toBe(false);
   });
 
   it('tells no case of letters apart, as Stryker does', () => {
