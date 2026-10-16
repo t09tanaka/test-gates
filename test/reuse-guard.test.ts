@@ -558,12 +558,20 @@ describe.each(['git', 'walk'] as const)(
 
       it.each([
         [
-          'a path to a directory that contains the subproject',
-          `export const root = join(__dirname, '${up(2)}');\n`,
+          'a relative path to a directory that contains the subproject',
+          `export const root = readdirSync('${up(2)}');\n`,
         ],
         [
           'a path whose start is not known',
           "export const mapped = '<rootDir>/../pricing-kit/$1';\n",
+        ],
+        [
+          'a way up from a directory that is not the one of the file',
+          `export const top = resolve(base, '${up(1)}');\n`,
+        ],
+        [
+          'a way up from the directory of the file with an unknown part after it',
+          `export const kit = (name: string) => join(__dirname, '${up(2)}', name);\n`,
         ],
       ])('looks at every file of the repository when a file holds %s', (_name, source) => {
         const root = monorepo({ 'fee-rules/src/paths.ts': source });
@@ -581,15 +589,98 @@ describe.each(['git', 'walk'] as const)(
         expect(mutation(sub(root))).toEqual(forcedBy(`${CHANGED}catalog-site/src/listing.ts`));
       });
 
-      it('looks at every file of the repository when the way up is written in separate parts', () => {
+      it.each([
+        [
+          'written in separate parts',
+          'fee-rules/src/nested/load.ts',
+          `export const kit = require(join(__dirname, '${up(1)}', '${up(1)}', '${up(1)}', 'pricing-kit', 'labels'));\n`,
+        ],
+        [
+          'written in one part',
+          'fee-rules/src/load.ts',
+          `export const kit = require(resolve(import.meta.dirname, '${up(2)}/pricing-kit/labels'));\n`,
+        ],
+        [
+          'in a template',
+          'fee-rules/src/load.ts',
+          'export const kit = (name: string) => require(`${__dirname}/' +
+            `${up(2)}/pricing-kit/labels/` +
+            '${name}`);\n',
+        ],
+      ])(
+        'follows a way up from the directory of the file %s, and only that',
+        (_name, file, source) => {
+          const root = monorepo({ [file]: source });
+          mutation(sub(root));
+          write(root, { 'catalog-site/src/listing.ts': 'export const listing = 1;\n' });
+          expect(mutation(sub(root))).toEqual(REUSED);
+          write(root, { 'pricing-kit/labels/label-set.ts': 'export const labels = 1;\n' });
+          expect(mutation(sub(root))).toEqual(
+            forcedBy(`${CHANGED}pricing-kit/labels/label-set.ts`)
+          );
+        }
+      );
+
+      it.each([
+        [
+          'the subproject itself, in a template',
+          'fee-rules/scripts/run.js',
+          '`${__dirname}/' + `${up(1)}` + '`',
+        ],
+        [
+          'the subproject itself, as separate parts',
+          'fee-rules/src/nested/run.ts',
+          `join(__dirname, '${up(1)}', '${up(1)}')`,
+        ],
+        [
+          'the directory above the subproject',
+          'fee-rules/paths.cjs',
+          `path.resolve(__dirname, '${up(1)}')`,
+        ],
+      ])(
+        'compares no more when a way up from the directory of the file leads to %s',
+        (_name, file, expression) => {
+          const root = monorepo({ [file]: `module.exports = ${expression};\n` });
+          mutation(sub(root));
+          write(root, { 'catalog-site/src/listing.ts': 'export const listing = 1;\n' });
+          expect(mutation(sub(root))).toEqual(REUSED);
+          // What is directly in the directory above is compared, as it always is.
+          write(root, { 'tsconfig.base.json': { changed: true } });
+          expect(mutation(sub(root))).toEqual(forcedBy(`${CHANGED}tsconfig.base.json`));
+        }
+      );
+
+      it('compares no more when an import leads up to a file at the top of the subproject', () => {
         const root = monorepo({
-          'fee-rules/src/nested/load.ts':
-            "export const kit = require(join(__dirname, '..', '..', '..', 'pricing-kit', 'labels'));\n",
+          'fee-rules/helper.ts': 'export const helper = 1;\n',
+          'fee-rules/src/nested/use.ts': `export { helper } from '${up(2)}/helper';\n`,
         });
         mutation(sub(root));
-        write(root, { 'pricing-kit/labels/label-set.ts': 'export const labels = 1;\n' });
-        expect(mutation(sub(root))).toEqual(forcedBy(`${CHANGED}pricing-kit/labels/label-set.ts`));
+        write(root, { 'catalog-site/src/listing.ts': 'export const listing = 1;\n' });
+        expect(mutation(sub(root))).toEqual(REUSED);
+        write(root, { 'fee-rules/helper.ts': 'export const helper = 2;\n' });
+        expect(mutation(sub(root))).toEqual(forcedBy(`${CHANGED}fee-rules/helper.ts`));
       });
+
+      it.each([
+        ['NOTES.md', 'reuses'],
+        ['notes.txt', 'reuses'],
+        ['notes.ts', 'does not reuse'],
+      ])(
+        'compares %s but follows no path in it unless it is code: %s after a change elsewhere',
+        (name, outcome) => {
+          const file = `fee-rules/${name}`;
+          const text = `Run it from '${up(1)}', or read('${up(1)}/catalog-site').\n`;
+          const root = monorepo({ [file]: text });
+          mutation(sub(root));
+          write(root, { 'catalog-site/src/listing.ts': 'export const listing = 1;\n' });
+          expect(mutation(sub(root))).toEqual(
+            outcome === 'reuses' ? REUSED : forcedBy(`${CHANGED}catalog-site/src/listing.ts`)
+          );
+          write(root, { [file]: `${text}More.\n` });
+          expect(mutation(sub(root))).toEqual(forcedBy(`${CHANGED}${file}`));
+        }
+      );
 
       it('follows the fixed part of a path with a placeholder', () => {
         const root = monorepo({
@@ -642,7 +733,7 @@ describe.each(['git', 'walk'] as const)(
         mutation(sub(root));
         expect(fs.existsSync(path.join(sub(root), RECORD))).toBe(false);
         expect(mutation(sub(root)).reason).toMatch(
-          /^the files the run depends on could not be listed \(src\/paths\.ts points outside of what can be listed \(/
+          /^the files the run depends on could not be listed \(src\/paths\.ts points outside of what can be listed with "__dirname, '\.\.\/\.\.\/\.\.'" \(/
         );
         expect(fs.existsSync(path.join(sub(root), RECORD))).toBe(false);
       });

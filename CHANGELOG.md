@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- `test-gates mutation` compares fewer files outside the subproject before it reuses the results of the last run, so that a change elsewhere in a repository no longer turns every run into a full one:
+  - A path that leads up from a file and back into the subproject (`'../helper'` from `src/` to a file at the top of the subproject) no longer makes every file of the repository part of the comparison. It was taken for a path to a directory above the subproject.
+  - A path that starts at the directory of its own file is followed: `` `${__dirname}/../shared` ``, and `__dirname, '..', 'shared'` handed to `path.join` or `path.resolve` (also with `import.meta.dirname`). Before, every file of the repository was compared. When such a path ends in a directory above the subproject, only the files directly in it are compared, as they always are; when an unknown part follows it (`join(__dirname, '..', name)`), every file still is.
+  - Paths in `.md`, `.markdown`, `.txt`, `.rst` and `.adoc` files are no longer followed. The files themselves are still compared.
+  - A plain relative path to a file or a directory above the subproject (`'../tsconfig.base.json'`), a path whose start is not known, and `'..'` after anything but the directory of the file still make every file of the repository part of the comparison.
+- When a path leads outside of the repository and the results are therefore not reused, the message names the path as it is written, next to the file it is in.
+
 ## 0.3.4
 
 One change of behaviour: `test-gates mutation` no longer lets Stryker reuse old results after a change. The rest is new options of `selfcheck`; without them it runs as before.
