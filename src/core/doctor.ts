@@ -25,6 +25,8 @@ export interface DoctorFacts {
   scope: { files: number } | { every: string } | null;
   /** Hooks that run a mutation run of this subproject. */
   hooks: HookUse[];
+  /** Why --affected cannot tell what a gate depends on, or null. */
+  blind: string | null;
 }
 
 export interface Finding {
@@ -71,6 +73,14 @@ export function diagnose(facts: DoctorFacts): Finding[] {
       fix: 'write such a path from the directory of its file (path.resolve(__dirname, …)) so that it can be followed, or keep it out of the files the run loads',
     });
   }
+  if (facts.blind !== null) {
+    // A problem where a hook relies on --affected; else only worth knowing.
+    findings.push({
+      level: facts.hooks.some((hook) => hook.affected) ? 'problem' : 'note',
+      text: `with --affected, a change of any file runs every mutant: what a gate depends on cannot be told (${facts.blind})`,
+      fix: 'keep what reads files or loads modules by a computed name out of what the gates and their specs import, or run without --affected',
+    });
+  }
   if (facts.scope !== null && 'every' in facts.scope) {
     findings.push({
       level: 'note',
@@ -87,7 +97,8 @@ export function diagnose(facts: DoctorFacts): Finding[] {
       fix: null,
     });
   }
-  for (const hook of facts.hooks.filter((one) => !one.affected)) {
+  // --affected does not help where it cannot tell the gates apart.
+  for (const hook of facts.hooks.filter((one) => !one.affected && facts.blind === null)) {
     findings.push({
       level: 'problem',
       text: `${hook.file} runs test-gates mutation without --affected: a change of any file of the subproject runs every mutant`,

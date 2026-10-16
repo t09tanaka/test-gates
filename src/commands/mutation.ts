@@ -153,6 +153,11 @@ export interface ReuseDecision {
   last: AffectedRecord | undefined;
   /** Whether --affected is refused here (CI), and why. */
   ci: string | null;
+  /**
+   * With --affected: why the gates could not be told apart, when nothing at all changed since the
+   * last run, so that every result is reused as without the option.
+   */
+  unchanged: string | null;
   configs: () => ReturnType<typeof runnerConfigs>;
 }
 
@@ -190,6 +195,7 @@ export function decideReuse(
     plan: null,
     last: undefined,
     ci: affected ? affectedRefused(process.env) : null,
+    unchanged: null,
     configs,
   };
   if (loaded !== undefined && !options.incremental) {
@@ -301,7 +307,14 @@ export function decideReuse(
           plan = { full: `what a gate depends on cannot be told: ${error.message}` };
         }
         if ('full' in plan) {
-          force = plan.full;
+          // What cannot be told gate by gate may still be told for the run as a whole: when
+          // nothing at all changed, every result is reused, as without --affected.
+          if (refuseReuse({ record: stored, incremental, snapshot }) === null) {
+            decision.unchanged = plan.full;
+            plan = null;
+          } else {
+            force = plan.full;
+          }
         }
       }
     }
@@ -382,6 +395,13 @@ function guardIncremental(
       said = describePlan({ full: force });
     } else if (plan !== null) {
       said = describePlan(plan, 5, ranges.length);
+    } else if (decision.unchanged !== null) {
+      said = [
+        `test-gates mutation --affected: nothing changed since the last run, every result is reused (gate by gate, ${decision.unchanged.replace(/^what a gate/, 'what each gate')})`,
+        ...(ranges.length > 0
+          ? [`  and ${ranges.length} mutant(s) that timed out in the last run are run again`]
+          : []),
+      ];
     }
   } else if (ranges.length > 0) {
     said = [

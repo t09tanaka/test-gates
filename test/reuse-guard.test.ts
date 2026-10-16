@@ -481,6 +481,20 @@ describe.each(['git', 'walk'] as const)(
       expect(mutation(dir)).toEqual(forcedBy(`${CHANGED}${name}`));
     });
 
+    it('reuses every result with --affected after no change, where it cannot tell the gates apart', () => {
+      // The stand-in's config names no test runner: what a gate depends on cannot be told.
+      const dir = fresh();
+      expect(mutation(dir, '--affected').forced).toBe(true);
+      const again = testGates(['mutation', '--dir', dir, '--affected']);
+      expect(again.stdout).toContain(
+        'test-gates mutation --affected: nothing changed since the last run, every result is reused (gate by gate, what each gate depends on cannot be told:'
+      );
+      expect(mutation(dir, '--affected')).toEqual({ ...REUSED, args: REUSED.args });
+      write(dir, { 'src/age.spec.ts': `${SPEC_SOURCE}// a comment\n` });
+      const changed = mutation(dir, '--affected');
+      expect(changed.forced).toBe(true);
+    });
+
     it('does not look at what the run itself writes', () => {
       const dir = fresh();
       mutation(dir);

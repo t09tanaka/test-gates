@@ -36,6 +36,7 @@ function repository(files: Record<string, string | object> = {}): string {
     '.gitignore': 'node_modules\nreports\n.stryker-tmp\n',
     'package.json': { name: 'root', private: true, workspaces: ['fee-rules'] },
     'catalog-site/src/listing.ts': 'export const listing = 1;\n',
+    'node_modules/vitest/package.json': '{ "name": "vitest" }',
     '.husky/pre-push': 'cd fee-rules && npm run test:gates:mutation\n',
     'fee-rules/package.json': {
       name: 'fee-rules',
@@ -128,6 +129,31 @@ describe('test-gates doctor', () => {
     );
     expect(result.stdout).toContain('test-gates doctor: OK');
     expect(result.status).toBe(0);
+  });
+
+  it('names what keeps --affected from telling the gates apart, instead of asking for it', () => {
+    const blind = {
+      'fee-rules/src/fee.spec.ts':
+        "import { expect, it } from 'vitest';\nimport { fee } from './fee';\nimport { cases } from './cases';\nit('fee', () => { expect(fee(cases.length)).toBeGreaterThan(0); });\n",
+      'fee-rules/src/cases.ts':
+        "import { readdirSync } from 'node:fs';\nexport const cases = readdirSync(new URL('.', import.meta.url));\n",
+    };
+    const without = doctor(repository(blind));
+    expect(without.stdout).toContain(
+      'note: with --affected, a change of any file runs every mutant: what a gate depends on cannot be told (src/cases.ts'
+    );
+    expect(without.stdout).not.toContain('runs test-gates mutation without --affected');
+    expect(without.status).toBe(0);
+    const relying = doctor(
+      repository({
+        ...blind,
+        '.husky/pre-push': 'cd fee-rules && npx test-gates mutation --affected\n',
+      })
+    );
+    expect(relying.stdout).toContain(
+      'problem: with --affected, a change of any file runs every mutant'
+    );
+    expect(relying.status).toBe(1);
   });
 
   it('names a Stryker config that sets force', () => {
