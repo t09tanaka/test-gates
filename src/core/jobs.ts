@@ -119,6 +119,7 @@ const REACHES = [
 // A module that is named by an expression cannot be followed, and neither can `require` once it
 // is handed on under another name.
 const COMPUTED_LOAD = /(?:require|import)\((?!['"])|\brequire(?!\(|\.resolve\b|[\w$])/;
+const COMPUTED = 'loads a module whose name is computed';
 const RUNNER_PACKAGES = ['vitest', '@jest/globals'];
 
 /**
@@ -138,7 +139,7 @@ export function reachesOutside(file: LoadedFile, trusted: string[]): string | nu
     return `uses ${mark.replace(/[.?[(:]+$/, '')}`;
   }
   if (COMPUTED_LOAD.test(dense)) {
-    return 'loads a module whose name is computed';
+    return COMPUTED;
   }
   for (const { specifier, builtin } of file.imports) {
     // Also one that only computes: with Jest the spec files of a worker share the objects of
@@ -220,57 +221,59 @@ export interface LoadRoot {
  * @param input.gates The controls to run: the path of each gate and of its spec.
  * @param input.files Every file of the roots (see LoadedFile).
  * @param input.trusted Packages the project vouches for (see reachesOutside).
- * @returns `alone`: each control that runs on its own, in the order of `gates`, with a line for
- *   every root that keeps it from running next to others.
+ * @returns `alone`: the controls that run on their own, in the order of `gates`. `causes`: for
+ *   every root that keeps controls from running next to others, which ones and why, in the
+ *   order of `roots`.
  */
 export function jobsPlan(input: {
   gates: { path: string; spec: string }[];
   files: LoadedFile[];
   roots: LoadRoot[];
   trusted: string[];
-}): { atOnce: string[]; alone: { gate: string; reasons: string[] }[] } {
+}): { atOnce: string[]; alone: string[]; causes: { gates: string[]; reason: string }[] } {
   const byPath = new Map(input.files.map((file) => [file.path, file]));
-  const roots = input.roots.map((root) => {
+  const causes = input.roots.flatMap((root) => {
     const loaded = root.files.flatMap((name) => {
       const file = byPath.get(name);
       return file === undefined ? [] : [file];
     });
+    let computed = false;
     const reaches = loaded.flatMap((file) => {
       const reach = reachesOutside(file, input.trusted);
-      return reach === null ? [] : [`${file.path} ${reach}`];
+      const said = reach === null ? [] : [`${file.path} ${reach}`];
+      if (!COMPUTED_LOAD.test(file.source.replace(/\s/g, ''))) {
+        return said;
+      }
+      computed = true;
+      // (said first when the file also uses something of REACHES)
+      return reach === COMPUTED ? said : [...said, `${file.path} ${COMPUTED}`];
     });
-    const unknown =
-      root.lost !== null ||
-      loaded.some((file) => COMPUTED_LOAD.test(file.source.replace(/\s/g, '')));
-    return {
-      ...root,
-      unknown,
-      reasons: [...(root.lost === null ? [] : [`${root.lost} cannot be followed`]), ...reaches],
-    };
-  });
-  const atOnce: string[] = [];
-  const alone: { gate: string; reasons: string[] }[] = [];
-  for (const gate of input.gates) {
-    const reasons = roots.flatMap((root) => {
-      if (root.reasons.length === 0 || root.spec === gate.spec) {
-        return [];
-      }
-      const what = root.reasons.join('; ');
-      if (root.spec === null) {
-        return [`the gate config names files that run with every spec, and ${what}`];
-      }
-      if (root.files.includes(gate.path)) {
-        return [`${root.spec} loads it, and ${what}`];
-      }
-      return root.unknown ? [`${root.spec} may load it, and ${what}`] : [];
-    });
+    const reasons = [
+      ...(root.lost === null ? [] : [`${root.lost} cannot be followed`]),
+      ...reaches,
+    ];
     if (reasons.length === 0) {
-      atOnce.push(gate.path);
-    } else {
-      alone.push({ gate: gate.path, reasons });
+      return [];
     }
-  }
-  return { atOnce, alone };
+    // What the gate config names runs with every spec, and a spec of which not all that it loads
+    // is known may load any gate.
+    const any = root.spec === null || root.lost !== null || computed;
+    const gates = input.gates
+      .filter((gate) => gate.spec !== root.spec && (any || root.files.includes(gate.path)))
+      .map((gate) => gate.path);
+    const by =
+      root.spec === null
+        ? 'run with what the gate config names'
+        : `${any ? 'maybe loaded' : 'loaded'} by ${root.spec}`;
+    return gates.length === 0 ? [] : [{ gates, reason: `${by}, in which ${reasons.join('; ')}` }];
+  });
+  const kept = new Set(causes.flatMap((cause) => cause.gates));
+  const paths = input.gates.map((gate) => gate.path);
+  return {
+    atOnce: paths.filter((gate) => !kept.has(gate)),
+    alone: paths.filter((gate) => kept.has(gate)),
+    causes,
+  };
 }
 
 // Words a gate run prints when something went wrong besides a threshold (a failed, skipped or

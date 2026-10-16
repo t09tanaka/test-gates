@@ -1370,7 +1370,7 @@ describe('test-gates selfcheck', () => {
       /** What is printed first when the controls of `gates` run on their own, and why. */
       const SOME_ALONE = (gates: string[], reason: string) =>
         `test-gates selfcheck: ${gates.length} of 5 negative control(s) run one at a time, since in their runs something that loads the gate also loads a file that may meet what another run is doing:\n` +
-        gates.map((gate) => `  src/${gate}.ts: ${reason}\n`).join('');
+        `  ${gates.map((gate) => `src/${gate}.ts`).join(', ')}: ${reason}\n`;
       /** The runs: those next to others first, then those on their own in the order of the gates. */
       const split = (gates: string[]) => {
         const others = names.filter((name) => !gates.includes(name));
@@ -1392,7 +1392,7 @@ describe('test-gates selfcheck', () => {
       };
       // The spec of src/fee.ts also loads src/tax.ts, and with it a file that reaches outside.
       const LOADS_TAX = "import './tax';\n";
-      const loads = (what: string) => `src/fee.spec.ts loads it, and ${what}`;
+      const loads = (what: string) => `loaded by src/fee.spec.ts, in which ${what}`;
 
       it.each<[string, Record<string, string | object>, string]>([
         [
@@ -1558,8 +1558,7 @@ describe('test-gates selfcheck', () => {
       ])('runs every control on its own for %s that reaches outside', (_name, files, reason) => {
         const dir = asVitest(files);
         expect(testGates(['selfcheck', '--jobs', '4', '--dir', dir]).stdout).toBe(
-          SOME_ALONE(names, `the gate config names files that run with every spec, and ${reason}`) +
-            OK
+          SOME_ALONE(names, `run with what the gate config names, in which ${reason}`) + OK
         );
         expect(runs(dir)).toEqual(alone);
       });
@@ -1586,7 +1585,7 @@ describe('test-gates selfcheck', () => {
           const dir = asVitest(files);
           const others = names.filter((name) => name !== 'fee');
           expect(testGates(['selfcheck', '--jobs', '4', '--dir', dir]).stdout).toBe(
-            SOME_ALONE(others, `src/fee.spec.ts may load it, and ${reason}`) + OK
+            SOME_ALONE(others, `maybe loaded by src/fee.spec.ts, in which ${reason}`) + OK
           );
           // The control of src/fee.ts leaves that spec out, but is the only one left.
           expect(runs(dir)).toEqual(alone);

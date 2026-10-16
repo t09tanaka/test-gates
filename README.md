@@ -460,11 +460,11 @@ A spec that reaches outside but loads no other gate, which is what the spec of a
 - imports a package other than the runner's (`vitest`, `@jest/globals`). Packages are not looked into. With `settings.imports.mode: "allowlist"`, the packages that `settings.imports.allow` lists by name are taken too: the project already vouches for them as imports of a gate,
 - loads a module whose name is computed.
 
-The controls kept apart run one at a time after the others, and the first lines name every one of them, with a line for each spec (or the gate config) that keeps it apart and every file of that spec that reaches outside:
+The controls kept apart run one at a time after the others. The first lines name every one of them: a line for each spec (or the gate config) that keeps controls apart, with the gates whose controls it keeps apart and every file of it that reaches outside:
 
 ```
-test-gates selfcheck: 1 of 30 negative control(s) run one at a time, since in their runs something that loads the gate also loads a file that may meet what another run is doing:
-  src/tax.ts: src/fee.spec.ts loads it, and src/support/lock.ts imports node:fs
+test-gates selfcheck: 2 of 30 negative control(s) run one at a time, since in their runs something that loads the gate also loads a file that may meet what another run is doing:
+  src/tax.ts, src/age.ts: loaded by src/fee.spec.ts, in which src/support/lock.ts imports node:fs
 ```
 
 Every control runs on its own, and the first line says why, when the gate command is anything but `jest` or `vitest run` with `--config` and options for the number of workers (`--runInBand`, `-i`, `--ci`, `--maxWorkers`, `-w` for Jest; `--no-file-parallelism`, `--fileParallelism=false`, `--maxWorkers`, `--minWorkers`, `--pool=forks`, `--pool=threads` for Vitest), when the gate config does not use the helper, and with `settings.selfcheck.failurePattern`:

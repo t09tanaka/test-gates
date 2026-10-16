@@ -332,7 +332,8 @@ describe('jobsPlan', () => {
     roots: Parameters<typeof jobsPlan>[0]['roots'],
     changes: Partial<Parameters<typeof jobsPlan>[0]> = {}
   ) => jobsPlan({ gates, files, roots, trusted: [], ...changes });
-  const ALL = { atOnce: ['src/fee.ts', 'src/tax.ts', 'src/age.ts'], alone: [] };
+  const ALL = { atOnce: ['src/fee.ts', 'src/tax.ts', 'src/age.ts'], alone: [], causes: [] };
+  const LOCK = 'src/support/lock.ts imports node:fs';
 
   it('lets every control of specs that only call their own gate run next to others', () => {
     expect(plan(quiet)).toEqual(ALL);
@@ -350,70 +351,64 @@ describe('jobsPlan', () => {
     expect(plan(roots)).toEqual(ALL);
   });
 
-  it('runs the control of a gate on its own when another spec that loads it reaches outside', () => {
+  it('runs on their own the controls of the gates that another spec reaching outside loads', () => {
     const roots = [
       ...quiet.slice(0, 3),
       root('src/age.spec.ts', [
         'src/age.spec.ts',
+        'src/tax.ts',
         'src/age.ts',
         'src/support/lock.ts',
         'src/fee.ts',
       ]),
     ];
     expect(plan(roots)).toEqual({
-      atOnce: ['src/tax.ts', 'src/age.ts'],
-      alone: [
+      atOnce: ['src/age.ts'],
+      alone: ['src/fee.ts', 'src/tax.ts'],
+      causes: [
         {
-          gate: 'src/fee.ts',
-          reasons: ['src/age.spec.ts loads it, and src/support/lock.ts imports node:fs'],
+          gates: ['src/fee.ts', 'src/tax.ts'],
+          reason: `loaded by src/age.spec.ts, in which ${LOCK}`,
         },
       ],
     });
   });
 
-  it('gives every reason for a control, each spec on a line of its own', () => {
+  it('gives every spec that keeps a control apart, and every file that reaches outside in it', () => {
     const roots = [
       root(null, []),
       root('src/fee.spec.ts', ['src/fee.spec.ts', 'src/fee.ts']),
       root('src/tax.spec.ts', ['src/tax.spec.ts', 'src/fee.ts', 'src/support/lock.ts']),
-      root('src/age.spec.ts', ['src/age.spec.ts', 'src/fee.ts', 'src/late.ts']),
+      root('src/age.spec.ts', ['src/age.spec.ts', 'src/fee.ts', 'src/late.ts', 'src/x.ts']),
     ];
     const late = at('src/late.ts', 'Date.now(); setTimeout(() => {});', FS);
-    expect(plan(roots, { files: [...files, late] }).alone).toEqual([
-      {
-        gate: 'src/fee.ts',
-        reasons: [
-          'src/tax.spec.ts loads it, and src/support/lock.ts imports node:fs',
-          'src/age.spec.ts loads it, and src/late.ts uses Date.now',
-        ],
-      },
-    ]);
-  });
-
-  it('names every file of a spec that reaches outside', () => {
-    const roots = [
-      ...quiet.slice(0, 3),
-      root('src/age.spec.ts', ['src/age.spec.ts', 'src/support/lock.ts', 'src/tax.ts', 'src/x.ts']),
-    ];
     const x = at('src/x.ts', 'globalThis.x = 1;');
-    expect(plan(roots, { files: [...files, x] }).alone).toEqual([
-      {
-        gate: 'src/tax.ts',
-        reasons: [
-          'src/age.spec.ts loads it, and src/support/lock.ts imports node:fs; src/x.ts uses globalThis',
-        ],
-      },
-    ]);
+    expect(plan(roots, { files: [...files, late, x] })).toEqual({
+      atOnce: ['src/tax.ts', 'src/age.ts'],
+      alone: ['src/fee.ts'],
+      causes: [
+        { gates: ['src/fee.ts'], reason: `loaded by src/tax.spec.ts, in which ${LOCK}` },
+        {
+          gates: ['src/fee.ts'],
+          reason:
+            'loaded by src/age.spec.ts, in which src/late.ts uses Date.now; src/x.ts uses globalThis',
+        },
+      ],
+    });
   });
 
   it('runs every control on its own when a file the gate config names reaches outside', () => {
     const roots = [root(null, ['test/setup.ts']), ...quiet.slice(1)];
     const setup = at('test/setup.ts', 'process.env.TZ = "UTC";');
-    const reason =
-      'the gate config names files that run with every spec, and test/setup.ts uses process';
     expect(plan(roots, { files: [...files, setup] })).toEqual({
       atOnce: [],
-      alone: gates.map((gate) => ({ gate: gate.path, reasons: [reason] })),
+      alone: ['src/fee.ts', 'src/tax.ts', 'src/age.ts'],
+      causes: [
+        {
+          gates: ['src/fee.ts', 'src/tax.ts', 'src/age.ts'],
+          reason: 'run with what the gate config names, in which test/setup.ts uses process',
+        },
+      ],
     });
     // A setup file that only computes, and one that loads a gate, keep nothing apart.
     const quietSetup = at('test/setup.ts', "import { fee } from '../src/fee';");
@@ -427,34 +422,48 @@ describe('jobsPlan', () => {
   it('runs every other control on its own when what a spec loads cannot be followed', () => {
     const lost = './gone (imported by src/age.spec.ts)';
     const roots = [...quiet.slice(0, 3), root('src/age.spec.ts', ['src/age.spec.ts'], lost)];
-    const reason = `src/age.spec.ts may load it, and ${lost} cannot be followed`;
     expect(plan(roots)).toEqual({
       atOnce: ['src/age.ts'],
-      alone: [
-        { gate: 'src/fee.ts', reasons: [reason] },
-        { gate: 'src/tax.ts', reasons: [reason] },
+      alone: ['src/fee.ts', 'src/tax.ts'],
+      causes: [
+        {
+          gates: ['src/fee.ts', 'src/tax.ts'],
+          reason: `maybe loaded by src/age.spec.ts, in which ${lost} cannot be followed`,
+        },
       ],
     });
     // In the files the gate config names: every control.
-    expect(plan([root(null, [], lost), ...quiet.slice(1)]).atOnce).toEqual([]);
+    expect(plan([root(null, [], lost), ...quiet.slice(1)]).causes).toEqual([
+      {
+        gates: ['src/fee.ts', 'src/tax.ts', 'src/age.ts'],
+        reason: `run with what the gate config names, in which ${lost} cannot be followed`,
+      },
+    ]);
   });
 
   it('runs every other control on its own when a spec loads a module whose name is computed', () => {
-    const computed = at('src/load.ts', 'Date.now(); const x = require(name);');
     const roots = [
       ...quiet.slice(0, 3),
       root('src/age.spec.ts', ['src/age.spec.ts', 'src/age.ts', 'src/load.ts']),
     ];
-    expect(plan(roots, { files: [...files, computed] })).toEqual({
-      atOnce: ['src/age.ts'],
-      alone: ['src/fee.ts', 'src/tax.ts'].map((gate) => ({
-        gate,
-        reasons: ['src/age.spec.ts may load it, and src/load.ts uses Date.now'],
-      })),
-    });
-    // With whitespace in the call.
-    const spaced = at('src/load.ts', 'const x = require (\n name);');
-    expect(plan(roots, { files: [...files, spaced] }).atOnce).toEqual(['src/age.ts']);
+    const cause = (source: string) =>
+      plan(roots, { files: [...files, at('src/load.ts', source)] }).causes;
+    const gates = ['src/fee.ts', 'src/tax.ts'];
+    expect(cause('const x = require(name);')).toEqual([
+      {
+        gates,
+        reason:
+          'maybe loaded by src/age.spec.ts, in which src/load.ts loads a module whose name is computed',
+      },
+    ]);
+    // Said also when the file uses something else first.
+    expect(cause('Date.now(); const x = require (\n name);')).toEqual([
+      {
+        gates,
+        reason:
+          'maybe loaded by src/age.spec.ts, in which src/load.ts uses Date.now; src/load.ts loads a module whose name is computed',
+      },
+    ]);
   });
 
   it('does not count a spec that the gate shares with the control', () => {
@@ -475,6 +484,7 @@ describe('jobsPlan', () => {
     expect(plan(roots, { gates: shared })).toEqual({
       atOnce: ['src/fee.ts', 'src/tax.ts'],
       alone: [],
+      causes: [],
     });
   });
 
@@ -484,12 +494,11 @@ describe('jobsPlan', () => {
       ...quiet.slice(0, 3),
       root('src/age.spec.ts', ['src/age.spec.ts', 'src/schema.ts', 'src/fee.ts', 'src/unread.ts']),
     ];
-    expect(plan(roots, { files: [...files, zod] }).alone).toEqual([
+    expect(plan(roots, { files: [...files, zod] }).causes).toEqual([
       {
-        gate: 'src/fee.ts',
-        reasons: [
-          'src/age.spec.ts loads it, and src/schema.ts imports the package zod, which is not looked into',
-        ],
+        gates: ['src/fee.ts'],
+        reason:
+          'loaded by src/age.spec.ts, in which src/schema.ts imports the package zod, which is not looked into',
       },
     ]);
     expect(plan(roots, { files: [...files, zod], trusted: ['zod'] })).toEqual(ALL);

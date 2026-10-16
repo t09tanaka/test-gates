@@ -494,7 +494,7 @@ export function jobsTests(only: 'vitest' | 'jest'): void {
         const said = atOnce.stdout.split('\n');
         expect(said.slice(0, 2)).toEqual([
           'test-gates selfcheck: 1 of 5 negative control(s) run one at a time, since in their runs something that loads the gate also loads a file that may meet what another run is doing:',
-          `  ${src('watched')}: src/three.spec.${dialect.ext} loads it, and src/three.spec.${dialect.ext} imports node:fs`,
+          `  ${src('watched')}: loaded by src/three.spec.${dialect.ext}, in which src/three.spec.${dialect.ext} imports node:fs`,
         ]);
         // The four others ran next to each other. The control of `covered` did not hold there,
         // so it ran again on its own, and that run is the one reported.

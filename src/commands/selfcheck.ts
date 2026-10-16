@@ -390,10 +390,8 @@ export async function runSelfcheck(
         io.out(
           `test-gates selfcheck: ${plan.alone.length} of ${waiting.length} negative control(s) run one at a time, since in their runs something that loads the gate also loads a file that may meet what another run is doing:`
         );
-        for (const { gate, reasons } of plan.alone) {
-          for (const reason of reasons) {
-            io.out(`  ${gate}: ${reason}`);
-          }
+        for (const { gates, reason } of plan.causes) {
+          io.out(`  ${gates.join(', ')}: ${reason}`);
         }
       }
       const atOnce = waiting.filter((gate) => plan.atOnce.includes(gate.path));
