@@ -8,7 +8,7 @@ import {
   COMPONENT,
   installed,
   QUOTED,
-  resolveFile,
+  resolveFiles,
   RUNNER_LOAD,
   SCRIPT,
 } from './commands/loaded-files.js';
@@ -328,14 +328,14 @@ export function fileEdges(
     return known;
   }
   const shown = (one: string): string => toPosix(path.relative(dir, one));
-  const target = (specifier: string, from: string): string | null => {
+  const target = (specifier: string, from: string): string[] => {
     if (specifier.startsWith('.')) {
-      return resolveFile(path.resolve(path.dirname(from), specifier));
+      return resolveFiles(path.resolve(path.dirname(from), specifier));
     }
     const alias = aliases.find((candidate) => specifier.startsWith(candidate.prefix));
     return alias === undefined
-      ? null
-      : resolveFile(path.resolve(dir, alias.target + specifier.slice(alias.prefix.length)));
+      ? []
+      : resolveFiles(path.resolve(dir, alias.target + specifier.slice(alias.prefix.length)));
   };
   const found: Edges = { loads: [], unknown: null, computed: false, unnamed: [] };
   cache.set(file, found);
@@ -385,20 +385,20 @@ export function fileEdges(
   );
   for (const specifier of specifiers) {
     if (path.isAbsolute(specifier) || specifier.startsWith('file:')) {
-      const resolved = resolveFile(
+      const resolved = resolveFiles(
         specifier.startsWith('file:') ? new URL(specifier).pathname : specifier
       );
-      if (resolved === null) {
+      if (resolved.length === 0) {
         found.unknown ??= `${shown(file)} imports ${specifier}, which leads to no file`;
       } else {
-        found.loads.push(realpath(resolved));
+        found.loads.push(...resolved.map(realpath));
       }
     } else if (isProjectImport(specifier, aliases)) {
       const resolved = target(specifier, file);
-      if (resolved === null) {
+      if (resolved.length === 0) {
         found.unknown ??= `${shown(file)} imports ${specifier}, which leads to no file`;
       } else {
-        found.loads.push(realpath(resolved));
+        found.loads.push(...resolved.map(realpath));
       }
     } else if (FILE_MODULES.has(bare(specifier))) {
       found.unknown ??= `${shown(file)} imports ${specifier}, which can reach files that no import names`;
@@ -433,10 +433,7 @@ export function fileEdges(
   for (const match of source.matchAll(QUOTED)) {
     const text = match[2] as string;
     if (text.startsWith('.') && !specifiers.has(text) && !typesOnly.has(text)) {
-      const resolved = resolveFile(path.resolve(path.dirname(file), text));
-      if (resolved !== null) {
-        found.loads.push(realpath(resolved));
-      }
+      found.loads.push(...resolveFiles(path.resolve(path.dirname(file), text)).map(realpath));
     }
   }
   return found;
@@ -553,22 +550,24 @@ export function affectedInputs(
       }
       for (const match of fs.readFileSync(loaded, 'utf8').matchAll(QUOTED)) {
         const text = (match[2] as string).replace(/^<rootDir>\//, '');
-        const found =
-          resolveFile(path.resolve(path.dirname(loaded), text), false, false) ??
-          resolveFile(path.resolve(dir, text), false, false);
-        if (found === null || text.includes('*') || !isCompared(found)) {
-          continue;
-        }
-        if (SCRIPT.test(found)) {
-          // A setup file, an environment, a reporter: run for every spec.
-          named.push(realpath(found));
-        } else {
-          // Not run, but maybe read for every spec (`moduleNameMapper` to a JSON or a stub), or
-          // not at all (`coverage.exclude: ['src/Widget.vue']`). Either way a change of it
-          // reruns every gate. What a component imports is not followed from here: it is not
-          // run for every spec, and it cannot stop the gates from being told apart, as it would
-          // when followed as strictly as a setup file.
-          config.add(realpath(found));
+        const here = resolveFiles(path.resolve(path.dirname(loaded), text), false, false);
+        const candidates =
+          here.length > 0 ? here : resolveFiles(path.resolve(dir, text), false, false);
+        for (const found of candidates) {
+          if (text.includes('*') || !isCompared(found)) {
+            continue;
+          }
+          if (SCRIPT.test(found)) {
+            // A setup file, an environment, a reporter: run for every spec.
+            named.push(realpath(found));
+          } else {
+            // Not run, but maybe read for every spec (`moduleNameMapper` to a JSON or a stub), or
+            // not at all (`coverage.exclude: ['src/Widget.vue']`). Either way a change of it
+            // reruns every gate. What a component imports is not followed from here: it is not
+            // run for every spec, and it cannot stop the gates from being told apart, as it would
+            // when followed as strictly as a setup file.
+            config.add(realpath(found));
+          }
         }
       }
     }
@@ -804,15 +803,14 @@ export function loadedScope(
     if (naming.has(file) || (SCRIPT.test(file) && path.dirname(file) === dir)) {
       for (const named of namedIn(file)) {
         const text = named.replace(/^<rootDir>\//, '');
-        const found =
-          resolveFile(path.resolve(path.dirname(file), text), false) ??
-          resolveFile(path.resolve(dir, text), false);
-        if (found !== null && !text.includes('*')) {
+        const here = resolveFiles(path.resolve(path.dirname(file), text), false);
+        const found = here.length > 0 ? here : resolveFiles(path.resolve(dir, text), false);
+        for (const one of text.includes('*') ? [] : found) {
           // `"extends": "./config/tsconfig.shared.json"` names a file that names others.
-          if (!SCRIPT.test(found)) {
-            naming.add(realpath(found));
+          if (!SCRIPT.test(one)) {
+            naming.add(realpath(one));
           }
-          add(found);
+          add(one);
         }
       }
     }

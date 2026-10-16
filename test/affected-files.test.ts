@@ -197,6 +197,24 @@ describe('affectedInputs', () => {
     ]);
   });
 
+  it.each([
+    ['without an extension', './rate'],
+    ['with .js', './rate.js'],
+  ])('follows a script and a TypeScript file of one name, imported %s', (_name, specifier) => {
+    // Vite takes rate.js first, the TypeScript compiler rate.ts: either may be the one loaded.
+    const dir = fixture({
+      'src/c.ts': `import { rate } from '${specifier}';\nexport const c = (x: number) => x - rate;\n`,
+      'src/rate.ts': 'export const rate: number = 1;\n',
+      'src/rate.js': 'export const rate = 1;\n',
+    });
+    expect(inputs(dir).gates['src/c.ts']?.files).toEqual([
+      'src/c.spec.ts',
+      'src/c.ts',
+      'src/rate.js',
+      'src/rate.ts',
+    ]);
+  });
+
   it('takes a spec of the last run that is gone for itself', () => {
     const found = inputs(fixture(), { 'src/c.ts': ['src/gone.spec.ts'] });
     expect(found.gates['src/c.ts']?.files).toEqual([
