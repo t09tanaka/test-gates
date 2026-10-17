@@ -493,7 +493,7 @@ describe('test-gates mutation-result: timeouts', () => {
       '  - src/age.ts:1:41 / EqualityOperator / age >= 18 → age > 18 / occurrence 1 of 2 (Timeout)',
       '  - src/age.ts:2:42 / EqualityOperator / age >= 18 → age > 18 / occurrence 2 of 2 (Timeout)',
     ]);
-    expect(result.stderr).toContain('Run again with less load (-- --concurrency 1)');
+    expect(result.stderr).toContain('(--concurrency 1) before it fails; these were not run again.');
     expect(result.stderr).toContain(
       '    src/age.ts: {"mutator":"EqualityOperator","original":"age >= 18","replacement":"age > 18","occurrence":2,"reason":""}'
     );
@@ -768,6 +768,39 @@ describe('test-gates mutation', () => {
       expect(result.stderr).toContain(
         'test-gates mutation: 1 mutant(s) timed out (settings.mutation.maxTimeouts: 0)'
       );
+      expect(result.stderr).toContain(
+        'They timed out again when they were run one at a time (--concurrency 1), so they'
+      );
+      expect(result.stderr).not.toContain('these were not run again');
+    });
+
+    it('runs nothing again while the timeouts stay within settings.mutation.maxTimeouts', () => {
+      const within = timingOut(['Killed', 'Killed']);
+      write(within, {
+        'test-gates.json': {
+          gates: [gateEntry],
+          candidates: [],
+          settings: { mutation: { maxTimeouts: 2 } },
+        },
+      });
+      const result = testGates(['mutation', '--dir', within]);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('(timeout 2)');
+      expect(result.stdout).not.toContain('again');
+      expect(calls(within)).toHaveLength(1);
+      // One more than allowed: they are run again.
+      write(within, {
+        'test-gates.json': {
+          gates: [gateEntry],
+          candidates: [],
+          settings: { mutation: { maxTimeouts: 1 } },
+        },
+      });
+      fs.rmSync(path.join(within, 'stryker-calls.txt'));
+      const over = testGates(['mutation', '--dir', within]);
+      expect(over.stdout).toContain(BEFORE);
+      expect(over.status).toBe(0);
+      expect(calls(within)).toHaveLength(2);
     });
 
     it('judges the first run when the run again fails', () => {
@@ -778,6 +811,7 @@ describe('test-gates mutation', () => {
         'test-gates mutation: running the timed-out mutants again failed (exit 3). The first run is judged'
       );
       expect(result.stderr).toContain('2 mutant(s) timed out (settings.mutation.maxTimeouts: 0)');
+      expect(result.stderr).toContain('these were not run again');
       expect(calls(dir)).toHaveLength(2);
     });
 

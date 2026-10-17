@@ -633,7 +633,7 @@ export function runMutation(
     );
     return 1;
   }
-  retryTimeouts(
+  const retried = retryTimeouts(
     stryker,
     [config, ...strykerArgs],
     manifest,
@@ -642,9 +642,16 @@ export function runMutation(
     io
   );
   let judged: Parameters<Guard['record']>[0] = null;
-  const status = runMutationResult(dir, null, io, part ? chosen.selected : [], (seen) => {
-    judged = seen;
-  });
+  const status = runMutationResult(
+    dir,
+    null,
+    io,
+    part ? chosen.selected : [],
+    (seen) => {
+      judged = seen;
+    },
+    retried
+  );
   guard.record(judged);
   if (part) {
     // Not for `mutation-result`: it would judge every gate from this report, the others by
@@ -656,7 +663,9 @@ export function runMutation(
 
 /**
  * Runs the mutants that timed out outside `expectedTimeouts` once more, one at a time, and puts
- * their new results into the report before it is judged (see mergeRetry).
+ * their new results into the report before it is judged (see mergeRetry). Only when there are
+ * more of them than `settings.mutation.maxTimeouts`: up to that the run passes as it is, and a
+ * project that tolerates a few would pay for the run again every time.
  *
  * On a loaded machine a mutant that a test kills in a second can time out; with nothing else
  * running next to it, it is killed, or it survives and is judged as a survivor. Only one run
@@ -666,6 +675,8 @@ export function runMutation(
  *
  * In incremental mode the run again also writes the incremental file, with the new results, so
  * that the next run does not take an old timeout over.
+ *
+ * @returns Whether the timeouts were run again and their results are in the report.
  */
 function retryTimeouts(
   stryker: string,
@@ -674,19 +685,19 @@ function retryTimeouts(
   reportFile: string,
   gates: LoadedManifest['gates'],
   io: Io
-): void {
+): boolean {
   let first: MutationReport;
   try {
     first = JSON.parse(fs.readFileSync(reportFile, 'utf8')) as MutationReport;
   } catch {
-    return; // judged (and refused) by runMutationResult
+    return false; // judged (and refused) by runMutationResult
   }
   if (typeof first !== 'object' || first === null) {
-    return;
+    return false;
   }
   const { ranges, rerun } = timeoutRanges(first, gates);
-  if (ranges.length === 0) {
-    return;
+  if (ranges.length === 0 || rerun <= manifest.settings.maxTimeouts) {
+    return false;
   }
   io.out(
     `test-gates mutation: ${rerun} mutant(s) timed out outside expectedTimeouts, running them again one at a time (--concurrency 1)`
@@ -718,9 +729,10 @@ function retryTimeouts(
       `test-gates mutation: running the timed-out mutants again failed (${why}). The first run is judged`
     );
     fs.writeFileSync(reportFile, JSON.stringify(first));
-    return;
+    return false;
   }
   const merged = mergeRetry(first, retry, gates);
   fs.writeFileSync(reportFile, JSON.stringify(merged.report));
   io.out(formatRetry(merged.outcome));
+  return true;
 }
