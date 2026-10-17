@@ -18,7 +18,7 @@
     },
     {
       "path": "src/core/jobs.ts",
-      "decides": "Whether negative controls may run at the same time, and whether a control that ran next to others can be taken as it is or has to be run again on its own",
+      "decides": "Whether negative controls may run at the same time, how many workers each of those runs may use, and whether a control that ran next to others can be taken as it is or has to be run again on its own",
       "impact": "A control that only looks as if it held, because another run disturbed it, is reported as holding"
     },
     {

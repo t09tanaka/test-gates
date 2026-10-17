@@ -76,6 +76,57 @@ export function jobFlags(runner: Runner, dir: string): string[] {
     : [`--coverage.reportsDirectory=${dir}/coverage`, '--no-cache'];
 }
 
+// Options of the gate command that set how many workers a run may use. `--ci` and `--pool`
+// do not.
+const LIMITS: Record<Runner, string[]> = {
+  jest: ['--runInBand', '-i', '--maxWorkers', '-w'],
+  vitest: ['--no-file-parallelism', '--fileParallelism', '--maxWorkers', '--minWorkers'],
+};
+// Words of a gate config that set how many workers a run may use.
+const CONFIG_LIMITS = [
+  'maxWorkers',
+  'minWorkers',
+  'maxThreads',
+  'minThreads',
+  'maxForks',
+  'minForks',
+  'fileParallelism',
+  'singleThread',
+  'singleFork',
+];
+
+/**
+ * What is added to the gate command of a run next to others, so that the runs together use
+ * about as many workers as the machine has cores. Each runner takes about one worker per core
+ * for a run of its own, and `lines` runs at once would take `lines` times that.
+ *
+ * @param input.args The gate command after the program, as knownCommand accepted it.
+ * @param input.configSource Text of the gate config; null when it cannot be read.
+ * @param input.lines How many runs are under way at the same time.
+ * @param input.cores What `os.availableParallelism()` says.
+ * @returns Nothing when one run is under way at a time, or when the gate command or the gate
+ *   config already says how many workers a run may use: that is kept as it is.
+ */
+export function workerFlags(input: {
+  runner: Runner;
+  args: string[];
+  configSource: string | null;
+  lines: number;
+  cores: number;
+}): string[] {
+  if (input.lines <= 1) {
+    return [];
+  }
+  const given = input.args.some((arg) =>
+    LIMITS[input.runner].includes(arg.split('=')[0] as string)
+  );
+  const configured = CONFIG_LIMITS.some((word) => input.configSource?.includes(word) === true);
+  if (given || configured) {
+    return [];
+  }
+  return [`--maxWorkers=${Math.max(1, Math.floor(input.cores / input.lines))}`];
+}
+
 /** A file that a gate run loads: a spec, a setup file, a gate, and everything they import. */
 export interface LoadedFile {
   /** Path relative to the subproject. */
@@ -122,11 +173,29 @@ const REACHES = [
 const COMPUTED_LOAD =
   /(?:require|import)\((?!['"])|\brequire(?!\(|\.resolve\b|[\w$])|\bimport\.meta\.glob\b/;
 const COMPUTED = 'loads a module whose name is computed';
+// A string in quotes that surely is one: it opens where a value starts, closes on its line, and
+// a value may end right after it. Its text is not code: `"retry: {count}"` in a file of
+// messages uses nothing. A quote that may be something else (in a regular expression, in a
+// comment) seldom has a place where a value starts before it and one where it ends after it,
+// and when it does not, nothing is taken out. Nor is the inside of one that holds `${`.
+const STRING = /(^|[:,([={?+&|;])(\s*)(['"])((?:\\.|(?!\3)[^\\\n])*)\3(?=\s*(?:[,}\]);:+?&|]|$))/gm;
+
+/** The text with the inside of each string in quotes (see STRING) left blank. */
+export function withoutStrings(source: string): string {
+  return source.replace(
+    STRING,
+    (all: string, before: string, space: string, quote: string, inside: string) =>
+      // In a template (`{"home": "${home()}"}`) the quotes are text, and what is
+      // between them may be code.
+      inside.includes('${') ? all : `${before}${space}${quote}${' '.repeat(inside.length)}${quote}`
+  );
+}
 const RUNNER_PACKAGES = ['vitest', '@jest/globals'];
 
 /**
  * What a file a gate run loads does that could make it meet another run, or null when nothing
- * of the kind is seen in it. By its text: a comment that names `setTimeout` counts as a use.
+ * of the kind is seen in it. By its text: a comment that names `setTimeout` counts as a use,
+ * the text of a string in quotes does not (withoutStrings).
  *
  * Packages are not looked into, so only the runner's own and those in `trusted` may be
  * imported.
@@ -136,7 +205,8 @@ const RUNNER_PACKAGES = ['vitest', '@jest/globals'];
  */
 export function reachesOutside(file: LoadedFile, trusted: string[]): string | null {
   const dense = file.source.replace(/\s/g, '');
-  const mark = REACHES.find((text) => dense.includes(text));
+  const code = withoutStrings(file.source).replace(/\s/g, '');
+  const mark = REACHES.find((text) => code.includes(text));
   if (mark !== undefined) {
     return `uses ${mark.replace(/[.?[(:]+$/, '')}`;
   }
