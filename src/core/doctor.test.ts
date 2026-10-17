@@ -423,6 +423,15 @@ describe('hookUses', () => {
       expect(
         uses('for p in a; do cd tax; done\nfor q in b; do npx test-gates mutation; done\n', 'tax')
       ).toEqual([plain]);
+      expect(uses('case "$p" in\na) cd tax ;;\nesac\nnpx test-gates mutation\n')).toEqual([]);
+      expect(
+        uses('for p in a; do cd tax; done\nfor q in b; do npx test-gates mutation; done\n')
+      ).toEqual([]);
+      expect(
+        uses(
+          'case "$p" in\na) cd tax ;;\nesac\nfor q in b; do case "$q" in b) npx test-gates mutation ;; esac; done\n'
+        )
+      ).toEqual([]);
     });
 
     it('takes a loop over names written out the same way', () => {

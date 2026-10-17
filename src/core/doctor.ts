@@ -155,7 +155,7 @@ const CD = /\bcd\s+(['"]?)([^\s'";&|)]+)\1/;
 interface Scope {
   kind: 'case' | 'loop';
   /** The same for every branch of one case, and different for each other case or loop. */
-  id: number;
+  id: symbol;
   variable: string | null;
   names: string[] | null;
 }
@@ -195,7 +195,6 @@ function partsOf(text: string): Part[] | null {
   let scopes = NONE;
   let start = 0;
   let loop: Scope | null = null;
-  let ids = 0;
   const enter = (scope: Scope) => {
     scopes = [...scopes, scope];
   };
@@ -215,17 +214,22 @@ function partsOf(text: string): Part[] | null {
     let awaiting = false;
     if (subject !== undefined) {
       const named = VARIABLE.exec(subject);
-      enter({ kind: 'case', id: ++ids, variable: named?.[2] ?? named?.[3] ?? null, names: null });
+      enter({
+        kind: 'case',
+        id: Symbol(),
+        variable: named?.[2] ?? named?.[3] ?? null,
+        names: null,
+      });
       awaiting = true;
     } else if (variable !== undefined) {
       loop = {
         kind: 'loop',
-        id: ++ids,
+        id: Symbol(),
         variable,
         names: list === undefined ? null : namesOf(list.trim().split(/\s+/)),
       };
     } else if (keyword === 'do') {
-      enter(loop ?? { kind: 'loop', id: ++ids, variable: null, names: null });
+      enter(loop ?? { kind: 'loop', id: Symbol(), variable: null, names: null });
       loop = null;
     } else if (keyword === 'done' || keyword === 'esac') {
       if (!leave(keyword === 'done' ? 'loop' : 'case')) {
@@ -260,7 +264,7 @@ function partsOf(text: string): Part[] | null {
 /** Whether a part lies in another branch of a case that a part in `scopes` lies in. */
 function sibling(of: Scope[], scopes: Scope[]): boolean {
   const apart = of.findIndex((scope, at) => scope !== scopes[at]);
-  return apart !== -1 && of[apart]?.id === scopes[apart]?.id;
+  return apart !== -1 && (of[apart] as Scope).id === scopes[apart]?.id;
 }
 
 /** Each path a target can be, with the variables that a scope tells the names of put in. */
