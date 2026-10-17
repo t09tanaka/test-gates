@@ -7,6 +7,7 @@ import {
   knownCommand,
   reachesOutside,
   type LoadedFile,
+  workerFlags,
 } from './jobs';
 
 describe('knownCommand', () => {
@@ -107,6 +108,84 @@ describe('jobFlags', () => {
       '--coverage.reportsDirectory=/tmp/line-1/coverage',
       '--no-cache',
     ]);
+  });
+});
+
+describe('workerFlags', () => {
+  const CONFIG = ['--config', 'gates.config.js'];
+  const flags = (input: Partial<Parameters<typeof workerFlags>[0]> = {}) =>
+    workerFlags({
+      runner: 'jest',
+      args: CONFIG,
+      configSource: 'export default createJestGatesConfig();',
+      lines: 4,
+      cores: 12,
+      ...input,
+    });
+
+  it('shares the cores out between the runs at the same time', () => {
+    expect(flags()).toEqual(['--maxWorkers=3']);
+    expect(flags({ cores: 15 })).toEqual(['--maxWorkers=3']);
+    expect(flags({ cores: 16 })).toEqual(['--maxWorkers=4']);
+    expect(flags({ lines: 2 })).toEqual(['--maxWorkers=6']);
+    expect(flags({ lines: 3, cores: 2 })).toEqual(['--maxWorkers=1']);
+    expect(flags({ lines: 12 })).toEqual(['--maxWorkers=1']);
+    expect(flags({ runner: 'vitest', args: ['run', ...CONFIG] })).toEqual(['--maxWorkers=3']);
+  });
+
+  it('adds nothing to a run that is alone', () => {
+    expect(flags({ lines: 1 })).toEqual([]);
+    expect(flags({ lines: 1, cores: 1 })).toEqual([]);
+  });
+
+  it('keeps an empty config and one that cannot be read as they are', () => {
+    expect(flags({ configSource: '' })).toEqual(['--maxWorkers=3']);
+    expect(flags({ configSource: null })).toEqual(['--maxWorkers=3']);
+  });
+
+  it.each([
+    ['jest', ['--runInBand']],
+    ['jest', ['-i']],
+    ['jest', ['--maxWorkers=2']],
+    ['jest', ['--maxWorkers', '50%']],
+    ['jest', ['-w', '12']],
+    ['jest', ['-w=1']],
+    ['vitest', ['--no-file-parallelism']],
+    ['vitest', ['--fileParallelism=false']],
+    ['vitest', ['--maxWorkers=4']],
+    ['vitest', ['--minWorkers', '1']],
+  ] as const)('leaves the workers of %s with %j as they are', (runner, options) => {
+    const head = runner === 'vitest' ? ['run'] : [];
+    expect(flags({ runner, args: [...head, ...CONFIG, ...options] })).toEqual([]);
+    expect(flags({ runner, args: [...head, ...options, ...CONFIG] })).toEqual([]);
+  });
+
+  it.each([
+    ['jest', ['--ci']],
+    ['vitest', ['--pool=forks']],
+    ['vitest', ['--pool=threads']],
+    // An option of the other runner.
+    ['jest', ['--no-file-parallelism']],
+    ['vitest', ['-i']],
+  ] as const)('still shares the cores out for %s with %j', (runner, options) => {
+    const head = runner === 'vitest' ? ['run'] : [];
+    expect(flags({ runner, args: [...head, ...CONFIG, ...options] })).toEqual(['--maxWorkers=3']);
+  });
+
+  it.each([
+    'maxWorkers',
+    'minWorkers',
+    'maxThreads',
+    'minThreads',
+    'maxForks',
+    'minForks',
+    'fileParallelism',
+    'singleThread',
+    'singleFork',
+  ])('leaves the workers as they are when the gate config names %s', (word) => {
+    expect(
+      flags({ configSource: `export default createJestGatesConfig({ ${word}: 2 });` })
+    ).toEqual([]);
   });
 });
 

@@ -1,3 +1,4 @@
+import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -1313,10 +1314,14 @@ describe('test-gates selfcheck', () => {
         const commands = fs.readFileSync(path.join(dir, 'at-once.log'), 'utf8').trim().split('\n');
         const places = commands.map((command) => {
           const words = command.split(' ');
-          // What the gate command is, then the two options of a run next to others.
+          // What the gate command is, then the options of a run next to others: its own
+          // directories, and its share of the cores.
           expect(words.slice(0, 3)).toEqual(['run', '--config', 'vitest.gates.config.ts']);
           expect(words[3]).toMatch(/^--coverage\.reportsDirectory=.+\/line-[012]\/coverage$/);
-          expect(words.slice(4)).toEqual(['--no-cache']);
+          expect(words.slice(4)).toEqual([
+            '--no-cache',
+            `--maxWorkers=${Math.max(1, Math.floor(os.availableParallelism() / 3))}`,
+          ]);
           return (words[3] as string).slice('--coverage.reportsDirectory='.length);
         });
         expect(new Set(places).size).toBe(3);
@@ -1326,6 +1331,33 @@ describe('test-gates selfcheck', () => {
           expect(fs.existsSync(path.dirname(path.dirname(place)))).toBe(false);
         }
         expect(fs.readdirSync(dir).filter((name) => name.startsWith('.test-gates'))).toEqual([]);
+      });
+
+      it('keeps the number of workers the gate command gives', () => {
+        const dir = asVitest({
+          'test-gates.json': manifest({
+            gateCommand: ['vitest', 'run', '--config', 'vitest.gates.config.ts', '--maxWorkers=2'],
+          }),
+        });
+        expect(testGates(['selfcheck', '--jobs', '3', '--dir', dir])).toEqual({
+          status: 0,
+          stdout: OK,
+          stderr: '',
+        });
+        expect(runs(dir).sort()).toEqual(atOnce);
+        for (const command of fs
+          .readFileSync(path.join(dir, 'at-once.log'), 'utf8')
+          .trim()
+          .split('\n')) {
+          const words = command.split(' ');
+          expect(words.slice(0, 4)).toEqual([
+            'run',
+            '--config',
+            'vitest.gates.config.ts',
+            '--maxWorkers=2',
+          ]);
+          expect(words.slice(5)).toEqual(['--no-cache']);
+        }
       });
 
       it.each([

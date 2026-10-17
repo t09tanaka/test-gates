@@ -76,6 +76,57 @@ export function jobFlags(runner: Runner, dir: string): string[] {
     : [`--coverage.reportsDirectory=${dir}/coverage`, '--no-cache'];
 }
 
+// Options of the gate command that set how many workers a run may use. `--ci` and `--pool`
+// do not.
+const LIMITS: Record<Runner, string[]> = {
+  jest: ['--runInBand', '-i', '--maxWorkers', '-w'],
+  vitest: ['--no-file-parallelism', '--fileParallelism', '--maxWorkers', '--minWorkers'],
+};
+// Words of a gate config that set how many workers a run may use.
+const CONFIG_LIMITS = [
+  'maxWorkers',
+  'minWorkers',
+  'maxThreads',
+  'minThreads',
+  'maxForks',
+  'minForks',
+  'fileParallelism',
+  'singleThread',
+  'singleFork',
+];
+
+/**
+ * What is added to the gate command of a run next to others, so that the runs together use
+ * about as many workers as the machine has cores. Each runner takes about one worker per core
+ * for a run of its own, and `lines` runs at once would take `lines` times that.
+ *
+ * @param input.args The gate command after the program, as knownCommand accepted it.
+ * @param input.configSource Text of the gate config; null when it cannot be read.
+ * @param input.lines How many runs are under way at the same time.
+ * @param input.cores What `os.availableParallelism()` says.
+ * @returns Nothing when one run is under way at a time, or when the gate command or the gate
+ *   config already says how many workers a run may use: that is kept as it is.
+ */
+export function workerFlags(input: {
+  runner: Runner;
+  args: string[];
+  configSource: string | null;
+  lines: number;
+  cores: number;
+}): string[] {
+  if (input.lines <= 1) {
+    return [];
+  }
+  const given = input.args.some((arg) =>
+    LIMITS[input.runner].includes(arg.split('=')[0] as string)
+  );
+  const configured = CONFIG_LIMITS.some((word) => input.configSource?.includes(word) === true);
+  if (given || configured) {
+    return [];
+  }
+  return [`--maxWorkers=${Math.max(1, Math.floor(input.cores / input.lines))}`];
+}
+
 /** A file that a gate run loads: a spec, a setup file, a gate, and everything they import. */
 export interface LoadedFile {
   /** Path relative to the subproject. */
