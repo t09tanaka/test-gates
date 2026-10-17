@@ -22,9 +22,19 @@ export class AffectedError extends Error {}
 /**
  * What lets a file read other files, or load modules, in a way that its imports do not show.
  * Where one of them is used, a change to a file that nothing imports could change a result.
+ * `readFile` (of `fs/promises`, or handed in) and `fromFile` and `fromURL` of jsdom read a path
+ * from where the run starts (`'src/page.html'`), which names no file next to the one that reads.
  */
 const RUNTIME_PATHS =
-  /\b(?:require\.(?:context|resolve)|process\.cwd|createRequire|toMatchFileSnapshot|readFileSync|readdirSync)\b|\bimport\.meta\.(?:glob|resolve)\b/;
+  /\b(?:require\.(?:context|resolve)|process\.cwd|createRequire|toMatchFileSnapshot|readFileSync|readFile|readdirSync|fromFile|fromURL)\b|\bimport\.meta\.(?:glob|resolve)\b/;
+/**
+ * A path from the top of the subproject to a page, a document or data (`'src/page.html'`), as
+ * text: a test may read such a file by it in a way that is not seen. Not a URL, a pattern, a
+ * sentence or a path with a query.
+ */
+const PATH_FROM_TOP = /^[^\s./?#*:][^\s?#*:]*\.(?:html?|md|json)$/i;
+/** The query of an import of Vite (`./page.html?raw`, `./worker.ts?worker`): not a part of the path. */
+const withoutQuery = (specifier: string): string => specifier.replace(/\?[^/]*$/, '');
 /**
  * Where the file itself lies. Knowing it reads nothing: `path.join(__dirname, '..', '.env')` is
  * only a string. It is what the file does with it that may read a file (see LOCATION_READS).
@@ -405,7 +415,7 @@ export function fileEdges(
   for (const specifier of specifiers) {
     if (path.isAbsolute(specifier) || specifier.startsWith('file:')) {
       const resolved = resolveFiles(
-        specifier.startsWith('file:') ? new URL(specifier).pathname : specifier
+        withoutQuery(specifier.startsWith('file:') ? new URL(specifier).pathname : specifier)
       );
       if (resolved.length === 0) {
         found.unknown ??= `${shown(file)} imports ${specifier}, which leads to no file`;
@@ -413,7 +423,7 @@ export function fileEdges(
         found.loads.push(...resolved.map(realpath));
       }
     } else if (isProjectImport(specifier, aliases)) {
-      const resolved = target(specifier, file);
+      const resolved = target(withoutQuery(specifier), file);
       if (resolved.length === 0) {
         found.unknown ??= `${shown(file)} imports ${specifier}, which leads to no file`;
       } else {
@@ -466,6 +476,8 @@ export function fileEdges(
       typeLines.set(key, left - 1);
     } else if (text.startsWith('.') && !specifiers.has(text)) {
       found.loads.push(...resolveFiles(path.resolve(path.dirname(file), text)).map(realpath));
+    } else if (PATH_FROM_TOP.test(text) && isFile(path.resolve(dir, text))) {
+      found.loads.push(realpath(path.resolve(dir, text)));
     }
   }
   return found;

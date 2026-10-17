@@ -22,7 +22,7 @@ export type FileKind =
   | 'config'
   /** Only what imports it: sources, data, snapshots, styles, images. */
   | 'passive'
-  /** Written for people; never read by a test run through an import. */
+  /** Written for people: not searched for imports, and only what loads it depends on it. */
   | 'document'
   /** Anything else: also every file at the top of the subproject and outside of it. */
   | 'other';
@@ -41,7 +41,9 @@ const CONFIG_NAMES = [
 ];
 /** Jest uses a mock from the `__mocks__` next to node_modules without being asked to. */
 const ROOT_MOCKS = '__mocks__';
-const DOCUMENT = /\.(?:md|markdown|txt|rst|adoc)$/i;
+const DOCUMENT = /\.(?:md|markdown|txt|rst|adoc|html?)$/i;
+/** A page that a build tool or a test runner may start from (Vite, Vitest in a browser). */
+const ENTRY_PAGE = /^index\.html?$/i;
 const PASSIVE = /\.(?:[cm]?[jt]sx?|json|snap|css|scss|sass|less|svg|png|jpe?g|gif|webp|avif|ico)$/i;
 
 /**
@@ -65,7 +67,8 @@ export function kindOf(key: string, subproject: string): FileKind {
   if (isNestedMock(key, subproject)) {
     return 'other';
   }
-  if (DOCUMENT.test(name)) {
+  // A page is written for people, such as a report or the docs, unless a tool starts from it.
+  if (DOCUMENT.test(name) && !ENTRY_PAGE.test(name)) {
     return 'document';
   }
   const inside = subproject === '' || key.startsWith(`${subproject}/`);
