@@ -462,6 +462,93 @@ export function judgeMutationReport(input: {
   return { violations, survivors, unexpectedTimeouts, summary };
 }
 
+/** What running the timed-out mutants again changed (see mergeRetry). */
+export interface RetryOutcome {
+  /** How many mutants were run again. */
+  retried: number;
+  /** Their status in the run again, by status. */
+  statuses: Record<string, number>;
+  /** How many of them the report of the run again does not hold; they stay `Timeout`. */
+  missing: number;
+}
+
+/** The same mutant in the report of another run of the same source. */
+function sameMutant(a: ReportMutant, b: ReportMutant): boolean {
+  return (
+    a.mutatorName === b.mutatorName &&
+    (a.replacement ?? '') === (b.replacement ?? '') &&
+    a.location.start.line === b.location.start.line &&
+    a.location.start.column === b.location.start.column &&
+    a.location.end.line === b.location.end.line &&
+    a.location.end.column === b.location.end.column
+  );
+}
+
+/**
+ * Puts the results of a run again of the timed-out mutants into the report of the first run.
+ *
+ * The mutants run again are those of the given gates that timed out and that no
+ * `expectedTimeouts` entry points at (matched as expectedTimeoutMutants matches them, as
+ * timeoutRanges picks them for `--mutate`). Each takes its result from the run again, whatever
+ * it is: a mutant that survives there is a survivor, not a timeout. One that the run again does
+ * not report stays `Timeout`. Every other mutant keeps its result from the first run.
+ */
+export function mergeRetry(
+  first: MutationReport,
+  retry: MutationReport,
+  gates: Array<Pick<Gate, 'path' | 'expectedTimeouts'>>
+): { report: MutationReport; outcome: RetryOutcome } {
+  const outcome: RetryOutcome = { retried: 0, statuses: {}, missing: 0 };
+  const files = { ...first.files };
+  const again = retry.files ?? {};
+  for (const named of gates) {
+    // Stryker names its files without `./`, which a path in test-gates.json may have.
+    const gate = named.path
+      .split('/')
+      .filter((part) => part !== '.')
+      .join('/');
+    const result = Object.hasOwn(files, gate) ? files[gate] : undefined;
+    if (result?.mutants === undefined) {
+      continue;
+    }
+    const expected = expectedTimeoutMutants(named, result.source, result.mutants);
+    const rerun = Object.hasOwn(again, gate) ? (again[gate]?.mutants ?? []) : [];
+    files[gate] = {
+      ...result,
+      mutants: result.mutants.map((mutant) => {
+        if (mutant.status !== 'Timeout' || expected.has(mutant)) {
+          return mutant;
+        }
+        outcome.retried += 1;
+        const found = rerun.find((other) => sameMutant(other, mutant));
+        if (found === undefined) {
+          outcome.missing += 1;
+          return mutant;
+        }
+        outcome.statuses[found.status] = (outcome.statuses[found.status] ?? 0) + 1;
+        return found;
+      }),
+    };
+  }
+  const report: MutationReport = { ...first, files };
+  if (first.testFiles !== undefined || retry.testFiles !== undefined) {
+    // The ids of the tests that killed a mutant in the run again are those of its spec files.
+    report.testFiles = { ...first.testFiles, ...retry.testFiles };
+  }
+  return { report, outcome };
+}
+
+/** One line on what running the timed-out mutants again gave. */
+export function formatRetry(outcome: RetryOutcome): string {
+  const statuses = Object.entries(outcome.statuses)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([status, count]) => `${count} ${status}`);
+  if (outcome.missing > 0) {
+    statuses.push(`${outcome.missing} not in the report (still Timeout)`);
+  }
+  return `test-gates mutation: ${outcome.retried} mutant(s) that timed out were run again one at a time (--concurrency 1): ${statuses.join(', ')}`;
+}
+
 /** `file:line:column / mutator / original → replacement / occurrence n of m`. */
 export function formatSurvivor(survivor: UnallowedSurvivor): string {
   const occurrence =

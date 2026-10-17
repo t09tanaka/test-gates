@@ -425,7 +425,16 @@ How an `expectedTimeouts` entry is judged:
 
 `Killed` is accepted on purpose, unlike a stale `equivalentMutants` entry. A mutant that hangs is reported as `Timeout` when Stryker's timer fires first and as `Killed` when the test runner's own per-test timeout fires first; which one wins depends on the load. Failing on `Killed` would make the list flap between two runs of the same code. And nothing is hidden by accepting it: `Killed` is the best possible outcome.
 
-When the run fails on a timeout, first run again with less load (`npm run test:gates:mutation -- --concurrency 1`). Add an entry only for a mutant that can never finish.
+**`test-gates mutation` runs the timeouts of the run once more, one at a time** (since 0.4.3). When a mutant timed out and no `expectedTimeouts` entry of its gate points at it, Stryker is started again for those mutants only (`--mutate` with their ranges, `--concurrency 1`, `--force`, after the arguments of the project), and each takes the result of that run before the report is judged:
+
+```
+test-gates mutation: 3 mutant(s) timed out outside expectedTimeouts, running them again one at a time (--concurrency 1)
+test-gates mutation: 3 mutant(s) that timed out were run again one at a time (--concurrency 1): 3 Killed
+```
+
+A mutant that is killed in the run again counts as killed. One that survives there is a survivor and fails the run as any other; the run again hides nothing. One that times out again fails as before: there is only one run again, so a mutant that can never finish costs its timeout twice, and then belongs in `expectedTimeouts`. In incremental mode the run again also writes the incremental file, so the next run takes over the new result and not the old timeout. It runs in CI as well: a hosted runner with two cores times out under its own load too, and the run again only costs the time of the mutants that timed out. If the run again cannot finish, the first run is judged. `mutation-result` judges a report as it is and runs nothing again.
+
+When the run still fails on a timeout, look at the mutant before anything else: run its gate again with less load (`npm run test:gates:mutation -- --concurrency 1`). Add an entry only for a mutant that can never finish.
 
 `createStrykerGatesConfig` sets Stryker's `maxTestRunnerReuse` to 50 (since 0.3.2; Stryker's own default is 0, one test runner process for the whole run). A mutant that would be killed can also time out for a reason that has nothing to do with the mutant: in a Jest project with a few mutants that never end, the test runner handled about a third as many mutants per minute from the first of them on, for the rest of the run. Mutants that are killed in seconds on their own then timed out, a different set on each full run, and the run took about a quarter of an hour. With a new process every 50 mutants the speed stayed the same to the end, nothing timed out that should not, and the run took less than half as long. Why the runner slows down was not found; the restart only cuts it short. Pass `maxTestRunnerReuse` to the helper to change it.
 

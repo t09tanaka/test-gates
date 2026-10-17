@@ -705,6 +705,112 @@ describe('test-gates mutation', () => {
     expect(result.stderr).toContain('cannot read the Stryker JSON report');
   });
 
+  describe('timeouts outside expectedTimeouts', () => {
+    // The first run times out on both comparisons; the run again (one at a time) gives `again`,
+    // or exits with `exit`.
+    const RETRIED = "process.argv.includes('--mutate')";
+    const timingOut = (again: [string, string], exit = 0) =>
+      withStryker(
+        `fs.appendFileSync('stryker-calls.txt', JSON.stringify(process.argv.slice(2)) + '\\n');\n` +
+          `if (${RETRIED}) {\n${exit === 0 ? writeReport(...again) : `process.exit(${exit});`}\n} else {\n${writeReport('Timeout', 'Timeout')}\n}`
+      );
+    const calls = (dir: string) =>
+      fs
+        .readFileSync(path.join(dir, 'stryker-calls.txt'), 'utf8')
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as string[]);
+    const RANGES = 'src/age.ts:1:40-1:50,src/age.ts:2:41-2:51';
+    const BEFORE =
+      'test-gates mutation: 2 mutant(s) timed out outside expectedTimeouts, running them again one at a time (--concurrency 1)';
+
+    it('runs them again once, one at a time, and judges their new results', () => {
+      const dir = timingOut(['Killed', 'Killed']);
+      const result = testGates(['mutation', '--dir', dir, '--', '--concurrency', '4']);
+      expect(result.status).toBe(0);
+      expect(result.stdout.split('\n')).toEqual([
+        BEFORE,
+        'test-gates mutation: 2 mutant(s) that timed out were run again one at a time (--concurrency 1): 2 Killed',
+        'test-gates mutation: OK (mutants 2 / detected 2 (timeout 0) / allowed equivalent 0 / not evaluable 0 / unallowed survivors 0)',
+        '',
+      ]);
+      // The arguments of the project come first: the ones of the run again win.
+      expect(calls(dir)).toEqual([
+        ['run', 'stryker.gates.config.mjs', '--concurrency', '4'],
+        [
+          'run',
+          'stryker.gates.config.mjs',
+          '--concurrency',
+          '4',
+          '--mutate',
+          RANGES,
+          '--concurrency',
+          '1',
+          '--force',
+        ],
+      ]);
+      // `mutation-result` judges what the run again gave as well.
+      expect(testGates(['mutation-result', '--dir', dir]).status).toBe(0);
+    });
+
+    it('judges a mutant that survives the run again as a survivor', () => {
+      const result = testGates(['mutation', '--dir', timingOut(['Survived', 'Killed'])]);
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain('(--concurrency 1): 1 Killed, 1 Survived');
+      expect(result.stderr).toContain('1 surviving mutant(s) not in the allow list');
+      expect(result.stderr).not.toContain('timed out');
+    });
+
+    it('fails as before when they time out again', () => {
+      const result = testGates(['mutation', '--dir', timingOut(['Timeout', 'Killed'])]);
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain('(--concurrency 1): 1 Killed, 1 Timeout');
+      expect(result.stderr).toContain(
+        'test-gates mutation: 1 mutant(s) timed out (settings.mutation.maxTimeouts: 0)'
+      );
+    });
+
+    it('judges the first run when the run again fails', () => {
+      const dir = timingOut(['Killed', 'Killed'], 3);
+      const result = testGates(['mutation', '--dir', dir]);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        'test-gates mutation: running the timed-out mutants again failed (exit 3). The first run is judged'
+      );
+      expect(result.stderr).toContain('2 mutant(s) timed out (settings.mutation.maxTimeouts: 0)');
+      expect(calls(dir)).toHaveLength(2);
+    });
+
+    it('runs nothing again for the timeouts that expectedTimeouts lists, or when there are none', () => {
+      const dir = withStryker(
+        `fs.appendFileSync('stryker-calls.txt', 'x\\n');\n${writeReport('Timeout', 'Killed')}`,
+        {
+          'test-gates.json': {
+            gates: [
+              {
+                ...gateEntry,
+                expectedTimeouts: [
+                  {
+                    mutator: 'EqualityOperator',
+                    original: 'age >= 18',
+                    replacement: 'age > 18',
+                    occurrence: 1,
+                    reason: 'the loop never ends',
+                  },
+                ],
+              },
+            ],
+            candidates: [],
+          },
+        }
+      );
+      const result = testGates(['mutation', '--dir', dir]);
+      expect(result.status).toBe(0);
+      expect(result.stdout).not.toContain('again');
+      expect(fs.readFileSync(path.join(dir, 'stryker-calls.txt'), 'utf8')).toBe('x\n');
+    });
+  });
+
   it('uses settings.stryker.configFile', () => {
     const dir = withStryker(writeReport('Killed', 'Killed'), {
       'conf/stryker.mjs': 'export default {};\n',
