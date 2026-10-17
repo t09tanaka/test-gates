@@ -69,7 +69,11 @@ export function removeStaleSandboxes(subproject: string, setting: TempDirSetting
   }
   const dir = setting.dir as string;
   for (const marker of plan.markers) {
-    fs.rmSync(path.join(dir, marker), { force: true });
+    try {
+      fs.rmSync(path.join(dir, marker), { force: true });
+    } catch {
+      // the next run tries again; the process in it is gone either way
+    }
   }
   const failed: string[] = [];
   for (const sandbox of plan.remove) {
@@ -106,17 +110,21 @@ export function markRun(subproject: string, setting: TempDirSetting): () => void
   const marker = path.join(dir, markerName(process.pid));
   try {
     fs.mkdirSync(dir, { recursive: true });
+    // Made through a link on the way that leads out of the subproject: write nothing there.
+    if (!insideSubproject(relativeTempDir(subproject, dir))) {
+      return () => undefined;
+    }
     fs.writeFileSync(marker, `${process.pid}\n`);
   } catch {
     return () => undefined;
   }
   return () => {
-    fs.rmSync(marker, { force: true });
     try {
+      fs.rmSync(marker, { force: true });
       // As Stryker does: the temp directory goes when nothing is left in it.
       fs.rmdirSync(dir);
     } catch {
-      // something else is in it
+      // something else is in it, or a marker left here is taken for one of a run that is over
     }
   };
 }

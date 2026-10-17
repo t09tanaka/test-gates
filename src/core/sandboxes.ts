@@ -69,7 +69,6 @@ export type SandboxPlan =
 export function insideSubproject(tempDir: string): boolean {
   const parts = tempDir.split('/');
   return (
-    tempDir !== '' &&
     !/^[A-Za-z]:/.test(tempDir) &&
     parts.every((part) => part !== '' && part !== '.' && part !== '..')
   );
@@ -106,5 +105,5 @@ export function planSandboxes(facts: SandboxFacts): SandboxPlan {
     }
     markers.push(entry.name);
   }
-  return { remove: sandboxes, markers: markers.sort() };
+  return { remove: sandboxes, markers };
 }
