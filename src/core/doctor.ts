@@ -180,7 +180,7 @@ const REFERENCE = /\$(?:(\w+)|\{(\w+)\})/g;
 /** The names a list of words gives, or null when a word may stand for others. */
 function namesOf(words: string[]): string[] | null {
   const names = words.map((word) => word.trim().replace(/^(["'])(.*)\1$/, '$2'));
-  return names.some((name) => name === '' || /[$*?[\\`]/.test(name)) ? null : names;
+  return names.some((name) => name === '' || /[$*?[\\`"']/.test(name)) ? null : names;
 }
 
 /**
@@ -290,16 +290,17 @@ export function hookUses(input: {
   const lines = input.text.split('\n').map((line) => line.replace(/(?:^|\s)#.*/, ''));
   const parts = partsOf(lines.join('\n')) ?? lines.map((text) => ({ text, scopes: NONE }));
   const uses: HookUse[] = [];
+  const cds = parts.map((part) => ({ cd: CD.exec(part.text)?.[2], scopes: part.scopes }));
   parts.forEach((part, index) => {
     if (!RUNS_MUTATION.test(part.text)) {
       return;
     }
     const named = TARGET.exec(part.text) ?? CD.exec(part.text);
-    const before = parts
+    const before = cds
       .slice(0, index)
       .reverse()
-      .find((one) => CD.test(one.text));
-    const target = named?.[2] ?? (before === undefined ? undefined : CD.exec(before.text)?.[2]);
+      .find((one) => one.cd !== undefined);
+    const target = named?.[2] ?? before?.cd;
     const scopes = named !== null || before?.scopes === part.scopes ? part.scopes : NONE;
     const ours =
       target === undefined ||

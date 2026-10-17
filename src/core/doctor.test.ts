@@ -316,6 +316,29 @@ describe('hookUses', () => {
       expect(uses('case "$p" in\n  tax) cd "$p" && npx test-gates mutation ;; esac\n')).toEqual([]);
     });
 
+    it('reads a subject, a name and a pattern only as a whole', () => {
+      const one = (subject: string, pattern: string, cd: string, subproject = 'fee') =>
+        uses(
+          `case ${subject} in\n${pattern}) cd ${cd} && npx test-gates mutation ;;\nesac\n`,
+          subproject
+        );
+      expect(one('x$p', 'tax', '"$p"')).toEqual([plain]);
+      expect(one('$p/x', 'tax', '"$p"')).toEqual([plain]);
+      expect(one('"${pp}"', 'tax', '"${pp}"')).toEqual([]);
+      expect(one('$pp', 'tax', '"${pp}"')).toEqual([]);
+      expect(one('$p', ' tax | vat ', '"$p"', 'tax')).toEqual([plain]);
+      expect(one('$p', '"tax" | \'vat\'', '"$p"', 'vat')).toEqual([plain]);
+      expect(one('$p', 'x"tax"', '"$p"')).toEqual([plain]);
+      expect(one('$p', '"tax"x', '"$p"')).toEqual([plain]);
+    });
+
+    it('takes the innermost scope of a variable', () => {
+      const text =
+        'case "$p" in\ntax)\ncase "$p" in\nvat) cd "$p" && npx test-gates mutation ;;\nesac ;;\nesac\n';
+      expect(uses(text, 'vat')).toEqual([plain]);
+      expect(uses(text, 'tax')).toEqual([]);
+    });
+
     it('leaves a run any subproject where the pattern may stand for others', () => {
       for (const pattern of ['*', 'ta*', 't?x', '[t]ax', 'tax|*', '$other', 'ta\\x', '`x`', "''"]) {
         expect(
@@ -391,6 +414,13 @@ describe('hookUses', () => {
       }
       expect(uses('for p; do cd "$p" && npx test-gates mutation; done\n')).toEqual([plain]);
       expect(uses('while read p; do cd "$p" && npx test-gates mutation; done\n')).toEqual([plain]);
+      expect(uses('for p in tax ; do cd "$p" && npx test-gates mutation; done\n')).toEqual([]);
+      expect(uses('for p in tax  vat; do cd "$p" && npx test-gates mutation; done\n')).toEqual([]);
+      expect(
+        uses(
+          'while read q; do case "$p" in tax) cd "$p" && npx test-gates mutation ;; esac; done\n'
+        )
+      ).toEqual([]);
       expect(uses('for p in tax; do echo; done\ncd "$p" && npx test-gates mutation\n')).toEqual([
         plain,
       ]);
@@ -406,6 +436,7 @@ describe('hookUses', () => {
         `for p in tax; do\ncase "$p" in\n${branch} ;;\ndone\nesac\n`,
         `case "$p" in\n${branch} ;;\nesac\ndone\n`,
         `case "$p" in\n${branch} ;;\nvat\nesac\n`,
+        `for p in tax vat; do\necho ;; vat) cd "$p" && npx test-gates mutation\ndone\n`,
       ]) {
         expect(uses(text), text).toEqual([plain]);
       }
