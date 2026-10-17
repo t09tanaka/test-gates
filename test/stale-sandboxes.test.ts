@@ -15,13 +15,16 @@ import {
 afterAll(cleanup);
 
 // A stand-in for node_modules/.bin/stryker. It writes down what was in the temp directory
-// (TEMP, `.stryker-tmp` by default) when it started, and writes a report.
+// (TEMP_DIR, `.stryker-tmp` by default) when it started, and writes a report. With TIMES_OUT=1
+// a mutant times out in the first run, so that its timeouts are run again.
 const FAKE_STRYKER = `#!/usr/bin/env node
 const fs = require('node:fs');
 const temp = process.env.TEMP_DIR || '.stryker-tmp';
 fs.mkdirSync('reports/mutation', { recursive: true });
-fs.writeFileSync('reports/seen.json', JSON.stringify(fs.existsSync(temp) ? fs.readdirSync(temp).sort() : []));
-fs.writeFileSync('reports/mutation/mutation.json', ${JSON.stringify(JSON.stringify(report('Killed', 'Killed')))});
+const again = process.argv.includes('--concurrency');
+fs.writeFileSync(again ? 'reports/seen-again.json' : 'reports/seen.json', JSON.stringify(fs.existsSync(temp) ? fs.readdirSync(temp).sort() : []));
+const timesOut = process.env.TIMES_OUT === '1' && !again;
+fs.writeFileSync('reports/mutation/mutation.json', timesOut ? ${JSON.stringify(JSON.stringify(report('Timeout', 'Killed')))} : ${JSON.stringify(JSON.stringify(report('Killed', 'Killed')))});
 `;
 
 const LEFT = '.stryker-tmp/sandbox-a1B2c3';
@@ -42,8 +45,8 @@ function create(files: Record<string, string | object> = {}): string {
 }
 
 const exists = (dir: string, file: string) => fs.existsSync(path.join(dir, file));
-const seen = (dir: string): string[] =>
-  JSON.parse(fs.readFileSync(path.join(dir, 'reports/seen.json'), 'utf8')) as string[];
+const seen = (dir: string, file = 'reports/seen.json'): string[] =>
+  JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8')) as string[];
 
 /** The pid of a process that is over. */
 function deadPid(): number {
@@ -80,6 +83,16 @@ describe('test-gates mutation: sandboxes an interrupted run left', () => {
       'backup-a1B2c3',
       'sandbox-1',
     ]);
+  });
+
+  it('keeps the marker while the timeouts are run again, too', () => {
+    const dir = create();
+    const result = testGates(['mutation', '--dir', dir], { env: { TIMES_OUT: '1' } });
+    expect(result.stdout).toContain('running them again one at a time');
+    const [marker] = seen(dir);
+    expect(marker).toMatch(/^test-gates-run-[0-9]+$/);
+    expect(seen(dir, 'reports/seen-again.json')).toEqual([marker]);
+    expect(exists(dir, '.stryker-tmp')).toBe(false);
   });
 
   it('removes the temp directory that is left empty, as Stryker does', () => {

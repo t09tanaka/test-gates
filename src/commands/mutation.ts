@@ -636,35 +636,36 @@ export function runMutation(
 
   // What an interrupted run left would be found by every tool that walks the subproject.
   removeStaleSandboxes(manifest.dir, guard.temp).forEach((line) => io.out(line));
+  // The marker stays while either run of Stryker (the first and the one of its timeouts) runs.
   const unmark = markRun(manifest.dir, guard.temp);
-  let result: ReturnType<typeof spawnSync>;
+  let retried: ReturnType<typeof retryTimeouts>;
   try {
-    result = spawnSync(stryker, ['run', config, ...strykerArgs, ...partArgs, ...guardArgs], {
+    const result = spawnSync(stryker, ['run', config, ...strykerArgs, ...partArgs, ...guardArgs], {
       cwd: manifest.dir,
       stdio: 'inherit',
       shell: process.platform === 'win32',
     });
+    if (result.error) {
+      io.err(`test-gates mutation: cannot start Stryker (${result.error.message})`);
+      return 1;
+    }
+    if (result.status !== 0) {
+      io.err(
+        `test-gates mutation: Stryker failed (${result.signal ? `signal ${result.signal}` : `exit ${result.status}`}). The result was not judged`
+      );
+      return 1;
+    }
+    retried = retryTimeouts(
+      stryker,
+      [config, ...strykerArgs],
+      manifest,
+      reportFile,
+      part ? manifest.gates.filter((gate) => chosen.selected.includes(gate.path)) : manifest.gates,
+      io
+    );
   } finally {
     unmark();
   }
-  if (result.error) {
-    io.err(`test-gates mutation: cannot start Stryker (${result.error.message})`);
-    return 1;
-  }
-  if (result.status !== 0) {
-    io.err(
-      `test-gates mutation: Stryker failed (${result.signal ? `signal ${result.signal}` : `exit ${result.status}`}). The result was not judged`
-    );
-    return 1;
-  }
-  const retried = retryTimeouts(
-    stryker,
-    [config, ...strykerArgs],
-    manifest,
-    reportFile,
-    part ? manifest.gates.filter((gate) => chosen.selected.includes(gate.path)) : manifest.gates,
-    io
-  );
   let judged: Parameters<Guard['record']>[0] = null;
   const status = runMutationResult(
     dir,
