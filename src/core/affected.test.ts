@@ -232,7 +232,8 @@ describe('gateDependencies', () => {
     expect(found['src/a.ts']?.blind).toBe('src/round.ts uses readFileSync');
     // b loads round itself, and through the spec of b
     expect(found['src/b.ts']?.blind).toBe('src/round.ts uses readFileSync');
-    expect(found['src/c.ts']).toEqual({
+    // Not blind: no such key at all, as the record writes it.
+    expect(found['src/c.ts']).toStrictEqual({
       specs: ['src/c.spec.ts'],
       files: ['src/c.spec.ts', 'src/c.ts'],
     });

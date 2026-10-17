@@ -77,6 +77,10 @@ describe('diagnose', () => {
       ['note']
     );
     expect(diagnose({ ...healthy, blindGates: two }).map((one) => one.level)).toEqual(['problem']);
+    const mixed = [...plain, { file: 'lefthook.yml', affected: true }];
+    expect(diagnose({ ...healthy, hooks: mixed, blindGates: two }).map((one) => one.level)).toEqual(
+      ['problem']
+    );
     expect(diagnose({ ...healthy, blindGates }).map((one) => one.level)).toEqual(['note']);
     // What concerns every gate is said alone.
     expect(

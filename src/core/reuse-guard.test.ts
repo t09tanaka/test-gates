@@ -114,7 +114,8 @@ describe('refuseReuse', () => {
         'src/b.ts': { specs: [], files: ['src/b.ts'], blind: 'src/b.ts uses readFileSync' },
       },
     };
-    expect(parseRecord(record({ affected }))).toEqual(record({ affected }));
+    // A gate that is not blind gets no such key.
+    expect(parseRecord(record({ affected }))).toStrictEqual(record({ affected }));
     expect(parseRecord(record({ affected: { ...affected, extra: 1 } }))?.affected).toEqual(
       affected
     );
