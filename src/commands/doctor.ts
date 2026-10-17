@@ -5,6 +5,7 @@ import { describePlan } from '../core/affected.js';
 import { diagnose, formatFindings, type HookUse, hookUses } from '../core/doctor.js';
 import { ManifestError } from '../core/manifest.js';
 import { readManifest } from '../load.js';
+import { sandboxPlan } from '../sandboxes.js';
 import { gitEnvironment } from '../snapshot.js';
 import { findStrykerConfig } from './check.js';
 import { AffectedError, affectedInputs } from '../affected-files.js';
@@ -143,6 +144,8 @@ export function runDoctor(dir: string, io: Io): number {
       blind = error.message;
     }
   }
+  const left = sandboxPlan(manifest.dir, plain.temp);
+  const count = 'kept' in left.plan ? left.plan.kept.length : left.plan.remove.length;
   const { lines, status } = formatFindings(
     diagnose({
       incremental: plain.incremental,
@@ -154,6 +157,14 @@ export function runDoctor(dir: string, io: Io): number {
       blind,
       blindGates,
       gates: manifest.gates.length,
+      sandboxes:
+        count === 0
+          ? null
+          : {
+              tempDir: left.shown,
+              count,
+              kept: 'kept' in left.plan ? left.plan.why : null,
+            },
     })
   );
   lines.forEach((line) => io.out(line));

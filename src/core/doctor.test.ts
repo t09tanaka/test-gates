@@ -11,6 +11,7 @@ const healthy: DoctorFacts = {
   blind: null,
   blindGates: [],
   gates: 3,
+  sandboxes: null,
 };
 
 describe('diagnose', () => {
@@ -89,6 +90,30 @@ describe('diagnose', () => {
       )
     ).toEqual([
       'with --affected, a change of any file runs every mutant: what a gate depends on cannot be told (src/db.ts uses readdirSync)',
+    ]);
+  });
+
+  it('notes the sandboxes an interrupted run left, and whether the next run removes them', () => {
+    const text =
+      '2 sandbox(es) an interrupted Stryker run left in .stryker-tmp: a tool that walks the subproject (a test runner, a script) finds a copy of every file in them';
+    expect(
+      diagnose({ ...healthy, sandboxes: { tempDir: '.stryker-tmp', count: 2, kept: null } })
+    ).toEqual([{ level: 'note', text, fix: 'the next test-gates mutation removes them' }]);
+    expect(
+      diagnose({
+        ...healthy,
+        sandboxes: {
+          tempDir: '.stryker-tmp',
+          count: 2,
+          kept: 'the Stryker config sets cleanTempDir: false',
+        },
+      })
+    ).toEqual([
+      {
+        level: 'note',
+        text,
+        fix: 'remove them by hand; the next test-gates mutation keeps them, because the Stryker config sets cleanTempDir: false',
+      },
     ]);
   });
 
