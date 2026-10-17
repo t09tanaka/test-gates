@@ -185,7 +185,7 @@ export function withoutStrings(source: string): string {
   return source.replace(
     STRING,
     (all: string, before: string, space: string, quote: string, inside: string) =>
-      // In a template (`{"home": "${process.env.HOME}"}`) the quotes are text, and what is
+      // In a template (`{"home": "${home()}"}`) the quotes are text, and what is
       // between them may be code.
       inside.includes('${') ? all : `${before}${space}${quote}${' '.repeat(inside.length)}${quote}`
   );
