@@ -78,20 +78,34 @@ describe('kindOf', () => {
     expect(kindOf(key, 'pkg')).toBe('passive');
   });
 
-  it.each(['pkg/README.md', 'pkg/docs/a.markdown', 'notes.txt', 'pkg/a.RST', 'pkg/a.adoc'])(
-    'takes %s for a document',
-    (key) => {
-      expect(kindOf(key, 'pkg')).toBe('document');
-    }
-  );
+  it.each([
+    'pkg/README.md',
+    'pkg/docs/a.markdown',
+    'notes.txt',
+    'pkg/a.RST',
+    'pkg/a.adoc',
+    'pkg/src/a.html',
+    'pkg/docs/a.htm',
+    'pkg/reports/mutation/mutation.HTML',
+    'pkg/report.html',
+    'pkg/src/my-index.html',
+    'pkg/src/index.html.html',
+  ])('takes %s for a document', (key) => {
+    expect(kindOf(key, 'pkg')).toBe('document');
+  });
 
   it.each([
     // at the top of the subproject, outside of it, or of a kind that is not known
     'pkg/index.ts',
     'pkg/Makefile',
     'pkg/src/fixtures/a.yaml',
-    'pkg/src/a.html',
     'shared/round.ts',
+    // a page that a build tool or a test runner may start from
+    'pkg/index.html',
+    'pkg/index.htm',
+    'pkg/INDEX.HTML',
+    'pkg/src/index.html',
+    'pkg/coverage/index.html',
     'pkgx/src/a.ts',
     'pkg/src/a.ts.orig',
     'pkg/src/a.json5',
@@ -460,6 +474,26 @@ describe('planAffected', () => {
     });
   });
 
+  it('ignores a change of a page that no gate depends on, such as a report or the docs', () => {
+    expect(
+      plan({
+        'pkg/reports/mutation/mutation.html': 'h1',
+        'pkg/docs/guide.htm': 'g1',
+        'pkg/report.html': 'r1',
+      })
+    ).toEqual({ rerun: [], reused: ['src/a.ts', 'src/b.ts', 'src/c.ts'] });
+  });
+
+  it('runs a gate again for a page that it loads', () => {
+    const page = gates.map((gate) =>
+      gate.path === 'src/c.ts' ? { ...gate, files: [...gate.files, 'pkg/src/c.html'] } : gate
+    );
+    expect(plan({ 'pkg/src/c.html': 'h2' }, { gates: page })).toEqual({
+      rerun: [{ gate: 'src/c.ts', changed: ['pkg/src/c.html'] }],
+      reused: ['src/a.ts', 'src/b.ts'],
+    });
+  });
+
   it('takes a file outside the subproject that a gate depends on for that gate alone', () => {
     expect(plan({ 'shared/money.ts': 'm2' })).toEqual({
       rerun: [{ gate: 'src/c.ts', changed: ['shared/money.ts'] }],
@@ -484,6 +518,8 @@ describe('planAffected', () => {
     ['a file at the top of the subproject', 'pkg/index.ts'],
     ['a file outside the subproject that no gate depends on', 'shared/unused.ts'],
     ['a new lock file', 'package-lock.json'],
+    ['the page a build tool may start from', 'pkg/index.html'],
+    ['a page a build tool may start from, below the top', 'pkg/src/index.html'],
   ])('runs every gate after a change of %s', (_name, key) => {
     expect(plan({ [key]: 'changed' })).toEqual({
       full: `changed since the last run, and may affect every gate: ${key}`,

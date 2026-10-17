@@ -468,6 +468,25 @@ describe('affectedInputs', () => {
     expect(found.gates['src/c.ts']?.files).toEqual(['src/c.spec.ts', 'src/c.ts']);
   });
 
+  it('takes a page that the runner config names as a config, and one a gate imports as its file', () => {
+    const dir = fixture({
+      'vitest.gates.config.ts':
+        "export default { test: { browser: { testerHtmlPath: './test/tester.html' } }, root: import.meta.dirname };\n",
+      'test/tester.html': '<!doctype html>\n',
+      'src/c.ts':
+        "import page from './c.html';\nexport const c = (x: number) => x - page.length;\n",
+      'src/c.html': '<p>c</p>\n',
+      'docs/guide.html': '<p>guide</p>\n',
+    });
+    const found = inputs(dir);
+    expect(found.config).toEqual([
+      'stryker.gates.config.mjs',
+      'test/tester.html',
+      'vitest.gates.config.ts',
+    ]);
+    expect(found.gates['src/c.ts']?.files).toEqual(['src/c.html', 'src/c.spec.ts', 'src/c.ts']);
+  });
+
   it('refuses a package of the repository that is linked into node_modules', () => {
     const dir = fixture({
       'src/a.ts':
