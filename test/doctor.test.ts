@@ -140,7 +140,7 @@ describe('test-gates doctor', () => {
     };
     const without = doctor(repository(blind));
     expect(without.stdout).toContain(
-      'note: with --affected, a change of any file runs every mutant: what a gate depends on cannot be told (src/cases.ts'
+      'note: with --affected, a change of any file runs 1 of 1 gate(s) again (src/fee.ts): what they depend on cannot be told (src/cases.ts'
     );
     expect(without.stdout).not.toContain('runs test-gates mutation without --affected');
     expect(without.status).toBe(0);
@@ -151,7 +151,7 @@ describe('test-gates doctor', () => {
       })
     );
     expect(relying.stdout).toContain(
-      'problem: with --affected, a change of any file runs every mutant'
+      'problem: with --affected, a change of any file runs 1 of 1 gate(s) again'
     );
     expect(relying.status).toBe(1);
   });

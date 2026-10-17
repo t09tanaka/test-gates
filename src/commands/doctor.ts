@@ -122,14 +122,19 @@ export function runDoctor(dir: string, io: Io): number {
   }
   // Whether --affected can tell the gates apart, whatever the record holds.
   let blind: string | null = null;
+  let blindGates: Array<{ gate: string; reason: string }> = [];
   if (plain.snapshot !== null) {
     try {
-      affectedInputs(manifest, {
+      const inputs = affectedInputs(manifest, {
         root: plain.root,
         files: plain.snapshot.files,
         configs: plain.configs(),
         tests: [],
         covering: {},
+      });
+      blindGates = manifest.gates.flatMap((gate) => {
+        const reason = inputs.gates[gate.path]?.blind;
+        return reason === undefined ? [] : [{ gate: gate.path, reason }];
       });
     } catch (error) {
       if (!(error instanceof AffectedError)) {
@@ -147,6 +152,8 @@ export function runDoctor(dir: string, io: Io): number {
       scope: plain.scope,
       hooks: hooksOf(fs.realpathSync(manifest.dir)),
       blind,
+      blindGates,
+      gates: manifest.gates.length,
     })
   );
   lines.forEach((line) => io.out(line));

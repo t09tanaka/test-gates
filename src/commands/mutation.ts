@@ -330,6 +330,7 @@ export function decideReuse(
             gates: manifest.gates.map((gate) => ({
               path: gate.path,
               files: inputs.gates[gate.path]?.files ?? [],
+              blind: inputs.gates[gate.path]?.blind,
             })),
           });
         } catch (error) {
@@ -522,7 +523,12 @@ function guardIncremental(
       for (const gate of Object.keys(covering)) {
         const entry = inputs.gates[gate];
         if (entry !== undefined) {
-          recorded[gate] = { specs: entry.specs, files: entry.files };
+          // A blind gate is written down too: the next run reuses it when nothing changed.
+          recorded[gate] = {
+            specs: entry.specs,
+            files: entry.files,
+            ...(entry.blind === undefined ? {} : { blind: entry.blind }),
+          };
         }
       }
       return { tests: Object.keys(judged.report.testFiles ?? {}).sort(), gates: recorded };

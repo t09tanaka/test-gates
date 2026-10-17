@@ -9,6 +9,8 @@ const healthy: DoctorFacts = {
   scope: { files: 12 },
   hooks: [{ file: '.husky/pre-push', affected: true }],
   blind: null,
+  blindGates: [],
+  gates: 3,
 };
 
 describe('diagnose', () => {
@@ -45,6 +47,44 @@ describe('diagnose', () => {
         text: 'with --affected, a change of any file runs every mutant: what a gate depends on cannot be told (src/db.ts uses readdirSync)',
         fix: 'keep what reads files or loads modules by a computed name out of what the gates and their specs import, or run without --affected',
       },
+    ]);
+  });
+
+  it('names the gates that --affected runs again for any change, as a note, and still asks for --affected', () => {
+    const blindGates = [
+      { gate: 'src/a.ts', reason: 'src/env.ts uses readFileSync' },
+      { gate: 'src/b.ts', reason: 'src/env.ts uses readFileSync' },
+    ];
+    expect(diagnose({ ...healthy, blindGates })).toEqual([
+      {
+        level: 'note',
+        text: 'with --affected, a change of any file runs 2 of 3 gate(s) again (src/a.ts, src/b.ts): what they depend on cannot be told (src/env.ts uses readFileSync)',
+        fix: 'keep what reads files by a path no import names out of what those gates and their specs import',
+      },
+    ]);
+    const two = [...blindGates, { gate: 'src/c.ts', reason: 'src/c.ts uses readdirSync' }];
+    expect(diagnose({ ...healthy, blindGates: two })[0]?.text).toBe(
+      'with --affected, a change of any file runs 3 of 3 gate(s) again (src/a.ts, src/b.ts, src/c.ts): what they depend on cannot be told (src/env.ts uses readFileSync (and 1 more reason(s)))'
+    );
+    // A hook without --affected is still worth changing: the other gates are told apart.
+    const plain = [{ file: '.husky/pre-push', affected: false }];
+    expect(diagnose({ ...healthy, hooks: plain, blindGates }).map((one) => one.level)).toEqual([
+      'note',
+      'problem',
+    ]);
+    // With every gate blind, --affected tells none apart: as for a cause of every gate.
+    expect(diagnose({ ...healthy, hooks: plain, blindGates: two }).map((one) => one.level)).toEqual(
+      ['note']
+    );
+    expect(diagnose({ ...healthy, blindGates: two }).map((one) => one.level)).toEqual(['problem']);
+    expect(diagnose({ ...healthy, blindGates }).map((one) => one.level)).toEqual(['note']);
+    // What concerns every gate is said alone.
+    expect(
+      diagnose({ ...healthy, blind: 'src/db.ts uses readdirSync', blindGates }).map(
+        (one) => one.text
+      )
+    ).toEqual([
+      'with --affected, a change of any file runs every mutant: what a gate depends on cannot be told (src/db.ts uses readdirSync)',
     ]);
   });
 

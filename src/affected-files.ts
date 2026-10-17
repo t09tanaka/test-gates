@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import { builtinModules } from 'node:module';
 import path from 'node:path';
-import { gateDependencies, isNestedMock, kindOf } from './core/affected.js';
+import { type GateDependencies, gateDependencies, isNestedMock, kindOf } from './core/affected.js';
 import { isProjectImport } from './core/import-policy.js';
 import { findUncheckableImports, type ImportRef, parseImports } from './core/imports.js';
 import {
@@ -16,7 +16,26 @@ import {
 import type { ImportAlias } from './core/types.js';
 import type { LoadedManifest } from './load.js';
 
-/** Thrown when what a gate depends on cannot be told from the text of the files. */
+/**
+ * Thrown when what the gates depend on cannot be told apart from the text of the files. Some
+ * causes concern every gate, and are thrown; one that concerns only the gates that depend on a
+ * file makes those blind (see core/affected.ts), and the others are still told apart:
+ *
+ * - Every gate: a test runner other than jest and vitest; a map of the runner config that
+ *   settings.importAliases does not name; a spec of the report outside of the subproject; a
+ *   setup file (or what it loads) that reads files or loads modules no import names, or that loads
+ *   a gate; a file a gate or a spec loads that is not compared (git ignores it, it lies outside):
+ *   its change would not be seen even by a blind gate.
+ * - Every gate as well: a gate or a spec that may load modules no import names (a path not
+ *   written out, an alias not named, a component, a linked package, require.context,
+ *   createRequire, process.cwd, a mock named by a computed path): such a spec may load any gate,
+ *   so the gates it can see cannot be told.
+ * - Only the gates that depend on it: a file that may read files no import names (readFileSync,
+ *   readFile, fromFile and fromURL of jsdom, fs, a glob, a path from __dirname handed to a function or a package that reads by it). A
+ *   package is not looked into: one handed such a path is taken to read by it.
+ *
+ * Where it is not clear which, the cause is taken for one of every gate.
+ */
 export class AffectedError extends Error {}
 
 /**
@@ -35,6 +54,9 @@ const RUNTIME_PATHS =
 const PATH_FROM_TOP = /^[^\s./?#*:][^\s?#*:]*\.(?:html?|md|json)$/i;
 /** The query of an import of Vite (`./page.html?raw`, `./worker.ts?worker`): not a part of the path. */
 const withoutQuery = (specifier: string): string => specifier.replace(/\?[^/]*$/, '');
+/** Those of RUNTIME_PATHS that may also load modules, not only read files. */
+const RUNTIME_LOADS =
+  /\b(?:require\.(?:context|resolve)|process\.cwd|createRequire)\b|\bimport\.meta\.(?:glob|resolve)\b/;
 /**
  * Where the file itself lies. Knowing it reads nothing: `path.join(__dirname, '..', '.env')` is
  * only a string. It is what the file does with it that may read a file (see LOCATION_READS).
@@ -48,6 +70,9 @@ const LOCATION = /\b(?:__dirname|__filename)\b|\bimport\.meta\.(?:url|dirname|fi
  */
 const LOCATION_READS =
   /\b(?:readFile|readdir|readlink|existsSync|stat|statSync|lstat|lstatSync|access|accessSync|realpath|realpathSync|open|openSync|opendir|opendirSync|createReadStream|watch|watchFile|glob|globSync|promises)\b|\b(?:requireActual|requireMock|importActual|importMock|mock|doMock|unstable_mockModule|setMock|createMockFromModule)\(\s*(?![\s'"`)])|\bWorker\(/;
+/** Those of LOCATION_READS that load a module: a mock, a worker. */
+const LOCATION_LOADS =
+  /\b(?:requireActual|requireMock|importActual|importMock|mock|doMock|unstable_mockModule|setMock|createMockFromModule)\(\s*(?![\s'"`)])|\bWorker\(/;
 /**
  * Modules that a file may import next to LOCATION without reading by it: those that only build
  * paths and URLs, and the test runner's own. Any other package or built-in module counts as one
@@ -74,6 +99,8 @@ const FILE_MODULES = new Set([
   'fast-glob',
   'globby',
 ]);
+/** Those of FILE_MODULES that may also load modules, not only read files. */
+const LOADING_MODULES = new Set(['child_process', 'module', 'worker_threads']);
 const bare = (specifier: string): string => specifier.replace(/^node:/, '');
 
 /**
@@ -316,6 +343,11 @@ export interface Edges {
   loads: string[];
   /** Why what the file loads cannot be told, or null. */
   unknown: string | null;
+  /**
+   * Why the file may load modules that are not followed, or null: when `unknown` is set and this
+   * is not, the file only reads files that no import names (see AffectedError).
+   */
+  loading: string | null;
   /** Whether the file loads modules that are not followed: a path not written out, or a linked package. */
   computed: boolean;
   /** Imports that are neither a file nor an installed package: aliases this tool is not told of. */
@@ -348,7 +380,12 @@ export function fileEdges(
       ? []
       : resolveFiles(path.resolve(dir, alias.target + specifier.slice(alias.prefix.length)));
   };
-  const found: Edges = { loads: [], unknown: null, computed: false, unnamed: [] };
+  const found: Edges = { loads: [], unknown: null, loading: null, computed: false, unnamed: [] };
+  /** Notes a cause that may load modules: also `unknown`, unless another one is first. */
+  const loading = (reason: string): void => {
+    found.unknown ??= reason;
+    found.loading ??= reason;
+  };
   cache.set(file, found);
   const snapshotFile = path.join(
     path.dirname(file),
@@ -383,15 +420,20 @@ export function fileEdges(
   // What a comment names is not run. A string is kept: a path in one is followed below.
   const code = withoutComments(source);
   if (COMPONENT.test(file)) {
-    found.unknown = `${shown(file)} is a component, which can use others that it does not import`;
+    loading(`${shown(file)} is a component, which can use others that it does not import`);
   }
   const uncheckable = findUncheckableImports(code)[0];
   const runtime = RUNTIME_PATHS.exec(code);
+  const runtimeLoads = RUNTIME_LOADS.exec(code);
   if (uncheckable !== undefined) {
     found.unknown = `${shown(file)}:${uncheckable} imports a module whose path is not written out`;
+    found.loading = found.unknown;
     found.computed = true;
   } else if (runtime !== null) {
     found.unknown = `${shown(file)} uses ${runtime[0]}, which can reach files that no import names`;
+    if (runtimeLoads !== null) {
+      found.loading ??= `${shown(file)} uses ${runtimeLoads[0]}, which can reach files that no import names`;
+    }
   }
   const location = LOCATION.exec(code);
   // An import of types only, where the run drops it (see typesErased), loads nothing; a module
@@ -418,26 +460,35 @@ export function fileEdges(
         withoutQuery(specifier.startsWith('file:') ? new URL(specifier).pathname : specifier)
       );
       if (resolved.length === 0) {
-        found.unknown ??= `${shown(file)} imports ${specifier}, which leads to no file`;
+        loading(`${shown(file)} imports ${specifier}, which leads to no file`);
       } else {
         found.loads.push(...resolved.map(realpath));
       }
     } else if (isProjectImport(specifier, aliases)) {
       const resolved = target(withoutQuery(specifier), file);
       if (resolved.length === 0) {
-        found.unknown ??= `${shown(file)} imports ${specifier}, which leads to no file`;
+        loading(`${shown(file)} imports ${specifier}, which leads to no file`);
       } else {
         found.loads.push(...resolved.map(realpath));
       }
     } else if (FILE_MODULES.has(bare(specifier))) {
-      found.unknown ??= `${shown(file)} imports ${specifier}, which can reach files that no import names`;
+      const reason = `${shown(file)} imports ${specifier}, which can reach files that no import names`;
+      if (LOADING_MODULES.has(bare(specifier))) {
+        loading(reason);
+      } else {
+        found.unknown ??= reason;
+      }
     } else if (!specifier.startsWith('node:') && !builtinModules.includes(specifier)) {
       if (!installed(specifier, file)) {
-        found.unknown ??= `${shown(file)} imports ${specifier}, which is neither a file nor an installed package (name an alias in settings.importAliases)`;
+        loading(
+          `${shown(file)} imports ${specifier}, which is neither a file nor an installed package (name an alias in settings.importAliases)`
+        );
         found.unnamed.push(specifier);
       } else if (linkedPackage(specifier, file) !== null) {
         // A package of the repository, linked into node_modules: its files are not followed.
-        found.unknown ??= `${shown(file)} imports ${specifier}, a package of the repository linked into node_modules`;
+        loading(
+          `${shown(file)} imports ${specifier}, a package of the repository linked into node_modules`
+        );
         found.computed = true;
       }
     }
@@ -454,6 +505,10 @@ export function fileEdges(
     );
     if (reads !== null) {
       found.unknown ??= `${shown(file)} uses ${location[0]} and ${reads[0].replace(/\(\s*$/, '')}, which can reach files that no import names`;
+      const loads = LOCATION_LOADS.exec(code);
+      if (loads !== null) {
+        found.loading ??= `${shown(file)} uses ${location[0]} and ${loads[0].replace(/\(\s*$/, '')}, which can reach files that no import names`;
+      }
     } else if (reader !== undefined) {
       found.unknown ??= `${shown(file)} uses ${location[0]} and imports ${reader}, which can read files by it that no import names`;
     }
@@ -492,7 +547,7 @@ export function fileEdges(
  * @param input.tests Spec files of the last run, relative to the subproject.
  * @param input.covering For each gate (as in test-gates.json): the specs, relative to the
  *   subproject, whose tests covered or killed one of its mutants.
- * @throws AffectedError when what a gate depends on cannot be told.
+ * @throws AffectedError when what the gates depend on cannot be told apart (see AffectedError).
  */
 export function affectedInputs(
   manifest: LoadedManifest,
@@ -507,9 +562,17 @@ export function affectedInputs(
   subproject: string;
   config: string[];
   /** By gate as in test-gates.json. */
-  gates: Record<string, { key: string; specs: string[]; files: string[] }>;
+  gates: Record<string, InputGate>;
 } {
   return resolving(() => inputsOf(manifest, input));
+}
+
+/** What a gate depends on; `blind` is set when not every file of it is known. */
+export interface InputGate {
+  key: string;
+  specs: string[];
+  files: string[];
+  blind?: string;
 }
 
 function inputsOf(
@@ -570,14 +633,26 @@ function inputsOf(
   }
   const edges = new Map<string, Edges>();
   const edgesOf = (file: string): Edges => fileEdges(file, { dir, aliases, cache: edges, types });
-  /** The file and what it loads, directly or not. */
-  const closure = (start: string, strict: boolean): string[] => {
+  /** Files that read files no import names, by key, with why (see AffectedError). */
+  const blind = Object.create(null) as Record<string, string>;
+  /**
+   * The file and what it loads, directly or not.
+   * @param strict 'every' refuses any file whose loads cannot be told; 'gate' refuses only one
+   *   that may load modules, and notes one that only reads files in `blind`.
+   */
+  const closure = (start: string, strict: false | 'every' | 'gate'): string[] => {
     const seen = new Set([start]);
     const queue = [start];
     for (let file = queue.shift(); file !== undefined; file = queue.shift()) {
       const found = edgesOf(file);
-      if (strict && found.unknown !== null) {
+      if (strict === 'every' && found.unknown !== null) {
         throw new AffectedError(found.unknown);
+      }
+      if (strict === 'gate' && found.unknown !== null) {
+        if (found.loading !== null) {
+          throw new AffectedError(found.loading);
+        }
+        blind[keyOf(file)] = found.unknown;
       }
       for (const next of found.loads) {
         if (!seen.has(next)) {
@@ -662,7 +737,7 @@ function inputsOf(
   const isConfig = (file: string): boolean =>
     input.configs.files.includes(file) || kindOf(keyOf(file), subprojectKey) === 'config';
   for (const file of named.filter((one) => !isConfig(one) && !runAsSuch.has(one))) {
-    for (const loaded of closure(file, true)) {
+    for (const loaded of closure(file, 'every')) {
       const gate = gatePaths.get(loaded);
       if (gate !== undefined) {
         throw new AffectedError(
@@ -680,7 +755,7 @@ function inputsOf(
     if (!fs.existsSync(absolute)) {
       continue; // a spec that is gone: its key is compared, and has changed
     }
-    closures[keysOf([absolute])[0] as string] = keysOf(closure(realpath(absolute), true));
+    closures[keysOf([absolute])[0] as string] = keysOf(closure(realpath(absolute), 'gate'));
   }
   const keyed = (files: string[]): string[] =>
     files.map((file) => toPosix(path.relative(input.root, path.join(dir, file))));
@@ -694,22 +769,21 @@ function inputsOf(
       Object.entries(input.covering).map(([gate, specs]) => [keyed([gate])[0], keyed(specs)])
     ),
     closures,
+    blind,
   });
   const subproject = toPosix(path.relative(input.root, dir));
   const prefix = subproject === '' ? '' : `${subproject}/`;
-  const gates = Object.create(null) as Record<
-    string,
-    { key: string; specs: string[]; files: string[] }
-  >;
+  const gates = Object.create(null) as Record<string, InputGate>;
   for (const gate of manifest.gates) {
     const key = keyed([gate.path])[0] as string;
-    const found = dependencies[key] as { specs: string[]; files: string[] };
+    const found = dependencies[key] as GateDependencies;
     gates[gate.path] = {
       key,
       specs: found.specs.map((spec) =>
         spec.startsWith(prefix) ? spec.slice(prefix.length) : spec
       ),
       files: found.files,
+      ...(found.blind === undefined ? {} : { blind: found.blind }),
     };
   }
   // Jest takes a mock below any `__mocks__` for the package of its name, in every spec, without
