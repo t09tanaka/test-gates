@@ -277,4 +277,242 @@ describe('hookUses', () => {
   it('takes the top of the repository for a subproject there', () => {
     expect(uses('npx test-gates mutation --dir .\n', '')).toEqual([plain]);
   });
+  describe('in a case or a loop over the subprojects', () => {
+    const sample = [
+      'run_gates() {',
+      '    project="$1"',
+      '    ( cd "$project" && gated npm run test:gates && gated npm run test:gates:selfcheck ) || return 1',
+      '    case "$project" in',
+      '        client|admin) ( cd "$project" && gated npm run test:gates:mutation -- --affected ) ;;',
+      '        api) ( cd "$project" && gated npm run test:gates:mutation ) ;;',
+      '        *) echo "unknown $project"; return 1 ;;',
+      '    esac',
+      '}',
+      '',
+    ].join('\n');
+
+    it('takes a run in a branch for one of the names of its pattern', () => {
+      expect(uses(sample, 'client')).toEqual([given]);
+      expect(uses(sample, 'admin')).toEqual([given]);
+      expect(uses(sample, 'api')).toEqual([plain]);
+      expect(uses(sample, 'web')).toEqual([]);
+    });
+
+    it('reads the ways a case can be written', () => {
+      const one = (subject: string, branches: string) =>
+        uses(`case ${subject} in\n${branches}\nesac\n`);
+      expect(one('$p', 'tax) cd "$p" && npx test-gates mutation ;;')).toEqual([]);
+      expect(one('${p}', 'tax) cd "${p}" && npx test-gates mutation ;;')).toEqual([]);
+      expect(one('"${p}"', '(tax) cd $p && npx test-gates mutation ;;')).toEqual([]);
+      expect(one('"$p"', ' "tax" | \'vat\' ) cd $p && npx test-gates mutation;;')).toEqual([]);
+      expect(one("'$p'", 'tax) cd "$p" && npx test-gates mutation ;;')).toEqual([plain]);
+      expect(one('"$p"', 'fee|tax) cd "$p" && npx test-gates mutation ;;')).toEqual([plain]);
+      expect(one('"$p"', 'tax)\n  cd "$p"\n  npx test-gates mutation\n  ;;')).toEqual([]);
+      expect(one('"$p"', 'tax) cd "$p" && npx test-gates mutation')).toEqual([]);
+      expect(
+        uses(
+          'case "$p" in tax) cd "$p" && npx test-gates mutation ;; fee) cd "$p" && npx test-gates mutation --affected ;; esac\n'
+        )
+      ).toEqual([given]);
+      expect(uses('case "$p" in\n  tax) cd "$p" && npx test-gates mutation ;; esac\n')).toEqual([]);
+    });
+
+    it('reads a subject, a name and a pattern only as a whole', () => {
+      const one = (subject: string, pattern: string, cd: string, subproject = 'fee') =>
+        uses(
+          `case ${subject} in\n${pattern}) cd ${cd} && npx test-gates mutation ;;\nesac\n`,
+          subproject
+        );
+      expect(one('x$p', 'tax', '"$p"')).toEqual([plain]);
+      expect(one('$p/x', 'tax', '"$p"')).toEqual([plain]);
+      expect(one('"${pp}"', 'tax', '"${pp}"')).toEqual([]);
+      expect(one('$pp', 'tax', '"${pp}"')).toEqual([]);
+      expect(one('$p', ' tax | vat ', '"$p"', 'tax')).toEqual([plain]);
+      expect(one('$p', '"tax" | \'vat\'', '"$p"', 'vat')).toEqual([plain]);
+      expect(one('$p', 'x"tax"', '"$p"')).toEqual([plain]);
+      expect(one('$p', '"tax"x', '"$p"')).toEqual([plain]);
+    });
+
+    it('takes the innermost scope of a variable', () => {
+      const text =
+        'case "$p" in\ntax)\ncase "$p" in\nvat) cd "$p" && npx test-gates mutation ;;\nesac ;;\nesac\n';
+      expect(uses(text, 'vat')).toEqual([plain]);
+      expect(uses(text, 'tax')).toEqual([]);
+    });
+
+    it('leaves a run any subproject where the pattern may stand for others', () => {
+      for (const pattern of [
+        '*',
+        'ta*',
+        '{tax}',
+        't?x',
+        '[t]ax',
+        'tax|*',
+        '$other',
+        'ta\\x',
+        '`x`',
+        "''",
+      ]) {
+        expect(
+          uses(`case "$p" in\n${pattern}) cd "$p" && npx test-gates mutation ;;\nesac\n`),
+          pattern
+        ).toEqual([plain]);
+      }
+    });
+
+    it('narrows only the variable the case is on', () => {
+      expect(uses('case "$p" in\ntax) cd "$q" && npx test-gates mutation ;;\nesac\n')).toEqual([
+        plain,
+      ]);
+      expect(uses('case "$p$q" in\ntax) cd "$p" && npx test-gates mutation ;;\nesac\n')).toEqual([
+        plain,
+      ]);
+      expect(uses('case x in\ntax) cd "$p" && npx test-gates mutation ;;\nesac\n')).toEqual([
+        plain,
+      ]);
+      expect(uses('case "$p" in\ntax) cd "$p/$q" && npx test-gates mutation ;;\nesac\n')).toEqual([
+        plain,
+      ]);
+      expect(
+        uses('case "$p" in\ntax) cd "pkg/$p" && npx test-gates mutation ;;\nesac\n', 'pkg/tax')
+      ).toEqual([plain]);
+      expect(
+        uses('case "$p" in\ntax) cd "pkg/$p" && npx test-gates mutation ;;\nesac\n', 'tax')
+      ).toEqual([]);
+    });
+
+    it('reads a case in a case, and is back to the outer one after esac', () => {
+      const nested = [
+        'case "$p" in',
+        '  tax|vat)',
+        '    case "$q" in',
+        '      x) cd "$q" && npx test-gates mutation ;;',
+        '      y) cd "$p" && npx test-gates mutation --affected ;;',
+        '    esac',
+        '    cd "$p" && npm run test:gates:mutation',
+        '    ;;',
+        'esac',
+        'cd "$p" && npm run test:gates:mutation',
+        '',
+      ].join('\n');
+      expect(uses(nested, 'fee')).toEqual([plain]);
+      expect(uses(nested, 'tax')).toEqual([given, plain, plain]);
+      expect(uses(nested, 'x')).toEqual([plain, plain]);
+    });
+
+    it('narrows by a cd on a line before only in the same branch', () => {
+      expect(uses('case "$p" in\ntax)\ncd "$p"\nnpx test-gates mutation ;;\nesac\n')).toEqual([]);
+      expect(
+        uses('case "$p" in\ntax) cd "$p" ;;\nvat) npx test-gates mutation ;;\nesac\n')
+      ).toEqual([plain]);
+      expect(uses('cd "$p"\ncase "$p" in\ntax) npx test-gates mutation ;;\nesac\n')).toEqual([
+        plain,
+      ]);
+    });
+
+    it('looks for the cd before the run in its own branch and outside of the case, not in another branch', () => {
+      const text = (before: string) =>
+        `${before}case "$p" in\na) cd tax ;;\nb) cd vat\n  case "$q" in\n  x) cd tax ;;\n  y) npx test-gates mutation ;;\n  esac ;;\nc) npx test-gates mutation ;;\nesac\n`;
+      expect(uses(text(''), 'vat')).toEqual([plain, plain]);
+      expect(uses(text(''), 'tax')).toEqual([plain]);
+      expect(uses(text('cd fee\n'), 'fee')).toEqual([plain]);
+      expect(uses(text('cd fee\n'), 'tax')).toEqual([]);
+      expect(uses('case "$p" in\na) cd tax ;;\nesac\nnpx test-gates mutation\n', 'tax')).toEqual([
+        plain,
+      ]);
+      expect(
+        uses('for p in a; do cd tax; done\nfor q in b; do npx test-gates mutation; done\n', 'tax')
+      ).toEqual([plain]);
+      expect(uses('case "$p" in\na) cd tax ;;\nesac\nnpx test-gates mutation\n')).toEqual([]);
+      expect(
+        uses('for p in a; do cd tax; done\nfor q in b; do npx test-gates mutation; done\n')
+      ).toEqual([]);
+      expect(
+        uses(
+          'case "$p" in\na) cd tax ;;\nesac\nfor q in b; do case "$q" in b) npx test-gates mutation ;; esac; done\n'
+        )
+      ).toEqual([]);
+    });
+
+    it('takes a loop over names written out the same way', () => {
+      expect(uses('for p in tax vat; do\n  (cd "$p" && npx test-gates mutation)\ndone\n')).toEqual(
+        []
+      );
+      expect(uses('for p in tax fee\ndo\n  (cd "$p" && npx test-gates mutation)\ndone\n')).toEqual([
+        plain,
+      ]);
+      expect(uses('for p in "tax"; do cd "$p" && npx test-gates mutation; done\n')).toEqual([]);
+      for (const list of ['tax "$@"', '$(ls)', 't*', '', '{tax,vat}', '~/tax']) {
+        expect(
+          uses(`for p in ${list}; do cd "$p" && npx test-gates mutation; done\n`),
+          list
+        ).toEqual([plain]);
+      }
+      expect(uses('for p; do cd "$p" && npx test-gates mutation; done\n')).toEqual([plain]);
+      expect(uses('while read p; do cd "$p" && npx test-gates mutation; done\n')).toEqual([plain]);
+      expect(uses('for p in tax ; do cd "$p" && npx test-gates mutation; done\n')).toEqual([]);
+      expect(uses('for p in tax  vat; do cd "$p" && npx test-gates mutation; done\n')).toEqual([]);
+      expect(
+        uses(
+          'while read q; do case "$p" in tax) cd "$p" && npx test-gates mutation ;; esac; done\n'
+        )
+      ).toEqual([]);
+      expect(uses('for p in tax; do echo; done\ncd "$p" && npx test-gates mutation\n')).toEqual([
+        plain,
+      ]);
+    });
+
+    it('leaves every run any subproject in a hook it cannot read so', () => {
+      const branch = 'tax) cd "$p" && npx test-gates mutation';
+      for (const text of [
+        `case "$p" in\n${branch} ;&\nvat) echo ;;\nesac\n`,
+        `case "$p" in\n${branch} ;;\n`,
+        `for p in tax; do\n${branch}\n`,
+        `${branch} ;;\n`,
+        `for p in tax; do\ncase "$p" in\n${branch} ;;\ndone\nesac\n`,
+        `case "$p" in\n${branch} ;;\nesac\ndone\n`,
+        `case "$p" in\n${branch} ;;\nvat\nesac\n`,
+        `for p in tax vat; do\necho ;; vat) cd "$p" && npx test-gates mutation\ndone\n`,
+      ]) {
+        expect(uses(text), text).toEqual([plain]);
+      }
+      expect(uses(`case "$p" in\ntax) cd "$p" && npx test-gates mutation ;;&\nesac\n`)).toEqual([]);
+    });
+
+    it('reads a keyword only where a command starts', () => {
+      expect(
+        uses(
+          'echo case "$p" in\ncase "$p" in\ntax) echo done; echo esac; cd "$p" && npx test-gates mutation ;;\nesac\n'
+        )
+      ).toEqual([]);
+      expect(
+        uses('if true; then case "$p" in\ntax) cd "$p" && npx test-gates mutation ;; esac; fi\n')
+      ).toEqual([]);
+      expect(uses('{ case "$p" in tax) cd "$p" && npx test-gates mutation ;; esac; }\n')).toEqual(
+        []
+      );
+      expect(uses('x && case "$p" in tax) cd "$p" && npx test-gates mutation ;; esac\n')).toEqual(
+        []
+      );
+      expect(uses('ok || case "$p" in tax) cd "$p" && npx test-gates mutation ;; esac\n')).toEqual(
+        []
+      );
+      expect(uses('x & case "$p" in tax) cd "$p" && npx test-gates mutation ;; esac\n')).toEqual(
+        []
+      );
+      expect(uses('(case "$p" in tax) cd "$p" && npx test-gates mutation ;; esac)\n')).toEqual([]);
+      expect(uses('x; case "$p" in tax) cd "$p" && npx test-gates mutation ;; esac\n')).toEqual([]);
+      expect(
+        uses('for q in a; do case "$p" in tax) cd "$p" && npx test-gates mutation ;; esac; done\n')
+      ).toEqual([]);
+      expect(
+        uses(
+          'if x; then :; else case "$p" in tax) cd "$p" && npx test-gates mutation ;; esac; fi\n'
+        )
+      ).toEqual([]);
+      expect(uses('mycase "$p" in tax) cd "$p" && npx test-gates mutation ;; esac\n')).toEqual([
+        plain,
+      ]);
+    });
+  });
 });
