@@ -88,11 +88,17 @@ function shareOneRun<Result extends { status: number | null }>(
   let touchDir: string;
   try {
     // A run that was interrupted (Ctrl-C ends this process at once) left its directory behind.
-    // An hour is far beyond any gate run, so nothing that is still in use is removed.
+    // An hour is far beyond any gate run, so nothing that is still in use is removed. Another
+    // selfcheck may remove its own directory between the listing and the look at it: such an
+    // entry is passed over.
     for (const name of fs.readdirSync(manifest.dir)) {
       const left = path.join(manifest.dir, name);
-      if (name.startsWith(TOUCH_PREFIX) && Date.now() - fs.statSync(left).mtimeMs > 3_600_000) {
-        fs.rmSync(left, { recursive: true, force: true });
+      try {
+        if (name.startsWith(TOUCH_PREFIX) && Date.now() - fs.statSync(left).mtimeMs > 3_600_000) {
+          fs.rmSync(left, { recursive: true, force: true });
+        }
+      } catch {
+        // Gone already, or not ours to remove.
       }
     }
     // In the subproject: Vite does not load the provider module from anywhere else (see
@@ -213,17 +219,27 @@ async function runAtOnce(
   const results = new Map<LoadedManifest['gates'][number], Ended>();
   let root: string;
   try {
-    // A run that was interrupted (Ctrl-C ends this process at once) left its directory behind.
-    // An hour is far beyond any gate run, so nothing that is still in use is removed.
-    for (const name of fs.readdirSync(os.tmpdir())) {
-      const left = path.join(os.tmpdir(), name);
-      if (name.startsWith(JOBS_PREFIX) && Date.now() - fs.statSync(left).mtimeMs > 3_600_000) {
-        fs.rmSync(left, { recursive: true, force: true });
-      }
-    }
     root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), JOBS_PREFIX)));
   } catch {
     return results;
+  }
+  // A run that was interrupted (Ctrl-C ends this process at once) left its directory behind.
+  // An hour is far beyond any gate run, so nothing that is still in use is removed. Another
+  // selfcheck may remove its own directory between the listing and the look at it: such an
+  // entry is passed over, and the runs here go on whatever this tidying meets.
+  try {
+    for (const name of fs.readdirSync(os.tmpdir())) {
+      const left = path.join(os.tmpdir(), name);
+      try {
+        if (name.startsWith(JOBS_PREFIX) && Date.now() - fs.statSync(left).mtimeMs > 3_600_000) {
+          fs.rmSync(left, { recursive: true, force: true });
+        }
+      } catch {
+        // Gone already, or not ours to remove.
+      }
+    }
+  } catch {
+    // The directory cannot be listed: nothing is tidied this time.
   }
   const queue = [...gates];
   const line = async (dir: string): Promise<void> => {
@@ -403,6 +419,11 @@ export async function runSelfcheck(
           ...manifest.gates.flatMap((gate) => [gate.path, gate.spec as string]),
         ].sort((left, right) => right.length - left.length);
         const results = await runAtOnce(manifest, atOnce, jobs, known.runner, executable, args);
+        if (results.size === 0) {
+          io.out(
+            `test-gates selfcheck: one negative control at a time (no directory for the runs next to others could be made in ${os.tmpdir()})`
+          );
+        }
         for (const [gate, result] of results) {
           const output = `${result.stdout}${result.stderr}`;
           const clean = cleanHold({
@@ -422,7 +443,7 @@ export async function runSelfcheck(
           }
         }
         const again = atOnce.length - heldAtOnce.size;
-        if (again > 0) {
+        if (again > 0 && results.size > 0) {
           io.out(
             `test-gates selfcheck: ${again} of ${atOnce.length} negative control(s) did not hold cleanly next to others and run again on their own`
           );

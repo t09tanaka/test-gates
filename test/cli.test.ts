@@ -1152,6 +1152,19 @@ describe('test-gates selfcheck', () => {
       ]);
     });
 
+    it('shares the run although a directory of another selfcheck is gone before it is looked at', () => {
+      // Another selfcheck removes its directory between the listing and the look at it: a link
+      // to nothing stands in for it.
+      const dir = fiveGates();
+      fs.symlinkSync(path.join(dir, 'gone'), path.join(dir, '.test-gates-touch-gone'));
+      expect(testGates(['selfcheck', '--quick', '--dir', dir])).toEqual({
+        status: 0,
+        stdout: quickOk(['rate', 'fee', 'tax', 'toll']),
+        stderr: '',
+      });
+      expect(runs(dir)).toEqual(['notes', shared, 'one src/age.spec.ts']);
+    });
+
     it.each(['true', '1', 'TRUE'])(
       'refuses --quick when CI is %s, before anything runs',
       (value) => {
@@ -1351,6 +1364,42 @@ describe('test-gates selfcheck', () => {
         expect(testGates(['selfcheck', '--jobs', '1', '--dir', dir]).stdout).toBe(OK);
         expect(testGates(['selfcheck', '--dir', dir]).stdout).toBe(OK);
         expect(runs(dir)).toEqual([...alone, ...alone]);
+      });
+
+      it('runs the controls at the same time although a directory of another selfcheck is gone before it is looked at', () => {
+        // Another selfcheck removes its directory between the listing and the look at it: a
+        // link to nothing stands in for it. That run is not disturbed by it.
+        const dir = asVitest();
+        const tmp = project({});
+        fs.symlinkSync(path.join(tmp, 'gone'), path.join(tmp, 'test-gates-jobs-gone'));
+        const old = path.join(tmp, 'test-gates-jobs-old');
+        fs.mkdirSync(old);
+        const longAgo = new Date(Date.now() - 2 * 3_600_000);
+        fs.utimesSync(old, longAgo, longAgo);
+        const fresh = path.join(tmp, 'test-gates-jobs-fresh');
+        fs.mkdirSync(fresh);
+        expect(
+          testGates(['selfcheck', '--jobs', '3', '--dir', dir], { env: { TMPDIR: tmp } })
+        ).toEqual({ status: 0, stdout: OK, stderr: '' });
+        expect(runs(dir).sort()).toEqual(atOnce);
+        // What an interrupted run left behind an hour ago is tidied, what is in use is not.
+        expect(fs.readdirSync(tmp).sort()).toEqual([
+          'test-gates-jobs-fresh',
+          'test-gates-jobs-gone',
+        ]);
+      });
+
+      it('runs one at a time when no directory for the runs next to others can be made, and says so', () => {
+        const dir = asVitest();
+        const tmp = path.join(project({ file: '' }), 'file');
+        expect(
+          testGates(['selfcheck', '--jobs', '3', '--dir', dir], { env: { TMPDIR: tmp } })
+        ).toEqual({
+          status: 0,
+          stdout: `${ONE_AT_A_TIME(`no directory for the runs next to others could be made in ${tmp}`)}${OK}`,
+          stderr: '',
+        });
+        expect(runs(dir)).toEqual(alone);
       });
 
       const SPEC = "it('x', () => {});\n";
