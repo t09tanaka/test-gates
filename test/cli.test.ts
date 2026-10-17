@@ -781,6 +781,18 @@ describe('test-gates mutation', () => {
       expect(calls(dir)).toHaveLength(2);
     });
 
+    it('judges the first run when the run again writes no report', () => {
+      const dir = withStryker(
+        `if (!process.argv.includes('--mutate')) {\n${writeReport('Timeout', 'Killed')}\n}`
+      );
+      const result = testGates(['mutation', '--dir', dir]);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        'test-gates mutation: running the timed-out mutants again failed (no report). The first run is judged'
+      );
+      expect(result.stderr).toContain('1 mutant(s) timed out (settings.mutation.maxTimeouts: 0)');
+    });
+
     it('runs nothing again for the timeouts that expectedTimeouts lists, or when there are none', () => {
       const dir = withStryker(
         `fs.appendFileSync('stryker-calls.txt', 'x\\n');\n${writeReport('Timeout', 'Killed')}`,

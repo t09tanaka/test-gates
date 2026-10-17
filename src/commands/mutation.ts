@@ -691,6 +691,8 @@ function retryTimeouts(
   io.out(
     `test-gates mutation: ${rerun} mutant(s) timed out outside expectedTimeouts, running them again one at a time (--concurrency 1)`
   );
+  // The first report must not be taken for one of the run again if that writes none.
+  fs.rmSync(reportFile, { force: true });
   const result = spawnSync(
     stryker,
     ['run', ...args, '--mutate', ranges.join(','), '--concurrency', '1', '--force'],
