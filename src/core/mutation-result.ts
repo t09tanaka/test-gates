@@ -556,19 +556,18 @@ export function mergeRetry(
 /** What tells a test apart from the others, the same in every run: its file, name and place. */
 function testKey(file: string, test: ReportTest): string {
   const start = test.location?.start;
-  return `${file}\n${test.name ?? ''}\n${start === undefined ? '' : `${start.line}:${start.column}`}`;
+  return JSON.stringify([file, test.name ?? '', start?.line, start?.column]);
 }
 
-/** The id of each test of a report by testKey; null for a key that more than one test has. */
-function idsByKey(report: MutationReport): Map<string, string | null> {
-  const ids = new Map<string, string | null>();
+/** The tests of a report, each with the key of testKey. */
+function* keyedTests(report: MutationReport): Generator<{ id: string; key: string }> {
   for (const [file, entry] of Object.entries(report.testFiles ?? {})) {
-    for (const test of entry.tests ?? []) {
-      const key = testKey(file, test);
-      ids.set(key, ids.has(key) ? null : test.id);
+    if (entry.tests !== undefined) {
+      for (const test of entry.tests) {
+        yield { id: test.id, key: testKey(file, test) };
+      }
     }
   }
-  return ids;
 }
 
 /**
@@ -576,12 +575,14 @@ function idsByKey(report: MutationReport): Map<string, string | null> {
  * first run (see mergeRetry), as Stryker's incremental mode matches tests across runs.
  */
 function translator(first: MutationReport, retry: MutationReport): (id: string) => string {
-  const firstIds = idsByKey(first);
+  // null for a key that more than one test of the first run has
+  const firstIds = new Map<string, string | null>();
+  for (const { id, key } of keyedTests(first)) {
+    firstIds.set(key, firstIds.has(key) ? null : id);
+  }
   const ids = new Map<string, string | null | undefined>();
-  for (const [file, entry] of Object.entries(retry.testFiles ?? {})) {
-    for (const test of entry.tests ?? []) {
-      ids.set(test.id, firstIds.get(testKey(file, test)));
-    }
+  for (const { id, key } of keyedTests(retry)) {
+    ids.set(id, firstIds.get(key));
   }
   return (id) => {
     const found = ids.get(id);

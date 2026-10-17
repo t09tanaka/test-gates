@@ -774,6 +774,37 @@ describe('test-gates mutation', () => {
       expect(result.stderr).not.toContain('these were not run again');
     });
 
+    it('does not say that a timeout the run again does not report timed out again', () => {
+      const dir = withStryker(
+        `if (process.argv.includes('--mutate')) {\n${writeReport('Timeout', 'Killed')}\n` +
+          `const written = JSON.parse(fs.readFileSync('reports/mutation/mutation.json', 'utf8'));\n` +
+          `written.files['src/age.ts'].mutants.pop();\n` +
+          `fs.writeFileSync('reports/mutation/mutation.json', JSON.stringify(written));\n` +
+          `} else {\n${writeReport('Timeout', 'Timeout')}\n}`
+      );
+      const result = testGates(['mutation', '--dir', dir]);
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain('1 Timeout, 1 not in the report (still Timeout)');
+      expect(result.stderr).toContain(
+        '1 of them timed out again when they were run one at a time (--concurrency 1).\n' +
+          '1 of them were not in the report of the run again (--concurrency 1),\n' +
+          'so they keep the timeout of the first run. Look at each mutant first. Only for a\n'
+      );
+      expect(result.stderr).not.toContain('They timed out again');
+      // none of them in the report of the run again
+      const none = withStryker(
+        `if (process.argv.includes('--mutate')) {\n${writeReport('Timeout', 'Killed')}\n` +
+          `const written = JSON.parse(fs.readFileSync('reports/mutation/mutation.json', 'utf8'));\n` +
+          `written.files['src/age.ts'].mutants = [];\n` +
+          `fs.writeFileSync('reports/mutation/mutation.json', JSON.stringify(written));\n` +
+          `} else {\n${writeReport('Timeout', 'Timeout')}\n}`
+      );
+      const missing = testGates(['mutation', '--dir', none]);
+      expect(missing.stderr).toContain('(settings.mutation.maxTimeouts: 0)');
+      expect(missing.stderr).not.toContain('timed out again');
+      expect(missing.stderr).toContain('2 of them were not in the report of the run again');
+    });
+
     it('runs nothing again while the timeouts stay within settings.mutation.maxTimeouts', () => {
       const within = timingOut(['Killed', 'Killed']);
       write(within, {
@@ -811,7 +842,11 @@ describe('test-gates mutation', () => {
         'test-gates mutation: running the timed-out mutants again failed (exit 3). The first run is judged'
       );
       expect(result.stderr).toContain('2 mutant(s) timed out (settings.mutation.maxTimeouts: 0)');
-      expect(result.stderr).toContain('these were not run again');
+      expect(result.stderr).toContain(
+        'can time out instead. They were run again one at a time (--concurrency 1), but that\n' +
+          'run gave no result (see above), so these are those of the first run. Only for a\n'
+      );
+      expect(result.stderr).not.toContain('these were not run again');
       expect(calls(dir)).toHaveLength(2);
     });
 

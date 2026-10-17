@@ -18,6 +18,7 @@ import {
   mergeRetry,
   type MutationReport,
   type MutationVerdict,
+  type RetryOutcome,
 } from '../core/mutation-result.js';
 import {
   type AffectedRecord,
@@ -781,7 +782,8 @@ export function runMutation(
  * In incremental mode the run again also writes the incremental file, with the new results, so
  * that the next run does not take an old timeout over.
  *
- * @returns Whether the timeouts were run again and their results are in the report.
+ * @returns What the run again changed (the results are then in the report); null when the
+ *   timeouts were not run again, 'failed' when the run again gave no report.
  */
 function retryTimeouts(
   stryker: string,
@@ -790,19 +792,19 @@ function retryTimeouts(
   reportFile: string,
   gates: LoadedManifest['gates'],
   io: Io
-): boolean {
+): RetryOutcome | 'failed' | null {
   let first: MutationReport;
   try {
     first = JSON.parse(fs.readFileSync(reportFile, 'utf8')) as MutationReport;
   } catch {
-    return false; // judged (and refused) by runMutationResult
+    return null; // judged (and refused) by runMutationResult
   }
   if (typeof first !== 'object' || first === null) {
-    return false;
+    return null;
   }
   const { ranges, rerun } = timeoutRanges(first, gates);
   if (ranges.length === 0 || rerun <= manifest.settings.maxTimeouts) {
-    return false;
+    return null;
   }
   io.out(
     `test-gates mutation: ${rerun} mutant(s) timed out outside expectedTimeouts, running them again one at a time (--concurrency 1)`
@@ -834,10 +836,10 @@ function retryTimeouts(
       `test-gates mutation: running the timed-out mutants again failed (${why}). The first run is judged`
     );
     fs.writeFileSync(reportFile, JSON.stringify(first));
-    return false;
+    return 'failed';
   }
   const merged = mergeRetry(first, retry, gates);
   fs.writeFileSync(reportFile, JSON.stringify(merged.report));
   io.out(formatRetry(merged.outcome));
-  return true;
+  return merged.outcome;
 }
