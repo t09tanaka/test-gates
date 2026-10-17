@@ -716,19 +716,24 @@ describe('a function that reads a file by a path it is given', () => {
       'fromURL',
       "export const c = (J: { fromURL(p: string): void }) => J.fromURL('file:src/t.html');\n",
     ],
-  ])('refuses %s, which can read any file', (name, source) => {
+  ])('makes blind the gate of %s, which can read any file', (name, source) => {
     const dir = fixture({ 'src/t.html': '<p>t</p>\n', 'src/c.ts': source });
-    expect(refusal(dir)).toBe(`src/c.ts uses ${name}, which can reach files that no import names`);
+    expect(blindOf(dir)).toEqual({
+      'src/c.ts': `src/c.ts uses ${name}, which can reach files that no import names`,
+    });
   });
 
-  it.each(['fs/promises', 'node:fs/promises'])('refuses an import of %s', (module) => {
-    const dir = fixture({
-      'src/c.ts': `import { open } from '${module}';\nexport const c = () => open;\n`,
-    });
-    expect(refusal(dir)).toBe(
-      `src/c.ts imports ${module}, which can reach files that no import names`
-    );
-  });
+  it.each(['fs/promises', 'node:fs/promises'])(
+    'makes blind the gate of an import of %s',
+    (module) => {
+      const dir = fixture({
+        'src/c.ts': `import { open } from '${module}';\nexport const c = () => open;\n`,
+      });
+      expect(blindOf(dir)).toEqual({
+        'src/c.ts': `src/c.ts imports ${module}, which can reach files that no import names`,
+      });
+    }
+  );
 });
 
 describe('an import with a query of Vite', () => {
