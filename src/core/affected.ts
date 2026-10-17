@@ -22,7 +22,7 @@ export type FileKind =
   | 'config'
   /** Only what imports it: sources, data, snapshots, styles, images. */
   | 'passive'
-  /** Written for people; never read by a test run through an import. */
+  /** Written for people: not searched for imports, and only what loads it depends on it. */
   | 'document'
   /** Anything else: also every file at the top of the subproject and outside of it. */
   | 'other';
