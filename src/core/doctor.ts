@@ -174,13 +174,13 @@ const TOKEN = new RegExp(
 );
 /** The pattern of a branch, or the `esac` that ends the case instead. */
 const PATTERN = /\s*(?:esac(?![\w-])|\(?([^()\n;]*)\))/y;
-const VARIABLE = /^(["']?)\$(?:(\w+)|\{(\w+)\})\1$/;
+const VARIABLE = /^("?)\$(?:(\w+)|\{(\w+)\})\1$/;
 const REFERENCE = /\$(?:(\w+)|\{(\w+)\})/g;
 
 /** The names a list of words gives, or null when a word may stand for others. */
 function namesOf(words: string[]): string[] | null {
   const names = words.map((word) => word.trim().replace(/^(["'])(.*)\1$/, '$2'));
-  return names.some((name) => name === '' || /[$*?[\\`"']/.test(name)) ? null : names;
+  return names.some((name) => name === '' || /[$*?[{}~\\`"']/.test(name)) ? null : names;
 }
 
 /**
@@ -274,7 +274,7 @@ function expansions(target: string, scopes: Scope[]): string[] {
  * (`cd "$project"`), or none, may be any subproject, except in a branch of `case "$project" in`
  * or in `for project in …` that writes the names out: there it is one of those names. A pattern
  * or a word that may stand for others (`*`, `app*`), and a hook that cannot be read so, leave it
- * any. A `cd` on a line before the run narrows only in the same branch. Comments (`#` at the
+ * any. The variable of a `cd` on a line before the run is narrowed only in the same branch. Comments (`#` at the
  * start or after a space) are left out.
  *
  * @param subproject The subproject, relative to the top of the repository; `''` for the top.

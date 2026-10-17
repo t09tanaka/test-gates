@@ -304,7 +304,8 @@ describe('hookUses', () => {
       expect(one('$p', 'tax) cd "$p" && npx test-gates mutation ;;')).toEqual([]);
       expect(one('${p}', 'tax) cd "${p}" && npx test-gates mutation ;;')).toEqual([]);
       expect(one('"${p}"', '(tax) cd $p && npx test-gates mutation ;;')).toEqual([]);
-      expect(one("'$p'", ' "tax" | \'vat\' ) cd $p && npx test-gates mutation;;')).toEqual([]);
+      expect(one('"$p"', ' "tax" | \'vat\' ) cd $p && npx test-gates mutation;;')).toEqual([]);
+      expect(one("'$p'", 'tax) cd "$p" && npx test-gates mutation ;;')).toEqual([plain]);
       expect(one('"$p"', 'fee|tax) cd "$p" && npx test-gates mutation ;;')).toEqual([plain]);
       expect(one('"$p"', 'tax)\n  cd "$p"\n  npx test-gates mutation\n  ;;')).toEqual([]);
       expect(one('"$p"', 'tax) cd "$p" && npx test-gates mutation')).toEqual([]);
@@ -340,7 +341,18 @@ describe('hookUses', () => {
     });
 
     it('leaves a run any subproject where the pattern may stand for others', () => {
-      for (const pattern of ['*', 'ta*', 't?x', '[t]ax', 'tax|*', '$other', 'ta\\x', '`x`', "''"]) {
+      for (const pattern of [
+        '*',
+        'ta*',
+        '{tax}',
+        't?x',
+        '[t]ax',
+        'tax|*',
+        '$other',
+        'ta\\x',
+        '`x`',
+        "''",
+      ]) {
         expect(
           uses(`case "$p" in\n${pattern}) cd "$p" && npx test-gates mutation ;;\nesac\n`),
           pattern
@@ -406,7 +418,7 @@ describe('hookUses', () => {
         plain,
       ]);
       expect(uses('for p in "tax"; do cd "$p" && npx test-gates mutation; done\n')).toEqual([]);
-      for (const list of ['tax "$@"', '$(ls)', 't*', '']) {
+      for (const list of ['tax "$@"', '$(ls)', 't*', '', '{tax,vat}', '~/tax']) {
         expect(
           uses(`for p in ${list}; do cd "$p" && npx test-gates mutation; done\n`),
           list
