@@ -6,9 +6,11 @@ import {
   formatSurvivor,
   judgeMutationReport,
   mergeRetry,
+  type MutationReport,
   normalizeCode,
   sliceByLocation,
   type ReportMutant,
+  UNKNOWN_TEST,
 } from './mutation-result';
 import type { EquivalentMutant, Gate } from './types';
 
@@ -1182,7 +1184,7 @@ describe('mergeRetry', () => {
     expect(merged.outcome.retried).toBe(2);
   });
 
-  it('keeps the rest of the first report and adds the spec files of the run again', () => {
+  it('keeps the rest of the first report, with its spec files', () => {
     const first = {
       schemaVersion: '1',
       files: { [GATE_PATH]: file([firstComparison('Timeout')]), 'src/fee.ts': file([]) },
@@ -1199,14 +1201,170 @@ describe('mergeRetry', () => {
     expect(merged.report).toEqual({
       schemaVersion: '1',
       files: { [GATE_PATH]: file([firstComparison('Killed')]), 'src/fee.ts': file([]) },
-      testFiles: { 'a.spec.ts': { tests: [{ id: 'a' }] }, 'b.spec.ts': { tests: [{ id: 'b2' }] } },
+      testFiles: first.testFiles,
     });
     expect(first.files[GATE_PATH].mutants[0]?.status).toBe('Timeout');
     expect(mergeRetry(first, {}, []).report.testFiles).toEqual(first.testFiles);
-    expect(mergeRetry({}, { testFiles: first.testFiles }, []).report.testFiles).toEqual(
-      first.testFiles
-    );
+    expect('testFiles' in mergeRetry({}, { testFiles: first.testFiles }, []).report).toBe(false);
     expect('testFiles' in mergeRetry({}, {}, []).report).toBe(false);
+  });
+
+  describe('the ids of the tests', () => {
+    const tests = (...names: string[]) => names.map((name, index) => ({ id: `${index}`, name }));
+    // Stryker numbers the tests in the order of its dry run, which differs between runs.
+    const first = {
+      files: {
+        [GATE_PATH]: file([
+          { ...firstComparison('Timeout'), coveredBy: ['0', '2'] },
+          { ...yesLiteral('Killed'), coveredBy: ['1'], killedBy: ['1'] },
+        ]),
+      },
+      testFiles: {
+        'a.spec.ts': { tests: tests('adult', 'minor') },
+        'b.spec.ts': { tests: [{ id: '2', name: 'fee' }] },
+      },
+    };
+    const again = (killed: Partial<ReportMutant>, testFiles: MutationReport['testFiles']) =>
+      mergeRetry(
+        first,
+        { files: { [GATE_PATH]: file([{ ...firstComparison('Killed'), ...killed }]) }, testFiles },
+        [{ path: GATE_PATH }]
+      ).report;
+    const mutantsOf = (report: MutationReport) => report.files?.[GATE_PATH]?.mutants;
+
+    it('turns those of the run again into those of the same tests in the first run', () => {
+      const report = again(
+        { coveredBy: ['0', '1', '2'], killedBy: ['2'] },
+        {
+          'b.spec.ts': { tests: [{ id: '0', name: 'fee' }] },
+          'a.spec.ts': {
+            tests: [
+              { id: '1', name: 'minor' },
+              { id: '2', name: 'adult' },
+            ],
+          },
+        }
+      );
+      expect(mutantsOf(report)?.[0]).toMatchObject({ coveredBy: ['2', '1', '0'], killedBy: ['0'] });
+      // the mutants of the first run keep theirs, and so does the report
+      expect(mutantsOf(report)?.[1]).toEqual(first.files[GATE_PATH].mutants[1]);
+      expect(report.testFiles).toBe(first.testFiles);
+    });
+
+    it('tells tests apart by file, name and place', () => {
+      const placed = (line: number, column: number) => ({ start: { line, column } });
+      const report = mergeRetry(
+        {
+          files: { [GATE_PATH]: file([firstComparison('Timeout')]) },
+          testFiles: {
+            'a.spec.ts': {
+              tests: [
+                { id: '0', name: 'same', location: placed(3, 2) },
+                { id: '1', name: 'same', location: placed(9, 2) },
+                { id: '2', name: 'same', location: placed(9, 4) },
+              ],
+            },
+            'b.spec.ts': { tests: [{ id: '3', name: 'same' }] },
+          },
+        },
+        {
+          files: {
+            [GATE_PATH]: file([{ ...firstComparison('Killed'), killedBy: ['0', '1', '2', '3'] }]),
+          },
+          testFiles: {
+            'b.spec.ts': { tests: [{ id: '0', name: 'same' }] },
+            'a.spec.ts': {
+              tests: [
+                { id: '1', name: 'same', location: placed(9, 4) },
+                { id: '2', name: 'same', location: placed(9, 2) },
+                { id: '3', name: 'same', location: placed(3, 2) },
+              ],
+            },
+          },
+        },
+        [{ path: GATE_PATH }]
+      ).report;
+      expect(mutantsOf(report)?.[0]?.killedBy).toEqual(['3', '2', '1', '0']);
+    });
+
+    it('gives an id no test has to one the first run does not have, or has twice', () => {
+      const unknown = (id: string) => `${UNKNOWN_TEST}${id}`;
+      expect(UNKNOWN_TEST).toBe('not-in-the-first-run:');
+      const report = again(
+        { coveredBy: ['0', '1', '2', '3'], killedBy: ['9'] },
+        {
+          'a.spec.ts': {
+            tests: [
+              { id: '0', name: 'new' },
+              { id: '1', name: 'adult' },
+            ],
+          },
+          'c.spec.ts': { tests: [{ id: '2', name: 'fee' }] },
+          'b.spec.ts': { tests: [{ id: '3' }] },
+        }
+      );
+      expect(mutantsOf(report)?.[0]).toMatchObject({
+        coveredBy: [unknown('0'), '0', unknown('2'), unknown('3')],
+        killedBy: [unknown('9')],
+      });
+      // two tests of the first run with the same file and name: which one it is cannot be told
+      const twice = mergeRetry(
+        {
+          files: { [GATE_PATH]: file([firstComparison('Timeout')]) },
+          testFiles: { 'a.spec.ts': { tests: tests('same', 'same', 'other') } },
+        },
+        {
+          files: { [GATE_PATH]: file([{ ...firstComparison('Killed'), killedBy: ['0', '1'] }]) },
+          testFiles: {
+            'a.spec.ts': {
+              tests: [
+                { id: '0', name: 'same' },
+                { id: '1', name: 'other' },
+              ],
+            },
+          },
+        },
+        [{ path: GATE_PATH }]
+      ).report;
+      expect(mutantsOf(twice)?.[0]?.killedBy).toEqual([unknown('0'), '2']);
+      // a test without a name in the run again is one with an empty name
+      const bare = mergeRetry(
+        {
+          files: { [GATE_PATH]: file([firstComparison('Timeout')]) },
+          testFiles: { 'a.spec.ts': { tests: [{ id: '5', name: '' }] } },
+        },
+        {
+          files: { [GATE_PATH]: file([{ ...firstComparison('Killed'), killedBy: ['0'] }]) },
+          testFiles: { 'a.spec.ts': { tests: [{ id: '0' }] } },
+        },
+        [{ path: GATE_PATH }]
+      ).report;
+      expect(mutantsOf(bare)?.[0]?.killedBy).toEqual(['5']);
+    });
+
+    it('leaves out the lists a mutant of the run again does not have', () => {
+      const report = again({}, { 'a.spec.ts': { tests: tests('adult') } });
+      expect(mutantsOf(report)?.[0]).toEqual(firstComparison('Killed'));
+      // reports without spec files
+      const none = mergeRetry(
+        { files: { [GATE_PATH]: file([firstComparison('Timeout')]) } },
+        { files: { [GATE_PATH]: file([{ ...firstComparison('Killed'), killedBy: ['0'] }]) } },
+        [{ path: GATE_PATH }]
+      ).report;
+      expect(mutantsOf(none)?.[0]?.killedBy).toEqual([`${UNKNOWN_TEST}0`]);
+      const empty = mergeRetry(
+        {
+          files: { [GATE_PATH]: file([firstComparison('Timeout')]) },
+          testFiles: { 'a.spec.ts': {} },
+        },
+        {
+          files: { [GATE_PATH]: file([{ ...firstComparison('Killed'), killedBy: ['0'] }]) },
+          testFiles: { 'a.spec.ts': {} },
+        },
+        [{ path: GATE_PATH }]
+      ).report;
+      expect(mutantsOf(empty)?.[0]?.killedBy).toEqual([`${UNKNOWN_TEST}0`]);
+    });
   });
 });
 

@@ -31,7 +31,14 @@ export interface ReportFile {
 export interface MutationReport {
   files?: Record<string, ReportFile>;
   /** The spec files, with the ids of their tests (read by `mutation --affected`). */
-  testFiles?: Record<string, { tests?: Array<{ id: string }> }>;
+  testFiles?: Record<string, { tests?: ReportTest[] }>;
+}
+
+/** A test of a spec file in the report. Stryker numbers them anew on every run. */
+export interface ReportTest {
+  id: string;
+  name?: string;
+  location?: { start: Position };
 }
 
 /** A survivor that no allowance covers. `allowance` can be pasted into `equivalentMutants`. */
@@ -462,6 +469,9 @@ export function judgeMutationReport(input: {
   return { violations, survivors, unexpectedTimeouts, summary };
 }
 
+/** The start of an id of a test that the first run does not have (see mergeRetry). */
+export const UNKNOWN_TEST = 'not-in-the-first-run:';
+
 /** What running the timed-out mutants again changed (see mergeRetry). */
 export interface RetryOutcome {
   /** How many mutants were run again. */
@@ -492,6 +502,11 @@ function sameMutant(a: ReportMutant, b: ReportMutant): boolean {
  * timeoutRanges picks them for `--mutate`). Each takes its result from the run again, whatever
  * it is: a mutant that survives there is a survivor, not a timeout. One that the run again does
  * not report stays `Timeout`. Every other mutant keeps its result from the first run.
+ *
+ * The report keeps the tests of the first run. Stryker numbers the tests anew on every run, so
+ * the ids in a mutant taken from the run again are turned into those of the same tests (by file,
+ * name and place) in the first run; one that names no test of the first run, or more than one,
+ * becomes an id that no test has.
  */
 export function mergeRetry(
   first: MutationReport,
@@ -499,6 +514,7 @@ export function mergeRetry(
   gates: Array<Pick<Gate, 'path' | 'expectedTimeouts'>>
 ): { report: MutationReport; outcome: RetryOutcome } {
   const outcome: RetryOutcome = { retried: 0, statuses: {}, missing: 0 };
+  const firstId = translator(first, retry);
   const files = { ...first.files };
   const again = retry.files ?? {};
   for (const named of gates) {
@@ -526,16 +542,53 @@ export function mergeRetry(
           return mutant;
         }
         outcome.statuses[found.status] = (outcome.statuses[found.status] ?? 0) + 1;
-        return found;
+        return {
+          ...found,
+          ...(found.coveredBy === undefined ? {} : { coveredBy: found.coveredBy.map(firstId) }),
+          ...(found.killedBy === undefined ? {} : { killedBy: found.killedBy.map(firstId) }),
+        };
       }),
     };
   }
-  const report: MutationReport = { ...first, files };
-  if (retry.testFiles !== undefined) {
-    // The ids of the tests that killed a mutant in the run again are those of its spec files.
-    report.testFiles = { ...first.testFiles, ...retry.testFiles };
+  return { report: { ...first, files }, outcome };
+}
+
+/** What tells a test apart from the others, the same in every run: its file, name and place. */
+function testKey(file: string, test: ReportTest): string {
+  const start = test.location?.start;
+  return `${file}\n${test.name ?? ''}\n${start === undefined ? '' : `${start.line}:${start.column}`}`;
+}
+
+/** The id of each test of a report by testKey; null for a key that more than one test has. */
+function idsByKey(report: MutationReport): Map<string, string | null> {
+  const ids = new Map<string, string | null>();
+  for (const [file, entry] of Object.entries(report.testFiles ?? {})) {
+    for (const test of entry.tests ?? []) {
+      const key = testKey(file, test);
+      ids.set(key, ids.has(key) ? null : test.id);
+    }
   }
-  return { report, outcome };
+  return ids;
+}
+
+/**
+ * Turns the ids of the tests in a mutant of the run again into those of the same tests in the
+ * first run (see mergeRetry), as Stryker's incremental mode matches tests across runs.
+ */
+function translator(first: MutationReport, retry: MutationReport): (id: string) => string {
+  const firstIds = idsByKey(first);
+  const ids = new Map<string, string | null | undefined>();
+  for (const [file, entry] of Object.entries(retry.testFiles ?? {})) {
+    for (const test of entry.tests ?? []) {
+      ids.set(test.id, firstIds.get(testKey(file, test)));
+    }
+  }
+  return (id) => {
+    const found = ids.get(id);
+    // An id that is not one of the first run: it names no spec file, so that no spec is ever
+    // written down for the gate, rather than a wrong one or too few.
+    return typeof found === 'string' ? found : `${UNKNOWN_TEST}${id}`;
+  };
 }
 
 /** One line on what running the timed-out mutants again gave. */
