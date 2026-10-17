@@ -32,6 +32,11 @@ export interface DoctorFacts {
   blindGates: Array<{ gate: string; reason: string }>;
   /** How many gates test-gates.json lists. */
   gates: number;
+  /**
+   * The sandboxes earlier Stryker runs left in the temp directory, and why the next mutation run
+   * would keep them (null: it removes them). Null when there are none.
+   */
+  sandboxes: { tempDir: string; count: number; kept: string | null } | null;
 }
 
 export interface Finding {
@@ -105,6 +110,17 @@ export function diagnose(facts: DoctorFacts): Finding[] {
       fix: facts.scope.every.startsWith(NOT_THE_HELPER)
         ? 'make the runner config with createJestGatesConfig or createVitestGatesConfig'
         : null,
+    });
+  }
+  if (facts.sandboxes !== null) {
+    const { tempDir, count, kept } = facts.sandboxes;
+    findings.push({
+      level: 'note',
+      text: `${count} sandbox(es) an interrupted Stryker run left in ${tempDir}: a tool that walks the subproject (a test runner, a script) finds a copy of every file in them`,
+      fix:
+        kept === null
+          ? 'the next test-gates mutation removes them'
+          : `remove them by hand; the next test-gates mutation keeps them, because ${kept}`,
     });
   }
   if (facts.hooks.length === 0) {

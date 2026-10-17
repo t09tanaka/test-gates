@@ -12,6 +12,7 @@ export const HEAVY_TESTS = [
   'test/selfcheck-runners-other.test.ts',
   'test/selfcheck-runners-vitest-threads.test.ts',
   'test/selfcheck-runners-vitest.test.ts',
+  'test/stale-sandboxes.test.ts',
 ];
 
 export default defineConfig({

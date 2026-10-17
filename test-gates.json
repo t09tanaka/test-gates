@@ -100,6 +100,11 @@
       ]
     },
     {
+      "path": "src/core/sandboxes.ts",
+      "decides": "Which directories in Stryker's temp directory a mutation run removes before it starts: only sandboxes an earlier run left, never while another run is going on, and nothing outside the subproject",
+      "impact": "A run removes the sandbox of a run going on at the same time, a backup of the original files or a directory outside the subproject, or leaves sandboxes that other tools then take for part of the project"
+    },
+    {
       "path": "src/core/vitest-coverage.ts",
       "decides": "Whether a Vitest setup can report 100% branches with the skipped side of an if untested",
       "impact": "A project keeps a coverage floor that has a hole in it without being told"

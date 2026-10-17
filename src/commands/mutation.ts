@@ -34,6 +34,7 @@ import {
 import { affectedRefused, gateRunRefused, selectControls } from '../core/selfcheck.js';
 import { findLocalBin } from '../fs.js';
 import { type LoadedManifest, readManifest } from '../load.js';
+import { markRun, removeStaleSandboxes, type TempDirSetting } from '../sandboxes.js';
 import { hashFile, snapshotOf } from '../snapshot.js';
 import { findStrykerConfig } from './check.js';
 import { reportPathOf, runMutationResult } from './mutation-result.js';
@@ -64,7 +65,7 @@ function loadStrykerConfig(manifest: LoadedManifest, config: string): unknown {
     'testRunner: config.testRunner, vitestConfig: config.vitest?.configFile,' +
     'jestConfig: config.jest?.configFile, checkers: config.checkers,' +
     'htmlReporter: config.htmlReporter, jsonReporter: config.jsonReporter,' +
-    'ignorePatterns: config.ignorePatterns,' +
+    'ignorePatterns: config.ignorePatterns, cleanTempDir: config.cleanTempDir,' +
     `}) + ${JSON.stringify(CONFIG_MARK)});`;
   const result = spawnSync(process.execPath, ['--input-type=module', '--eval', script], {
     cwd: manifest.dir,
@@ -101,6 +102,8 @@ interface Guard {
   mutate: string[] | null;
   /** Lines to print before Stryker starts. */
   said: string[];
+  /** Where Stryker keeps its sandboxes. */
+  temp: TempDirSetting;
   /**
    * Writes the record of this run; to be called only after Stryker finished it, with the
    * report and its verdict.
@@ -169,6 +172,8 @@ export interface ReuseDecision {
    */
   unchanged: string | null;
   configs: () => ReturnType<typeof runnerConfigs>;
+  /** Where Stryker keeps its sandboxes; for any run, also one not in incremental mode. */
+  temp: TempDirSetting;
 }
 
 /**
@@ -214,6 +219,10 @@ export function decideReuse(
     ci: affected ? affectedRefused(process.env) : null,
     unchanged: null,
     configs,
+    temp: {
+      dir: loaded === undefined ? null : path.resolve(base, options.tempDirName),
+      keeps: (loaded as { cleanTempDir?: unknown } | undefined)?.cleanTempDir === false,
+    },
   };
   if (loaded !== undefined && !options.incremental) {
     // Stryker neither reads nor writes an incremental file
@@ -379,8 +388,14 @@ function guardIncremental(
   part: boolean,
   affected: boolean
 ): Guard {
-  const nothing: Guard = { force: null, mutate: null, said: [], record: () => undefined };
   const decision = decideReuse(manifest, config, strykerArgs, part, affected);
+  const nothing: Guard = {
+    force: null,
+    mutate: null,
+    said: [],
+    temp: decision.temp,
+    record: () => undefined,
+  };
   if (!decision.incremental) {
     return affected
       ? {
@@ -469,6 +484,7 @@ function guardIncremental(
     force: everyGate,
     mutate: subset.length + ranges.length > 0 ? [...subset, ...ranges] : null,
     said,
+    temp: decision.temp,
     record: (judged) => {
       // Only for an incremental file this run wrote. Stryker can end without writing one
       // (a dry run, no tests): what is on disk then still belongs to an earlier state.
@@ -618,29 +634,38 @@ export function runMutation(
       ? ['--mutate', guard.mutate.join(',')]
       : [];
 
-  const result = spawnSync(stryker, ['run', config, ...strykerArgs, ...partArgs, ...guardArgs], {
-    cwd: manifest.dir,
-    stdio: 'inherit',
-    shell: process.platform === 'win32',
-  });
-  if (result.error) {
-    io.err(`test-gates mutation: cannot start Stryker (${result.error.message})`);
-    return 1;
-  }
-  if (result.status !== 0) {
-    io.err(
-      `test-gates mutation: Stryker failed (${result.signal ? `signal ${result.signal}` : `exit ${result.status}`}). The result was not judged`
+  // What an interrupted run left would be found by every tool that walks the subproject.
+  removeStaleSandboxes(manifest.dir, guard.temp).forEach((line) => io.out(line));
+  // The marker stays while either run of Stryker (the first and the one of its timeouts) runs.
+  const unmark = markRun(manifest.dir, guard.temp);
+  let retried: ReturnType<typeof retryTimeouts>;
+  try {
+    const result = spawnSync(stryker, ['run', config, ...strykerArgs, ...partArgs, ...guardArgs], {
+      cwd: manifest.dir,
+      stdio: 'inherit',
+      shell: process.platform === 'win32',
+    });
+    if (result.error) {
+      io.err(`test-gates mutation: cannot start Stryker (${result.error.message})`);
+      return 1;
+    }
+    if (result.status !== 0) {
+      io.err(
+        `test-gates mutation: Stryker failed (${result.signal ? `signal ${result.signal}` : `exit ${result.status}`}). The result was not judged`
+      );
+      return 1;
+    }
+    retried = retryTimeouts(
+      stryker,
+      [config, ...strykerArgs],
+      manifest,
+      reportFile,
+      part ? manifest.gates.filter((gate) => chosen.selected.includes(gate.path)) : manifest.gates,
+      io
     );
-    return 1;
+  } finally {
+    unmark();
   }
-  const retried = retryTimeouts(
-    stryker,
-    [config, ...strykerArgs],
-    manifest,
-    reportFile,
-    part ? manifest.gates.filter((gate) => chosen.selected.includes(gate.path)) : manifest.gates,
-    io
-  );
   let judged: Parameters<Guard['record']>[0] = null;
   const status = runMutationResult(
     dir,
