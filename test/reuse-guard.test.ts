@@ -1201,3 +1201,124 @@ describe('test-gates mutation, reuse of the last run (what the comparison reache
     );
   });
 });
+
+describe('test-gates mutation in a new linked worktree', () => {
+  const SEED =
+    'test-gates mutation: this worktree has no record of its own, so it starts from the one of the main worktree (';
+  const linkedDirs: string[] = [];
+  afterAll(() => linkedDirs.forEach((dir) => fs.rmSync(dir, { recursive: true, force: true })));
+
+  /** The main worktree after a run of every mutant, and a linked worktree of it that has none. */
+  function worktrees(): { main: string; linked: string } {
+    const main = fs.realpathSync(create(subproject(), 'git'));
+    expect(mutation(main)).toEqual(REUSED);
+    const linked = `${main}-linked`;
+    linkedDirs.push(linked);
+    git(main, 'worktree', 'add', '-q', '-b', 'linked', linked);
+    // node_modules is ignored by git, as the incremental file and the record are.
+    fs.cpSync(path.join(main, 'node_modules'), path.join(linked, 'node_modules'), {
+      recursive: true,
+    });
+    fs.chmodSync(path.join(linked, 'node_modules/.bin/stryker'), 0o755);
+    return { main, linked };
+  }
+  const read = (file: string) => fs.readFileSync(file, 'utf8');
+  const firstLine = (dir: string) =>
+    testGates(['mutation', '--dir', dir]).stdout.split('\n')[0] ?? '';
+
+  it('starts from the record of the main worktree and reuses every result when nothing differs', () => {
+    const { main, linked } = worktrees();
+    const before = {
+      incremental: read(path.join(main, INCREMENTAL)),
+      record: read(path.join(main, RECORD)),
+    };
+    expect(testGates(['doctor', '--dir', linked]).stdout).toContain(
+      `  this worktree has no record of its own: the next run starts from the one of the main worktree (${main})`
+    );
+    const result = testGates(['mutation', '--dir', linked]);
+    expect(result.stdout.split('\n')[0]).toBe(`${SEED}${main})`);
+    const args = JSON.parse(read(path.join(linked, '.stryker-tmp/stryker-args.json'))) as string[];
+    expect(args).toEqual(REUSED.args);
+    // The run wrote its own record, and the next one reuses it without the main worktree.
+    expect(fs.existsSync(path.join(linked, RECORD))).toBe(true);
+    expect(firstLine(linked)).not.toContain('main worktree');
+    expect(mutation(linked)).toEqual(REUSED);
+    // The files of the main worktree are not written.
+    expect(read(path.join(main, INCREMENTAL))).toBe(before.incremental);
+    expect(read(path.join(main, RECORD))).toBe(before.record);
+  });
+
+  it('copies the incremental file of the main worktree into place, for Stryker to read', () => {
+    const { main, linked } = worktrees();
+    write(linked, { '.stryker-tmp/silent': '' });
+    expect(firstLine(linked)).toBe(`${SEED}${main})`);
+    expect(read(path.join(linked, INCREMENTAL))).toBe(read(path.join(main, INCREMENTAL)));
+  });
+
+  it('runs every mutant again when a file differs from the main worktree', () => {
+    const { main, linked } = worktrees();
+    write(linked, { 'src/age.ts': `${GATE_SOURCE}// on another branch\n` });
+    const result = testGates(['mutation', '--dir', linked]);
+    const lines = result.stdout.split('\n');
+    expect(lines[0]).toBe(`${SEED}${main})`);
+    expect(lines[1]).toBe(`${NOTE}${CHANGED}src/age.ts`);
+    const args = JSON.parse(read(path.join(linked, '.stryker-tmp/stryker-args.json'))) as string[];
+    expect(args).toContain('--force');
+  });
+
+  it('runs every mutant when the main worktree has no record, or one of another version', () => {
+    const { main, linked } = worktrees();
+    fs.rmSync(path.join(main, RECORD));
+    expect(testGates(['doctor', '--dir', linked]).stdout).toContain(
+      `  this worktree has no record of its own, and the main worktree (${main}) has none this worktree can start from`
+    );
+    // Stryker writes nothing here, so whatever is there after the run was copied.
+    write(linked, { '.stryker-tmp/silent': '' });
+    expect(firstLine(linked)).not.toContain('main worktree');
+    expect(fs.existsSync(path.join(linked, INCREMENTAL))).toBe(false);
+
+    const other = worktrees();
+    const record = JSON.parse(read(path.join(other.main, RECORD))) as { format: number };
+    write(other.main, { [RECORD]: { ...record, format: record.format + 1 } });
+    const result = testGates(['mutation', '--dir', other.linked]);
+    expect(result.stdout.split('\n').slice(0, 2)).toEqual([
+      `${SEED}${other.main})`,
+      `${NOTE}the record of the last run is not one this version can read`,
+    ]);
+  });
+
+  it('takes nothing when the incremental file of the main worktree is not the one its record names', () => {
+    // As when a run in the main worktree wrote a new incremental file and not yet its record.
+    const { main, linked } = worktrees();
+    write(main, { [INCREMENTAL]: { written: 'by another run' } });
+    expect(testGates(['doctor', '--dir', linked]).stdout).toContain(
+      `  this worktree has no record of its own, and the main worktree (${main}) has none this worktree can start from`
+    );
+    write(linked, { '.stryker-tmp/silent': '' });
+    expect(firstLine(linked)).not.toContain('main worktree');
+    expect(fs.existsSync(path.join(linked, INCREMENTAL))).toBe(false);
+  });
+
+  it('takes nothing from the main worktree in a Stryker sandbox below a linked worktree', () => {
+    const { main, linked } = worktrees();
+    // The same sandbox in both worktrees, with a record in that of the main worktree.
+    const sandbox = '.stryker-tmp/sandbox-1';
+    for (const top of [main, linked]) {
+      fs.cpSync(path.join(main, 'src'), path.join(top, sandbox, 'src'), { recursive: true });
+      for (const file of ['test-gates.json', 'package.json', 'stryker.gates.config.mjs']) {
+        fs.copyFileSync(path.join(main, file), path.join(top, sandbox, file));
+      }
+      fs.cpSync(path.join(linked, 'node_modules'), path.join(top, sandbox, 'node_modules'), {
+        recursive: true,
+      });
+    }
+    expect(mutation(path.join(main, sandbox))).toEqual(REUSED);
+    expect(fs.existsSync(path.join(main, sandbox, RECORD))).toBe(true);
+    expect(testGates(['doctor', '--dir', path.join(linked, sandbox)]).stdout).not.toContain(
+      'main worktree'
+    );
+    write(path.join(linked, sandbox), { '.stryker-tmp/silent': '' });
+    expect(firstLine(path.join(linked, sandbox))).not.toContain('main worktree');
+    expect(fs.existsSync(path.join(linked, sandbox, INCREMENTAL))).toBe(false);
+  });
+});

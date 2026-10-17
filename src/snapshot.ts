@@ -71,7 +71,7 @@ const LITERAL = /(['"])([^'"`\n]*)\1/g;
 const DOWNWARD = /(['"`])(\.\/[^'"`\n]*)\1/g;
 const isUpward = (segment: string): boolean => segment.split('/').includes('..');
 
-function hashOf(content: Buffer | string): string {
+export function hashOf(content: Buffer | string): string {
   return createHash('sha256').update(content).digest('hex');
 }
 
