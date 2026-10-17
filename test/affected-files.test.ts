@@ -584,6 +584,113 @@ describe('a JSON file required without its extension', () => {
   });
 });
 
+describe('a page, a document or data named by a path from the subproject', () => {
+  const pages = {
+    'src/t.html': '<p>t</p>\n',
+    'src/t.htm': '<p>t</p>\n',
+    'docs/guide.md': '# guide\n',
+    'fixtures/rates.json': '{ "one": 1 }\n',
+  };
+
+  it.each(['src/t.html', 'src/t.htm', 'docs/guide.md', 'fixtures/rates.json'])(
+    'takes %s for a file of the one that names it',
+    (file) => {
+      const dir = fixture({
+        ...pages,
+        'src/c.ts': `export const page = '${file}';\nexport const c = (x: number) => x - 1;\n`,
+      });
+      expect(inputs(dir).gates['src/c.ts']?.files).toEqual(
+        [file, 'src/c.spec.ts', 'src/c.ts'].sort()
+      );
+    }
+  );
+
+  it('takes no such path that leads to no file, nor one with a part that is not a path', () => {
+    const dir = fixture({
+      ...pages,
+      'src/c.ts':
+        "export const pages = ['src/gone.html', 'see src/t.html', 'https://x/src/t.html', 'src/*.md', 'src/t.html?raw', '/src/t.html'];\n" +
+        'export const c = (x: number) => x - 1;\n',
+    });
+    expect(inputs(dir).gates['src/c.ts']?.files).toEqual(['src/c.spec.ts', 'src/c.ts']);
+  });
+
+  it('takes a page of another extension only through an import', () => {
+    const dir = fixture({
+      'src/t.xhtml': '<p/>\n',
+      'src/c.ts': "export const page = 'src/t.xhtml';\nexport const c = (x: number) => x - 1;\n",
+    });
+    expect(inputs(dir).gates['src/c.ts']?.files).toEqual(['src/c.spec.ts', 'src/c.ts']);
+  });
+});
+
+describe('a function that reads a file by a path it is given', () => {
+  it.each([
+    [
+      'readFile',
+      "export const c = (fs: { readFile(p: string): void }) => fs.readFile('src/t.html');\n",
+    ],
+    [
+      'fromFile',
+      "export const c = (J: { fromFile(p: string): void }) => J.fromFile('src/t.html');\n",
+    ],
+    [
+      'fromURL',
+      "export const c = (J: { fromURL(p: string): void }) => J.fromURL('file:src/t.html');\n",
+    ],
+  ])('refuses %s, which can read any file', (name, source) => {
+    const dir = fixture({ 'src/t.html': '<p>t</p>\n', 'src/c.ts': source });
+    expect(refusal(dir)).toBe(`src/c.ts uses ${name}, which can reach files that no import names`);
+  });
+
+  it.each(['fs/promises', 'node:fs/promises'])('refuses an import of %s', (module) => {
+    const dir = fixture({
+      'src/c.ts': `import { open } from '${module}';\nexport const c = () => open;\n`,
+    });
+    expect(refusal(dir)).toBe(
+      `src/c.ts imports ${module}, which can reach files that no import names`
+    );
+  });
+});
+
+describe('an import with a query of Vite', () => {
+  it.each(['?raw', '?url', '?inline', '?raw&inline'])(
+    'takes the file of an import with %s',
+    (query) => {
+      const dir = fixture({
+        'src/t.html': '<p>t</p>\n',
+        'src/c.ts': `import page from './t.html${query}';\nexport const c = (x: number) => x - page.length;\n`,
+      });
+      expect(inputs(dir).gates['src/c.ts']?.files).toEqual([
+        'src/c.spec.ts',
+        'src/c.ts',
+        'src/t.html',
+      ]);
+    }
+  );
+
+  it('follows what a script imported with a query imports', () => {
+    const dir = fixture({
+      'src/worker.ts': "import { round } from './round';\nexport const w = round;\n",
+      'src/c.ts':
+        "import W from './worker.ts?worker';\nexport const c = (x: number) => (W ? x - 1 : x);\n",
+    });
+    expect(inputs(dir).gates['src/c.ts']?.files).toEqual([
+      'src/c.spec.ts',
+      'src/c.ts',
+      'src/round.ts',
+      'src/worker.ts',
+    ]);
+  });
+
+  it('still refuses an import with a query that leads to no file', () => {
+    const dir = fixture({
+      'src/c.ts': "import page from './gone.html?raw';\nexport const c = () => page;\n",
+    });
+    expect(refusal(dir)).toBe('src/c.ts imports ./gone.html?raw, which leads to no file');
+  });
+});
+
 describe('comments', () => {
   it('ignores an import in a comment that leads to no file', () => {
     const dir = fixture({
