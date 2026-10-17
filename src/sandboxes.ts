@@ -1,6 +1,14 @@
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { insideSubproject, markerName, planSandboxes, type SandboxPlan } from './core/sandboxes.js';
+import {
+  insideSubproject,
+  markerAlive,
+  markerName,
+  markerText,
+  planSandboxes,
+  type SandboxPlan,
+} from './core/sandboxes.js';
 
 /** Where Stryker keeps its sandboxes, as decideReuse found it. */
 export interface TempDirSetting {
@@ -10,14 +18,44 @@ export interface TempDirSetting {
   keeps: boolean;
 }
 
-/** Whether the process is still there. EPERM: it is, but belongs to someone else. */
-function alive(pid: number): boolean {
+/** Whether a process with the pid is there. EPERM: it is, but belongs to someone else. */
+function there(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === 'EPERM';
   }
+}
+
+/**
+ * When the process with the pid started, as `ps` prints it (on macOS and Linux alike); null
+ * when that cannot be told (no `ps`, as on Windows, or no such process).
+ */
+export function startedAt(pid: number): string | null {
+  const result = spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
+    encoding: 'utf8',
+    env: { ...process.env, LC_ALL: 'C' },
+    timeout: 5_000,
+  });
+  const started = result.status === 0 ? result.stdout.trim() : '';
+  return started === '' ? null : started;
+}
+
+/** Whether the run of a marker in `dir` is still there (see markerAlive). */
+function alive(dir: string): (pid: number, marker: string) => boolean {
+  return (pid, marker) => {
+    if (!there(pid)) {
+      return false;
+    }
+    let text: string | null = null;
+    try {
+      text = fs.readFileSync(path.join(dir, marker), 'utf8');
+    } catch {
+      // gone meanwhile, or not readable: the pid alone tells
+    }
+    return markerAlive({ there: true, text, started: startedAt(pid) });
+  };
 }
 
 /** The temp directory relative to the subproject as the plan takes it, through links. */
@@ -49,7 +87,7 @@ export function sandboxPlan(
     tempDir,
     entries: entries.map((entry) => ({ name: entry.name, directory: entry.isDirectory() })),
     keeps: setting.keeps,
-    alive,
+    alive: alive(setting.dir ?? subproject),
   });
   return { plan, shown: tempDir ?? '.stryker-tmp' };
 }
@@ -61,10 +99,15 @@ export function sandboxPlan(
 export function removeStaleSandboxes(subproject: string, setting: TempDirSetting): string[] {
   const { plan, shown } = sandboxPlan(subproject, setting);
   if ('kept' in plan) {
-    return plan.kept.length === 0
-      ? []
-      : [
+    if (plan.kept.length === 0) {
+      return [];
+    }
+    return plan.running === null
+      ? [
           `test-gates mutation: ${plan.kept.length} sandbox(es) left in ${shown} by an earlier Stryker run are kept: ${plan.why}`,
+        ]
+      : [
+          `test-gates mutation: ${plan.why}, so the ${plan.kept.length} sandbox(es) in ${shown} are kept: they are in use`,
         ];
   }
   const dir = setting.dir as string;
@@ -114,7 +157,7 @@ export function markRun(subproject: string, setting: TempDirSetting): () => void
     if (!insideSubproject(relativeTempDir(subproject, dir))) {
       return () => undefined;
     }
-    fs.writeFileSync(marker, `${process.pid}\n`);
+    fs.writeFileSync(marker, markerText(process.pid, startedAt(process.pid)));
   } catch {
     return () => undefined;
   }

@@ -174,6 +174,7 @@ export function runDoctor(dir: string, io: Io): number {
               tempDir: left.shown,
               count,
               kept: 'kept' in left.plan ? left.plan.why : null,
+              running: 'kept' in left.plan ? left.plan.running : null,
             },
     })
   );

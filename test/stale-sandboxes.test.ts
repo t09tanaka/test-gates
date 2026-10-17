@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
+import { startedAt } from '../src/sandboxes';
 import {
   cleanup,
   GATE_SOURCE,
@@ -23,6 +24,8 @@ const temp = process.env.TEMP_DIR || '.stryker-tmp';
 fs.mkdirSync('reports/mutation', { recursive: true });
 const again = process.argv.includes('--concurrency');
 fs.writeFileSync(again ? 'reports/seen-again.json' : 'reports/seen.json', JSON.stringify(fs.existsSync(temp) ? fs.readdirSync(temp).sort() : []));
+const markers = (fs.existsSync(temp) ? fs.readdirSync(temp) : []).filter((name) => name.startsWith('test-gates-run-'));
+fs.writeFileSync('reports/markers.json', JSON.stringify(markers.map((name) => fs.readFileSync(temp + '/' + name, 'utf8'))));
 const timesOut = process.env.TIMES_OUT === '1' && !again;
 fs.writeFileSync('reports/mutation/mutation.json', timesOut ? ${JSON.stringify(JSON.stringify(report('Timeout', 'Killed')))} : ${JSON.stringify(JSON.stringify(report('Killed', 'Killed')))});
 `;
@@ -107,10 +110,42 @@ describe('test-gates mutation: sandboxes an interrupted run left', () => {
     const result = testGates(['mutation', '--dir', dir]);
     expect(result.status).toBe(0);
     expect(result.stdout).toContain(
-      `test-gates mutation: 1 sandbox(es) left in .stryker-tmp by an earlier Stryker run are kept: another test-gates mutation is running in this subproject (pid ${process.pid})`
+      `test-gates mutation: another test-gates mutation is running in this subproject (pid ${process.pid}), so the 1 sandbox(es) in .stryker-tmp are kept: they are in use`
     );
     expect(exists(dir, `${LEFT}/src/age.spec.ts`)).toBe(true);
     expect(exists(dir, `.stryker-tmp/test-gates-run-${process.pid}`)).toBe(true);
+    // The same with the time its process started, as a marker of this version holds it.
+    const started = startedAt(process.pid) as string;
+    expect(started).toMatch(/[0-9]{4}$/);
+    const marked = create({
+      [`.stryker-tmp/test-gates-run-${process.pid}`]: `${process.pid}\n${started}\n`,
+    });
+    expect(testGates(['mutation', '--dir', marked]).stdout).toContain('they are in use');
+    expect(exists(marked, LEFT)).toBe(true);
+  });
+
+  it('takes a marker whose pid now belongs to a process that started at another time for one of a run that is over', () => {
+    const marker = `.stryker-tmp/test-gates-run-${process.pid}`;
+    const dir = create({ [marker]: `${process.pid}\nMon Jan  1 00:00:00 2001\n` });
+    const result = testGates(['mutation', '--dir', dir]);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('removed 1 sandbox(es) an earlier Stryker run left');
+    expect(exists(dir, LEFT)).toBe(false);
+    expect(exists(dir, marker)).toBe(false);
+  });
+
+  it('writes when its process started into the marker of the run', () => {
+    const dir = create();
+    expect(testGates(['mutation', '--dir', dir]).status).toBe(0);
+    const [text] = JSON.parse(
+      fs.readFileSync(path.join(dir, 'reports/markers.json'), 'utf8')
+    ) as string[];
+    const [pid, started] = (text as string).split('\n');
+    expect(Number(pid)).toBeGreaterThan(0);
+    // as \`ps -o lstart=\` prints it; the process is over by now
+    expect(started).toMatch(
+      /^[A-Z][a-z]{2} [A-Z][a-z]{2} [ 0-9][0-9] [0-9]{2}:[0-9]{2}:[0-9]{2} [0-9]{4}$/
+    );
   });
 
   it('keeps them when the Stryker config keeps its sandboxes', () => {
@@ -168,5 +203,18 @@ describe('test-gates doctor: sandboxes an interrupted run left', () => {
     );
     expect(result.stdout).toContain('  fix: the next test-gates mutation removes them');
     expect(exists(dir, `${LEFT}/src/age.spec.ts`)).toBe(true);
+  });
+
+  it('says that they are in use while another run is going on', () => {
+    const dir = create({
+      'stryker.gates.config.mjs': 'export default { incremental: true };\n',
+      [`.stryker-tmp/test-gates-run-${process.pid}`]: `${process.pid}\n${startedAt(process.pid)}\n`,
+    });
+    const result = testGates(['doctor', '--dir', dir]);
+    expect(result.stdout).toContain(
+      `note: another test-gates mutation is running in this subproject (pid ${process.pid}): the 1 sandbox(es) in .stryker-tmp are in use`
+    );
+    expect(result.stdout).not.toContain('interrupted');
+    expect(result.stdout).not.toContain('by hand');
   });
 });

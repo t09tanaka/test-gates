@@ -34,9 +34,15 @@ export interface DoctorFacts {
   gates: number;
   /**
    * The sandboxes earlier Stryker runs left in the temp directory, and why the next mutation run
-   * would keep them (null: it removes them). Null when there are none.
+   * would keep them (null: it removes them), with the pid of a run going on when that is why.
+   * Null when there are none.
    */
-  sandboxes: { tempDir: string; count: number; kept: string | null } | null;
+  sandboxes: {
+    tempDir: string;
+    count: number;
+    kept: string | null;
+    running: number | null;
+  } | null;
 }
 
 export interface Finding {
@@ -113,15 +119,24 @@ export function diagnose(facts: DoctorFacts): Finding[] {
     });
   }
   if (facts.sandboxes !== null) {
-    const { tempDir, count, kept } = facts.sandboxes;
-    findings.push({
-      level: 'note',
-      text: `${count} sandbox(es) an interrupted Stryker run left in ${tempDir}: a tool that walks the subproject (a test runner, a script) finds a copy of every file in them`,
-      fix:
-        kept === null
-          ? 'the next test-gates mutation removes them'
-          : `remove them by hand; the next test-gates mutation keeps them, because ${kept}`,
-    });
+    const { tempDir, count, kept, running } = facts.sandboxes;
+    findings.push(
+      running === null
+        ? {
+            level: 'note',
+            text: `${count} sandbox(es) an interrupted Stryker run left in ${tempDir}: a tool that walks the subproject (a test runner, a script) finds a copy of every file in them`,
+            fix:
+              kept === null
+                ? 'the next test-gates mutation removes them'
+                : `remove them by hand; the next test-gates mutation keeps them, because ${kept}`,
+          }
+        : {
+            // The sandboxes may be those of that run: removing them would break it.
+            level: 'note',
+            text: `another test-gates mutation is running in this subproject (pid ${running}): the ${count} sandbox(es) in ${tempDir} are in use`,
+            fix: 'leave them; the first test-gates mutation after that run ends removes what is left',
+          }
+    );
   }
   if (facts.hooks.length === 0) {
     findings.push({

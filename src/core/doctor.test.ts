@@ -97,7 +97,10 @@ describe('diagnose', () => {
     const text =
       '2 sandbox(es) an interrupted Stryker run left in .stryker-tmp: a tool that walks the subproject (a test runner, a script) finds a copy of every file in them';
     expect(
-      diagnose({ ...healthy, sandboxes: { tempDir: '.stryker-tmp', count: 2, kept: null } })
+      diagnose({
+        ...healthy,
+        sandboxes: { tempDir: '.stryker-tmp', count: 2, kept: null, running: null },
+      })
     ).toEqual([{ level: 'note', text, fix: 'the next test-gates mutation removes them' }]);
     expect(
       diagnose({
@@ -106,6 +109,7 @@ describe('diagnose', () => {
           tempDir: '.stryker-tmp',
           count: 2,
           kept: 'the Stryker config sets cleanTempDir: false',
+          running: null,
         },
       })
     ).toEqual([
@@ -113,6 +117,26 @@ describe('diagnose', () => {
         level: 'note',
         text,
         fix: 'remove them by hand; the next test-gates mutation keeps them, because the Stryker config sets cleanTempDir: false',
+      },
+    ]);
+  });
+
+  it('says that the sandboxes are in use while another run is going on', () => {
+    expect(
+      diagnose({
+        ...healthy,
+        sandboxes: {
+          tempDir: '.stryker-tmp',
+          count: 1,
+          kept: 'another test-gates mutation is running in this subproject (pid 42)',
+          running: 42,
+        },
+      })
+    ).toEqual([
+      {
+        level: 'note',
+        text: 'another test-gates mutation is running in this subproject (pid 42): the 1 sandbox(es) in .stryker-tmp are in use',
+        fix: 'leave them; the first test-gates mutation after that run ends removes what is left',
       },
     ]);
   });
