@@ -1152,6 +1152,19 @@ describe('test-gates selfcheck', () => {
       ]);
     });
 
+    it('shares the run although a directory of another selfcheck is gone before it is looked at', () => {
+      // Another selfcheck removes its directory between the listing and the look at it: a link
+      // to nothing stands in for it.
+      const dir = fiveGates();
+      fs.symlinkSync(path.join(dir, 'gone'), path.join(dir, '.test-gates-touch-gone'));
+      expect(testGates(['selfcheck', '--quick', '--dir', dir])).toEqual({
+        status: 0,
+        stdout: quickOk(['rate', 'fee', 'tax', 'toll']),
+        stderr: '',
+      });
+      expect(runs(dir)).toEqual(['notes', shared, 'one src/age.spec.ts']);
+    });
+
     it.each(['true', '1', 'TRUE'])(
       'refuses --quick when CI is %s, before anything runs',
       (value) => {

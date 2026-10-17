@@ -88,11 +88,17 @@ function shareOneRun<Result extends { status: number | null }>(
   let touchDir: string;
   try {
     // A run that was interrupted (Ctrl-C ends this process at once) left its directory behind.
-    // An hour is far beyond any gate run, so nothing that is still in use is removed.
+    // An hour is far beyond any gate run, so nothing that is still in use is removed. Another
+    // selfcheck may remove its own directory between the listing and the look at it: such an
+    // entry is passed over.
     for (const name of fs.readdirSync(manifest.dir)) {
       const left = path.join(manifest.dir, name);
-      if (name.startsWith(TOUCH_PREFIX) && Date.now() - fs.statSync(left).mtimeMs > 3_600_000) {
-        fs.rmSync(left, { recursive: true, force: true });
+      try {
+        if (name.startsWith(TOUCH_PREFIX) && Date.now() - fs.statSync(left).mtimeMs > 3_600_000) {
+          fs.rmSync(left, { recursive: true, force: true });
+        }
+      } catch {
+        // Gone already, or not ours to remove.
       }
     }
     // In the subproject: Vite does not load the provider module from anywhere else (see
