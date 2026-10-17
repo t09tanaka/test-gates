@@ -1270,7 +1270,7 @@ describe('test-gates mutation in a new linked worktree', () => {
     const { main, linked } = worktrees();
     fs.rmSync(path.join(main, RECORD));
     expect(testGates(['doctor', '--dir', linked]).stdout).toContain(
-      `  this worktree has no record of its own, and the main worktree (${main}) has none to start from`
+      `  this worktree has no record of its own, and the main worktree (${main}) has none this worktree can start from`
     );
     // Stryker writes nothing here, so whatever is there after the run was copied.
     write(linked, { '.stryker-tmp/silent': '' });
@@ -1285,6 +1285,18 @@ describe('test-gates mutation in a new linked worktree', () => {
       `${SEED}${other.main})`,
       `${NOTE}the record of the last run is not one this version can read`,
     ]);
+  });
+
+  it('takes nothing when the incremental file of the main worktree is not the one its record names', () => {
+    // As when a run in the main worktree wrote a new incremental file and not yet its record.
+    const { main, linked } = worktrees();
+    write(main, { [INCREMENTAL]: { written: 'by another run' } });
+    expect(testGates(['doctor', '--dir', linked]).stdout).toContain(
+      `  this worktree has no record of its own, and the main worktree (${main}) has none this worktree can start from`
+    );
+    write(linked, { '.stryker-tmp/silent': '' });
+    expect(firstLine(linked)).not.toContain('main worktree');
+    expect(fs.existsSync(path.join(linked, INCREMENTAL))).toBe(false);
   });
 
   it('takes nothing from the main worktree in a Stryker sandbox below a linked worktree', () => {

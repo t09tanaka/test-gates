@@ -36,7 +36,7 @@ import { findLocalBin } from '../fs.js';
 import { type LoadedManifest, readManifest } from '../load.js';
 import { inMainWorktree, linkedWorktreeOf } from '../main-worktree.js';
 import { markRun, removeStaleSandboxes, type TempDirSetting } from '../sandboxes.js';
-import { hashFile, snapshotOf } from '../snapshot.js';
+import { hashFile, hashOf, snapshotOf } from '../snapshot.js';
 import { findStrykerConfig } from './check.js';
 import { reportPathOf, runMutationResult } from './mutation-result.js';
 import type { Io } from './output.js';
@@ -145,6 +145,21 @@ function coveringSpecs(report: MutationReport, gates: string[]): Record<string, 
   return covering;
 }
 
+/**
+ * The incremental file of the main worktree and its record (see decideReuse); null when either
+ * is missing or cannot be read, or when the record is not that of this incremental file.
+ */
+function readSeed(incrementalFile: string, recordFile: string): ReuseDecision['seed'] {
+  try {
+    const incremental = fs.readFileSync(incrementalFile);
+    const record = JSON.parse(fs.readFileSync(recordFile, 'utf8')) as unknown;
+    const named = (record as { incremental?: unknown } | null)?.incremental;
+    return named === hashOf(incremental) ? { incremental, record } : null;
+  } catch {
+    return null;
+  }
+}
+
 /** What is known before a run about reusing the results of the last one. */
 export interface ReuseDecision {
   /** Stryker runs in incremental mode: there is something to reuse at all. */
@@ -183,8 +198,11 @@ export interface ReuseDecision {
    * the main worktree, whose files this run starts from when it has both (see `seed`).
    */
   mainWorktree: string | null;
-  /** The incremental file and the record of the main worktree that this run starts from. */
-  seed: { incrementalFile: string; recordFile: string } | null;
+  /**
+   * The incremental file of the main worktree that this run starts from, as it was read once,
+   * and the record next to it, whose hash of the incremental file is the hash of this content.
+   */
+  seed: { incremental: Buffer; record: unknown } | null;
 }
 
 /**
@@ -307,7 +325,9 @@ export function decideReuse(
   // makes the run one of every mutant. Only the main worktree is looked at, not other linked
   // ones; nothing is taken from it with --gate or --force, nor in a Stryker sandbox, which is a
   // copy that git does not list (snapshot.mode is 'walk') below the temporary directory.
-  let source = { incrementalFile, recordFile };
+  // The incremental file is read once, and only a record that names its hash is taken: a run in
+  // the main worktree can end between the two reads, and the record and the file it is compared
+  // with must be of the same run. guardIncremental writes this content, not the file again.
   const tempDir = path.basename(options.tempDirName);
   if (
     !part &&
@@ -322,14 +342,15 @@ export function decideReuse(
     const mainRecord = linked === null ? null : inMainWorktree(linked, recordFile);
     if (linked !== null && mainIncremental !== null && mainRecord !== null) {
       decision.mainWorktree = linked.main;
-      if (fs.existsSync(mainIncremental) && fs.existsSync(mainRecord)) {
-        decision.seed = { incrementalFile: mainIncremental, recordFile: mainRecord };
-        source = decision.seed;
+      const seed = readSeed(mainIncremental, mainRecord);
+      if (seed !== null) {
+        decision.seed = seed;
       }
     }
   }
 
-  const incremental = hashFile(source.incrementalFile);
+  const incremental =
+    decision.seed === null ? hashFile(incrementalFile) : hashOf(decision.seed.incremental);
   decision.incrementalHash = incremental;
   if (part) {
     // Stryker would take over the old results of the named gates, which the change that is
@@ -340,11 +361,13 @@ export function decideReuse(
         : null;
     return decision;
   }
-  let stored: unknown;
-  try {
-    stored = JSON.parse(fs.readFileSync(source.recordFile, 'utf8')) as unknown;
-  } catch {
-    stored = undefined;
+  let stored: unknown = decision.seed?.record;
+  if (decision.seed === null) {
+    try {
+      stored = JSON.parse(fs.readFileSync(recordFile, 'utf8')) as unknown;
+    } catch {
+      stored = undefined;
+    }
   }
   const ci = decision.ci;
 
@@ -463,7 +486,7 @@ function guardIncremental(
   // copied: like any record it is removed below, and this run writes its own.
   if (decision.seed !== null) {
     fs.mkdirSync(path.dirname(incrementalFile), { recursive: true });
-    fs.copyFileSync(decision.seed.incrementalFile, incrementalFile);
+    fs.writeFileSync(incrementalFile, decision.seed.incremental);
   }
   // A run that is interrupted or fails must not leave a record that says "nothing changed".
   fs.rmSync(recordFile, { force: true });

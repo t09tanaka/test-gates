@@ -113,7 +113,7 @@ export function runDoctor(dir: string, io: Io): number {
       );
     } else if (plain.mainWorktree !== null) {
       io.out(
-        `  this worktree has no record of its own, and the main worktree (${plain.mainWorktree}) has none to start from`
+        `  this worktree has no record of its own, and the main worktree (${plain.mainWorktree}) has none this worktree can start from`
       );
     }
     if (affected.ci !== null) {
