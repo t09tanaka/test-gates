@@ -106,6 +106,16 @@ export function runDoctor(dir: string, io: Io): number {
         ? '  next run: reuses the results of the last run'
         : `  next run: every mutant, ${reuse}`
     );
+    // A new linked worktree has no record of its own (see decideReuse).
+    if (plain.seed !== null) {
+      io.out(
+        `  this worktree has no record of its own: the next run starts from the one of the main worktree (${plain.mainWorktree})`
+      );
+    } else if (plain.mainWorktree !== null) {
+      io.out(
+        `  this worktree has no record of its own, and the main worktree (${plain.mainWorktree}) has none to start from`
+      );
+    }
     if (affected.ci !== null) {
       io.out(`  next run with --affected: every mutant, ${affected.ci}`);
     } else if (affected.plan !== null && 'rerun' in affected.plan) {

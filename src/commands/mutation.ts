@@ -34,6 +34,7 @@ import {
 import { affectedRefused, gateRunRefused, selectControls } from '../core/selfcheck.js';
 import { findLocalBin } from '../fs.js';
 import { type LoadedManifest, readManifest } from '../load.js';
+import { inMainWorktree, linkedWorktreeOf } from '../main-worktree.js';
 import { markRun, removeStaleSandboxes, type TempDirSetting } from '../sandboxes.js';
 import { hashFile, snapshotOf } from '../snapshot.js';
 import { findStrykerConfig } from './check.js';
@@ -93,6 +94,9 @@ function modifiedAt(file: string): string | null {
 export function guardRecordPath(incrementalFile: string): string {
   return `${incrementalFile}.test-gates.json`;
 }
+
+const forcedLine = (reason: string): string =>
+  `test-gates mutation: running every mutant again (--force), the results of the last run are not reused: ${reason}`;
 
 /** What the guard decided for this run. */
 interface Guard {
@@ -174,6 +178,13 @@ export interface ReuseDecision {
   configs: () => ReturnType<typeof runnerConfigs>;
   /** Where Stryker keeps its sandboxes; for any run, also one not in incremental mode. */
   temp: TempDirSetting;
+  /**
+   * In a linked worktree with neither an incremental file nor a record of its own: the top of
+   * the main worktree, whose files this run starts from when it has both (see `seed`).
+   */
+  mainWorktree: string | null;
+  /** The incremental file and the record of the main worktree that this run starts from. */
+  seed: { incrementalFile: string; recordFile: string } | null;
 }
 
 /**
@@ -223,6 +234,8 @@ export function decideReuse(
       dir: loaded === undefined ? null : path.resolve(base, options.tempDirName),
       keeps: (loaded as { cleanTempDir?: unknown } | undefined)?.cleanTempDir === false,
     },
+    mainWorktree: null,
+    seed: null,
   };
   if (loaded !== undefined && !options.incremental) {
     // Stryker neither reads nor writes an incremental file
@@ -286,7 +299,37 @@ export function decideReuse(
   decision.failure = snapshot === null ? failure : null;
   decision.root = root;
 
-  const incremental = hashFile(incrementalFile);
+  // A new linked worktree has neither file: both are ignored by git. It then starts from those
+  // of the main worktree, which are read here and copied by guardIncremental. That is safe: the
+  // record of the main worktree holds the hashes of the files of the main worktree, and they are
+  // compared with the files here as with a record of this worktree. Every file that differs (on
+  // another branch, or after a change) counts as changed since the last run, and is run again or
+  // makes the run one of every mutant. Only the main worktree is looked at, not other linked
+  // ones; nothing is taken from it with --gate or --force, nor in a Stryker sandbox, which is a
+  // copy that git does not list (snapshot.mode is 'walk') below the temporary directory.
+  let source = { incrementalFile, recordFile };
+  const tempDir = path.basename(options.tempDirName);
+  if (
+    !part &&
+    !options.force &&
+    snapshot?.mode === 'git' &&
+    !path.relative(root, base).split(path.sep).includes(tempDir) &&
+    !fs.existsSync(incrementalFile) &&
+    !fs.existsSync(recordFile)
+  ) {
+    const linked = linkedWorktreeOf(base);
+    const mainIncremental = linked === null ? null : inMainWorktree(linked, incrementalFile);
+    const mainRecord = linked === null ? null : inMainWorktree(linked, recordFile);
+    if (linked !== null && mainIncremental !== null && mainRecord !== null) {
+      decision.mainWorktree = linked.main;
+      if (fs.existsSync(mainIncremental) && fs.existsSync(mainRecord)) {
+        decision.seed = { incrementalFile: mainIncremental, recordFile: mainRecord };
+        source = decision.seed;
+      }
+    }
+  }
+
+  const incremental = hashFile(source.incrementalFile);
   decision.incrementalHash = incremental;
   if (part) {
     // Stryker would take over the old results of the named gates, which the change that is
@@ -299,7 +342,7 @@ export function decideReuse(
   }
   let stored: unknown;
   try {
-    stored = JSON.parse(fs.readFileSync(recordFile, 'utf8')) as unknown;
+    stored = JSON.parse(fs.readFileSync(source.recordFile, 'utf8')) as unknown;
   } catch {
     stored = undefined;
   }
@@ -415,6 +458,13 @@ function guardIncremental(
     fs.rmSync(recordFile, { force: true });
     return { ...nothing, force };
   }
+  // Stryker reads the incremental file here, so the one of the main worktree is copied into
+  // place (see decideReuse); that of the main worktree is never written. Its record is not
+  // copied: like any record it is removed below, and this run writes its own.
+  if (decision.seed !== null) {
+    fs.mkdirSync(path.dirname(incrementalFile), { recursive: true });
+    fs.copyFileSync(decision.seed.incrementalFile, incrementalFile);
+  }
   // A run that is interrupted or fails must not leave a record that says "nothing changed".
   fs.rmSync(recordFile, { force: true });
   const before = modifiedAt(incrementalFile);
@@ -478,6 +528,15 @@ function guardIncremental(
     if (expected > 0) {
       said.push(`test-gates mutation: ${describeExpected(expected)}`);
     }
+  }
+  if (decision.seed !== null) {
+    if (said.length === 0 && everyGate !== null) {
+      // printed in place of the line below, which would otherwise be left out
+      said.push(forcedLine(everyGate));
+    }
+    said.unshift(
+      `test-gates mutation: this worktree has no record of its own, so it starts from the one of the main worktree (${decision.mainWorktree})`
+    );
   }
   return {
     // Every gate is run again: the same as a run of every mutant.
@@ -621,9 +680,7 @@ export function runMutation(
   if (guard.said.length > 0) {
     guard.said.forEach((line) => io.out(line));
   } else if (guard.force !== null) {
-    io.out(
-      `test-gates mutation: running every mutant again (--force), the results of the last run are not reused: ${guard.force}`
-    );
+    io.out(forcedLine(guard.force));
   }
   // Only some gates are run again: their mutants with --force, and Stryker takes the results of
   // the others over from its incremental file.
