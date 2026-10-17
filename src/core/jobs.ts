@@ -177,15 +177,17 @@ const COMPUTED = 'loads a module whose name is computed';
 // a value may end right after it. Its text is not code: `"retry: {count}"` in a file of
 // messages uses nothing. A quote that may be something else (in a regular expression, in a
 // comment) seldom has a place where a value starts before it and one where it ends after it,
-// and when it does not, nothing is taken out.
+// and when it does not, nothing is taken out. Nor is the inside of one that holds `${`.
 const STRING = /(^|[:,([={?+&|;])(\s*)(['"])((?:\\.|(?!\3)[^\\\n])*)\3(?=\s*(?:[,}\]);:+?&|]|$))/gm;
 
 /** The text with the inside of each string in quotes (see STRING) left blank. */
 export function withoutStrings(source: string): string {
   return source.replace(
     STRING,
-    (_all, before: string, space: string, quote: string, inside: string) =>
-      `${before}${space}${quote}${' '.repeat(inside.length)}${quote}`
+    (all: string, before: string, space: string, quote: string, inside: string) =>
+      // In a template (`{"home": "${process.env.HOME}"}`) the quotes are text, and what is
+      // between them may be code.
+      inside.includes('${') ? all : `${before}${space}${quote}${' '.repeat(inside.length)}${quote}`
   );
 }
 const RUNNER_PACKAGES = ['vitest', '@jest/globals'];

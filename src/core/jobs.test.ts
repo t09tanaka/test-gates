@@ -214,6 +214,12 @@ describe('withoutStrings', () => {
     expect(withoutStrings("a = {}\n'x'")).toBe("a = {}\n' '");
   });
 
+  it('keeps the code of a template between quotes', () => {
+    expect(withoutStrings('const t = `{"home": "${process.env.HOME}"}`;')).toBe(
+      'const t = `{"    ": "${process.env.HOME}"}`;'
+    );
+  });
+
   it('reads past an escaped quote, and a quote of the other kind', () => {
     expect(withoutStrings("f('a\\'b')")).toBe("f('    ')");
     expect(withoutStrings("f('a\\\\')")).toBe("f('   ')");
@@ -233,8 +239,10 @@ describe('withoutStrings', () => {
       "f('x\n')",
       "f('x\\\n')",
       "f('x",
-      // A template.
+      // A template, and quotes around code in a template.
       'f(`x`)',
+      'f(`"${process.cwd()}"`)',
+      'write(`{\n  "${process.cwd()}",\n}`);',
     ]) {
       expect(withoutStrings(text)).toBe(text);
     }
@@ -298,6 +306,9 @@ describe('reachesOutside', () => {
   it('finds a use in a template, whose text may hold code', () => {
     expect(reachesOutside(file('const text = `${process.env.HOME}`;'), [])).toBe('uses process');
     expect(reachesOutside(file('const text = `retry: 1`;'), [])).toBe('uses retry');
+    expect(reachesOutside(file('const t = `{"home": "${process.env.HOME}"}`;'), [])).toBe(
+      'uses process'
+    );
   });
 
   it('finds a use that is spread over lines', () => {
