@@ -151,14 +151,131 @@ const RUNS_MUTATION =
 const TARGET = /(?:--dir|--prefix|--workspace|-w)(?:=|\s+)(['"]?)([^\s'";&|)]+)\1/;
 const CD = /\bcd\s+(['"]?)([^\s'";&|)]+)\1/;
 
+/** What a variable holds in a part of a hook: one of the names, or null for any value. */
+interface Scope {
+  kind: 'case' | 'loop';
+  variable: string | null;
+  names: string[] | null;
+}
+
+/** A line of a hook, or a part of one cut at `;;` and at the pattern of a branch. */
+interface Part {
+  text: string;
+  /** The scopes it lies in, innermost last. The parts of one branch share the same array. */
+  scopes: Scope[];
+}
+
+const NONE: Scope[] = [];
+/** Where a word starts a command. */
+const COMMAND = String.raw`(?<=(?:^|[\n;&|(){]|\b(?:then|else|do))\s*)`;
+const TOKEN = new RegExp(
+  String.raw`\n|;;&?|;&|${COMMAND}(?:case\s+(\S+)\s+in|for\s+(\w+)(?:\s+in\s+([^;\n]*))?|(esac|do|done))(?![\w-])`,
+  'g'
+);
+/** The pattern of a branch, or the `esac` that ends the case instead. */
+const PATTERN = /\s*(?:esac(?![\w-])|\(?([^()\n;]*)\))/y;
+const VARIABLE = /^(["']?)\$(?:(\w+)|\{(\w+)\})\1$/;
+const REFERENCE = /\$(?:(\w+)|\{(\w+)\})/g;
+
+/** The names a list of words gives, or null when a word may stand for others. */
+function namesOf(words: string[]): string[] | null {
+  const names = words.map((word) => word.trim().replace(/^(["'])(.*)\1$/, '$2'));
+  return names.some((name) => name === '' || /[$*?[\\`]/.test(name)) ? null : names;
+}
+
+/**
+ * The parts of a hook, each with what `case "$var" in` and `for var in …` around it tell of a
+ * variable. Null where the hook cannot be read so (a fall-through `;&`, a case or a loop that is
+ * not closed, a `;;` outside of a case).
+ */
+function partsOf(text: string): Part[] | null {
+  const parts: Part[] = [];
+  let scopes = NONE;
+  let start = 0;
+  let loop: Scope | null = null;
+  const enter = (scope: Scope) => {
+    scopes = [...scopes, scope];
+  };
+  const leave = (kind: Scope['kind']): boolean => {
+    const left = scopes.at(-1)?.kind === kind;
+    scopes = scopes.slice(0, -1);
+    return left;
+  };
+  TOKEN.lastIndex = 0;
+  for (;;) {
+    const token = TOKEN.exec(text);
+    parts.push({ text: text.slice(start, token?.index), scopes });
+    if (token === null) {
+      return scopes.length === 0 ? parts : null;
+    }
+    const [word, subject, variable, list, keyword] = token;
+    let awaiting = false;
+    if (subject !== undefined) {
+      const named = VARIABLE.exec(subject);
+      enter({ kind: 'case', variable: named?.[2] ?? named?.[3] ?? null, names: null });
+      awaiting = true;
+    } else if (variable !== undefined) {
+      loop = {
+        kind: 'loop',
+        variable,
+        names: list === undefined ? null : namesOf(list.trim().split(/\s+/)),
+      };
+    } else if (keyword === 'do') {
+      enter(loop ?? { kind: 'loop', variable: null, names: null });
+      loop = null;
+    } else if (keyword === 'done' || keyword === 'esac') {
+      if (!leave(keyword === 'done' ? 'loop' : 'case')) {
+        return null;
+      }
+    } else if (word === ';&') {
+      return null;
+    } else if (word !== '\n') {
+      if (scopes.at(-1)?.kind !== 'case') {
+        return null;
+      }
+      awaiting = true;
+    }
+    start = TOKEN.lastIndex;
+    if (awaiting) {
+      PATTERN.lastIndex = start;
+      const pattern = PATTERN.exec(text);
+      if (pattern === null) {
+        return null;
+      }
+      start = PATTERN.lastIndex;
+      TOKEN.lastIndex = start;
+      const top = scopes.at(-1) as Scope;
+      scopes = scopes.slice(0, -1);
+      if (pattern[1] !== undefined) {
+        enter({ ...top, names: namesOf(pattern[1].split('|')) });
+      }
+    }
+  }
+}
+
+/** Each path a target can be, with the variables that a scope tells the names of put in. */
+function expansions(target: string, scopes: Scope[]): string[] {
+  return [...target.matchAll(REFERENCE)].reduce(
+    (words, [reference, plain, braced]) => {
+      const names = [...scopes].reverse().find((scope) => scope.variable === (plain ?? braced))
+        ?.names ?? [reference];
+      return words.flatMap((word) => names.map((name) => word.replace(reference, name)));
+    },
+    [target]
+  );
+}
+
 /**
  * The runs of `test-gates mutation` in the text of a hook that may be ones of `subproject`, and
  * whether each is given `--affected`.
  *
  * A run is taken to be one of the subproject that the same line names (`--dir`, `--prefix`,
  * `-w`, `cd`), else the nearest `cd` on a line before it. A name with a variable in it
- * (`cd "$project"`), or none, may be any subproject. Comments (`#` at the start or after a space)
- * are left out.
+ * (`cd "$project"`), or none, may be any subproject, except in a branch of `case "$project" in`
+ * or in `for project in …` that writes the names out: there it is one of those names. A pattern
+ * or a word that may stand for others (`*`, `app*`), and a hook that cannot be read so, leave it
+ * any. A `cd` on a line before the run narrows only in the same branch. Comments (`#` at the
+ * start or after a space) are left out.
  *
  * @param subproject The subproject, relative to the top of the repository; `''` for the top.
  * @param script The `test:gates:mutation` script of the subproject: a run through it is given
@@ -171,34 +288,36 @@ export function hookUses(input: {
   script: string;
 }): HookUse[] {
   const lines = input.text.split('\n').map((line) => line.replace(/(?:^|\s)#.*/, ''));
+  const parts = partsOf(lines.join('\n')) ?? lines.map((text) => ({ text, scopes: NONE }));
   const uses: HookUse[] = [];
-  lines.forEach((line, index) => {
-    if (!RUNS_MUTATION.test(line)) {
+  parts.forEach((part, index) => {
+    if (!RUNS_MUTATION.test(part.text)) {
       return;
     }
-    const named = TARGET.exec(line) ?? CD.exec(line);
-    const target =
-      named?.[2] ??
-      lines
-        .slice(0, index)
-        .reverse()
-        .map((before) => CD.exec(before)?.[2])
-        .find((found) => found !== undefined);
-    const normalized = target
-      ?.split('/')
-      .filter((part) => part !== '.' && part !== '')
-      .join('/');
+    const named = TARGET.exec(part.text) ?? CD.exec(part.text);
+    const before = parts
+      .slice(0, index)
+      .reverse()
+      .find((one) => CD.test(one.text));
+    const target = named?.[2] ?? (before === undefined ? undefined : CD.exec(before.text)?.[2]);
+    const scopes = named !== null || before?.scopes === part.scopes ? part.scopes : NONE;
     const ours =
-      normalized === undefined ||
-      normalized.includes('$') ||
-      normalized.includes('..') ||
-      normalized === input.subproject;
+      target === undefined ||
+      expansions(target, scopes).some((word) => {
+        const normalized = word
+          .split('/')
+          .filter((one) => one !== '.' && one !== '')
+          .join('/');
+        return (
+          normalized.includes('$') || normalized.includes('..') || normalized === input.subproject
+        );
+      });
     if (ours) {
       uses.push({
         file: input.file,
         affected:
-          /--affected\b/.test(line) ||
-          (/test:gates:mutation\b/.test(line) && input.script.includes('--affected')),
+          /--affected\b/.test(part.text) ||
+          (/test:gates:mutation\b/.test(part.text) && input.script.includes('--affected')),
       });
     }
   });
