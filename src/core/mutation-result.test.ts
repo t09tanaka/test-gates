@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   expectedTimeoutMutants,
+  formatRetry,
   formatSummary,
   formatSurvivor,
   judgeMutationReport,
+  mergeRetry,
   normalizeCode,
   sliceByLocation,
   type ReportMutant,
@@ -1041,5 +1043,180 @@ describe('expectedTimeoutMutants', () => {
         [firstComparison('Timeout'), mutant('Killed', 'StringLiteral', '""', 9, 1, 2)]
       )
     ).toEqual([]);
+  });
+});
+
+describe('mergeRetry', () => {
+  const loopEntry: EquivalentMutant = allowance({
+    occurrence: 2,
+    reason: 'the loop never ends, so the run always times out',
+  });
+  const file = (mutants: ReportMutant[], source: string | null = SOURCE) => ({
+    ...(source === null ? {} : { source }),
+    mutants,
+  });
+  const merge = (
+    first: ReportMutant[],
+    retry: ReportMutant[],
+    expectedTimeouts?: EquivalentMutant[],
+    path = GATE_PATH
+  ) =>
+    mergeRetry({ files: { [GATE_PATH]: file(first) } }, { files: { [GATE_PATH]: file(retry) } }, [
+      { path, ...(expectedTimeouts ? { expectedTimeouts } : {}) },
+    ]);
+  const statuses = (merged: ReturnType<typeof merge>) =>
+    merged.report.files?.[GATE_PATH]?.mutants?.map((one) => one.status);
+
+  it('takes the result of the run again for each timeout outside expectedTimeouts', () => {
+    const merged = merge(
+      [firstComparison('Timeout'), yesLiteral('Killed'), secondComparison('Timeout')],
+      [secondComparison('Survived'), firstComparison('Killed'), yesLiteral('Survived')]
+    );
+    // A mutant that survives in the run again is a survivor; one that did not time out keeps
+    // its first result.
+    expect(statuses(merged)).toEqual(['Killed', 'Killed', 'Survived']);
+    expect(merged.outcome).toEqual({
+      retried: 2,
+      statuses: { Killed: 1, Survived: 1 },
+      missing: 0,
+    });
+    expect(
+      judgeMutationReport({ gates: [gate()], report: merged.report, readSource: () => SOURCE })
+        .summary
+    ).toMatchObject({ timeout: 0, unallowed: 1 });
+  });
+
+  it('keeps a timeout the run again still reports, or does not report at all', () => {
+    const still = merge([firstComparison('Timeout')], [firstComparison('Timeout')]);
+    expect(statuses(still)).toEqual(['Timeout']);
+    expect(still.outcome).toEqual({ retried: 1, statuses: { Timeout: 1 }, missing: 0 });
+    const gone = merge([firstComparison('Timeout')], []);
+    expect(statuses(gone)).toEqual(['Timeout']);
+    expect(gone.outcome).toEqual({ retried: 1, statuses: {}, missing: 1 });
+    const noFile = mergeRetry({ files: { [GATE_PATH]: file([firstComparison('Timeout')]) } }, {}, [
+      { path: GATE_PATH },
+    ]);
+    expect(noFile.outcome.missing).toBe(1);
+    // a file of the run again with no mutants, or none at all
+    for (const result of [{ source: SOURCE }, null]) {
+      const bare = mergeRetry(
+        { files: { [GATE_PATH]: file([firstComparison('Timeout')]) } },
+        { files: { [GATE_PATH]: result as never } },
+        [{ path: GATE_PATH }]
+      );
+      expect(bare.outcome.missing).toBe(1);
+    }
+  });
+
+  it('matches a mutant by mutator, replacement and the whole location', () => {
+    const at = (line: number, start: number, endLine: number, end: number) =>
+      ({
+        ...firstComparison('Killed'),
+        location: { start: { line, column: start }, end: { line: endLine, column: end } },
+      }) as ReportMutant;
+    const others = [
+      firstComparison('Killed', 'age < 18'),
+      { ...firstComparison('Killed'), mutatorName: 'StringLiteral' },
+      at(2, 41, 1, 50),
+      at(1, 40, 1, 50),
+      at(1, 41, 2, 50),
+      at(1, 41, 1, 51),
+    ];
+    for (const other of others) {
+      expect(merge([firstComparison('Timeout')], [other]).outcome.missing).toBe(1);
+    }
+    expect(merge([firstComparison('Timeout')], [at(1, 41, 1, 50)]).outcome.missing).toBe(0);
+    // no replacement is the same as an empty one
+    const bare = { ...firstComparison('Timeout'), replacement: undefined };
+    expect(merge([bare], [{ ...firstComparison('Killed'), replacement: '' }]).outcome.missing).toBe(
+      0
+    );
+    expect(
+      merge([{ ...firstComparison('Timeout'), replacement: '' }], [bare]).outcome.missing
+    ).toBe(0);
+  });
+
+  it('leaves the timeouts that expectedTimeouts points at', () => {
+    const merged = merge(
+      [firstComparison('Timeout'), secondComparison('Timeout')],
+      [firstComparison('Killed'), secondComparison('Killed')],
+      [loopEntry]
+    );
+    expect(statuses(merged)).toEqual(['Killed', 'Timeout']);
+    expect(merged.outcome.retried).toBe(1);
+  });
+
+  it('finds the gate by its path without `.` parts, and only the gates it is given', () => {
+    expect(
+      merge([firstComparison('Timeout')], [firstComparison('Killed')], undefined, './src/./age.ts')
+        .outcome.retried
+    ).toBe(1);
+    const other = mergeRetry(
+      { files: { [GATE_PATH]: file([firstComparison('Timeout')]) } },
+      { files: { [GATE_PATH]: file([firstComparison('Killed')]) } },
+      [{ path: 'src/fee.ts' }, { path: 'constructor' }]
+    );
+    expect(other.outcome.retried).toBe(0);
+    expect(statuses(other as ReturnType<typeof merge>)).toEqual(['Timeout']);
+    // a file of the run again that the first run does not have, or with no mutants
+    const empty = mergeRetry(
+      { files: { [GATE_PATH]: { source: SOURCE } } },
+      { files: { constructor: file([]) } },
+      [{ path: GATE_PATH }, { path: 'constructor' }]
+    );
+    expect(empty.report).toEqual({ files: { [GATE_PATH]: { source: SOURCE } } });
+    expect(mergeRetry({}, {}, [{ path: GATE_PATH }]).report).toEqual({ files: {} });
+  });
+
+  it('reads expectedTimeouts against the source in the report', () => {
+    const merged = mergeRetry(
+      {
+        files: {
+          [GATE_PATH]: file([firstComparison('Timeout'), secondComparison('Timeout')], null),
+        },
+      },
+      { files: { [GATE_PATH]: file([firstComparison('Killed'), secondComparison('Killed')]) } },
+      [{ path: GATE_PATH, expectedTimeouts: [loopEntry] }]
+    );
+    // without a source nothing is pointed at: both are run again
+    expect(merged.outcome.retried).toBe(2);
+  });
+
+  it('keeps the rest of the first report and adds the spec files of the run again', () => {
+    const first = {
+      schemaVersion: '1',
+      files: { [GATE_PATH]: file([firstComparison('Timeout')]), 'src/fee.ts': file([]) },
+      testFiles: { 'a.spec.ts': { tests: [{ id: 'a' }] }, 'b.spec.ts': { tests: [{ id: 'b' }] } },
+    };
+    const merged = mergeRetry(
+      first,
+      {
+        files: { [GATE_PATH]: file([firstComparison('Killed')]) },
+        testFiles: { 'b.spec.ts': { tests: [{ id: 'b2' }] } },
+      },
+      [{ path: GATE_PATH }]
+    );
+    expect(merged.report).toEqual({
+      schemaVersion: '1',
+      files: { [GATE_PATH]: file([firstComparison('Killed')]), 'src/fee.ts': file([]) },
+      testFiles: { 'a.spec.ts': { tests: [{ id: 'a' }] }, 'b.spec.ts': { tests: [{ id: 'b2' }] } },
+    });
+    expect(first.files[GATE_PATH].mutants[0]?.status).toBe('Timeout');
+    expect(mergeRetry(first, {}, []).report.testFiles).toEqual(first.testFiles);
+    expect(mergeRetry({}, { testFiles: first.testFiles }, []).report.testFiles).toEqual(
+      first.testFiles
+    );
+    expect('testFiles' in mergeRetry({}, {}, []).report).toBe(false);
+  });
+});
+
+describe('formatRetry', () => {
+  it('says how many were run again and what they gave, by status', () => {
+    expect(formatRetry({ retried: 3, statuses: { Survived: 1, Killed: 2 }, missing: 0 })).toBe(
+      'test-gates mutation: 3 mutant(s) that timed out were run again one at a time (--concurrency 1): 2 Killed, 1 Survived'
+    );
+    expect(formatRetry({ retried: 2, statuses: { Timeout: 1 }, missing: 1 })).toBe(
+      'test-gates mutation: 2 mutant(s) that timed out were run again one at a time (--concurrency 1): 1 Timeout, 1 not in the report (still Timeout)'
+    );
   });
 });

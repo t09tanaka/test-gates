@@ -19,13 +19,15 @@ export function reportPathOf(manifest: LoadedManifest, override: string | null):
  * @param only The gates of `mutation --gate`: only they are judged. The report of such a run
  *   can hold old results of the other gates (Stryker takes them over from its incremental
  *   file), which say nothing about the code as it is now.
+ * @param retried Whether `mutation` ran the timeouts of this report again one at a time.
  */
 export function runMutationResult(
   dir: string,
   reportOverride: string | null,
   io: Io,
   only: string[] = [],
-  seen: (judged: { report: MutationReport; verdict: MutationVerdict }) => void = () => undefined
+  seen: (judged: { report: MutationReport; verdict: MutationVerdict }) => void = () => undefined,
+  retried = false
 ): number {
   const manifest = readManifest(dir);
   const gates =
@@ -105,8 +107,14 @@ export function runMutationResult(
       io.err(`  - ${formatSurvivor(mutant)}`);
     }
     io.err('');
-    io.err('A timeout counts as detected, but on a loaded machine a mutant that would survive');
-    io.err('can time out instead. Run again with less load (-- --concurrency 1). Only for a');
+    if (retried) {
+      io.err('They timed out again when they were run one at a time (--concurrency 1), so they');
+      io.err('most likely never finish. Look at each mutant first. Only for a');
+    } else {
+      io.err('A timeout counts as detected, but on a loaded machine a mutant that would survive');
+      io.err('can time out instead. `test-gates mutation` runs such timeouts again one at a time');
+      io.err('(--concurrency 1) before it fails; these were not run again. Only for a');
+    }
     io.err('mutant that can never finish (a loop that no longer ends), add it to');
     io.err('"expectedTimeouts" of the gate in test-gates.json and fill in "reason"');
     io.err('(settings.mutation.maxTimeouts raises the limit for the whole project):');
