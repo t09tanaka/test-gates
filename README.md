@@ -505,6 +505,12 @@ test-gates selfcheck: 4 of 14 negative control(s) did not hold cleanly next to o
 
 Each of the `<n>` lines of runs has a directory of its own, outside of the project, for what the coverage tool writes and for the cache of the runner. It is given on the command line (`--coverage.reportsDirectory` and `--no-cache` for Vitest, `--coverageDirectory` and `--cacheDirectory` for Jest), which wins over the gate config, and removed when the command ends. Vitest keeps the coverage of every spec file in that directory until the run ends, and empties it when a run starts: two runs in one directory read each other's files and report a gate at 0% whose spec ran. That is why a gate command with any other argument is not run at the same time; it could name such a place itself.
 
+The directories are made in the temporary directory of the system (`TMPDIR`). When none can be made there, every control runs one at a time, and the first line says why:
+
+```
+test-gates selfcheck: one negative control at a time (no directory for the runs next to others could be made in /tmp)
+```
+
 **Why the default stays 1.** What `--jobs` reports was compared with one control at a time in `test/selfcheck-runners-*.test.ts`, with a real Jest and a real Vitest (both pools), for the project described above for `--quick`: the same lines and the same exit code, TBD-STRESS. A hunt for projects in which the two differ found six, all of the same kind: a control that does not hold on its own, reported as holding with `--jobs`.
 
 | What the project does                                                                                                | What now keeps it from being reported as holding                             |
