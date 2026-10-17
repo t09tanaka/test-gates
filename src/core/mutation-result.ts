@@ -512,7 +512,7 @@ export function mergeRetry(
       continue;
     }
     const expected = expectedTimeoutMutants(named, result.source, result.mutants);
-    const rerun = Object.hasOwn(again, gate) ? (again[gate]?.mutants ?? []) : [];
+    const rerun = Object.hasOwn(again, gate) ? again[gate]?.mutants : undefined;
     files[gate] = {
       ...result,
       mutants: result.mutants.map((mutant) => {
@@ -520,7 +520,7 @@ export function mergeRetry(
           return mutant;
         }
         outcome.retried += 1;
-        const found = rerun.find((other) => sameMutant(other, mutant));
+        const found = rerun?.find((other) => sameMutant(other, mutant));
         if (found === undefined) {
           outcome.missing += 1;
           return mutant;
@@ -531,7 +531,7 @@ export function mergeRetry(
     };
   }
   const report: MutationReport = { ...first, files };
-  if (first.testFiles !== undefined || retry.testFiles !== undefined) {
+  if (retry.testFiles !== undefined) {
     // The ids of the tests that killed a mutant in the run again are those of its spec files.
     report.testFiles = { ...first.testFiles, ...retry.testFiles };
   }

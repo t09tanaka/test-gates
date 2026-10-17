@@ -1097,6 +1097,15 @@ describe('mergeRetry', () => {
       { path: GATE_PATH },
     ]);
     expect(noFile.outcome.missing).toBe(1);
+    // a file of the run again with no mutants, or none at all
+    for (const result of [{ source: SOURCE }, null]) {
+      const bare = mergeRetry(
+        { files: { [GATE_PATH]: file([firstComparison('Timeout')]) } },
+        { files: { [GATE_PATH]: result as never } },
+        [{ path: GATE_PATH }]
+      );
+      expect(bare.outcome.missing).toBe(1);
+    }
   });
 
   it('matches a mutant by mutator, replacement and the whole location', () => {
