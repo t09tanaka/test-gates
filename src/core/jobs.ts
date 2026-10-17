@@ -173,11 +173,27 @@ const REACHES = [
 const COMPUTED_LOAD =
   /(?:require|import)\((?!['"])|\brequire(?!\(|\.resolve\b|[\w$])|\bimport\.meta\.glob\b/;
 const COMPUTED = 'loads a module whose name is computed';
+// A string in quotes that surely is one: it opens where a value starts, closes on its line, and
+// a value may end right after it. Its text is not code: `"retry: {count}"` in a file of
+// messages uses nothing. A quote that may be something else (in a regular expression, in a
+// comment) seldom has a place where a value starts before it and one where it ends after it,
+// and when it does not, nothing is taken out.
+const STRING = /(^|[:,([={?+&|;])(\s*)(['"])((?:\\.|(?!\3)[^\\\n])*)\3(?=\s*(?:[,}\]);:+?&|]|$))/gm;
+
+/** The text with the inside of each string in quotes (see STRING) left blank. */
+export function withoutStrings(source: string): string {
+  return source.replace(
+    STRING,
+    (_all, before: string, space: string, quote: string, inside: string) =>
+      `${before}${space}${quote}${' '.repeat(inside.length)}${quote}`
+  );
+}
 const RUNNER_PACKAGES = ['vitest', '@jest/globals'];
 
 /**
  * What a file a gate run loads does that could make it meet another run, or null when nothing
- * of the kind is seen in it. By its text: a comment that names `setTimeout` counts as a use.
+ * of the kind is seen in it. By its text: a comment that names `setTimeout` counts as a use,
+ * the text of a string in quotes does not (withoutStrings).
  *
  * Packages are not looked into, so only the runner's own and those in `trusted` may be
  * imported.
@@ -187,7 +203,8 @@ const RUNNER_PACKAGES = ['vitest', '@jest/globals'];
  */
 export function reachesOutside(file: LoadedFile, trusted: string[]): string | null {
   const dense = file.source.replace(/\s/g, '');
-  const mark = REACHES.find((text) => dense.includes(text));
+  const code = withoutStrings(file.source).replace(/\s/g, '');
+  const mark = REACHES.find((text) => code.includes(text));
   if (mark !== undefined) {
     return `uses ${mark.replace(/[.?[(:]+$/, '')}`;
   }

@@ -7,6 +7,7 @@ import {
   knownCommand,
   reachesOutside,
   type LoadedFile,
+  withoutStrings,
   workerFlags,
 } from './jobs';
 
@@ -197,6 +198,49 @@ const file = (source: string, imports: LoadedFile['imports'] = []): LoadedFile =
 const QUIET_SPEC =
   "import { fee } from './fee';\nit('charges', () => {\n  expect(fee(2)).toBe(6);\n});\n";
 
+describe('withoutStrings', () => {
+  it('leaves the inside of a string blank, and its quotes', () => {
+    expect(withoutStrings('f(\'ab\', "cd")')).toBe('f(\'  \', "  ")');
+    expect(withoutStrings("x = 'ab';")).toBe("x = '  ';");
+    expect(withoutStrings("'ab'")).toBe("'  '");
+    expect(withoutStrings("a\n  'ab',\nb")).toBe("a\n  '  ',\nb");
+    expect(withoutStrings("{ a: 'x' }")).toBe("{ a: ' ' }");
+    expect(withoutStrings("['x']")).toBe("[' ']");
+    expect(withoutStrings("f('x')")).toBe("f(' ')");
+    expect(withoutStrings("a ? 'x' : 'y'")).toBe("a ? ' ' : ' '");
+    expect(withoutStrings("'x' + 'y'")).toBe("' ' + ' '");
+    expect(withoutStrings("a && 'x' || 'y'")).toBe("a && ' ' || ' '");
+    expect(withoutStrings("a; 'x';")).toBe("a; ' ';");
+    expect(withoutStrings("a = {}\n'x'")).toBe("a = {}\n' '");
+  });
+
+  it('reads past an escaped quote, and a quote of the other kind', () => {
+    expect(withoutStrings("f('a\\'b')")).toBe("f('    ')");
+    expect(withoutStrings("f('a\\\\')")).toBe("f('   ')");
+    expect(withoutStrings('f("it\'s")')).toBe('f("    ")');
+    expect(withoutStrings('f(\'say "x"\')')).toBe("f('       ')");
+  });
+
+  it('takes out nothing that may not be a string', () => {
+    for (const text of [
+      // A quote where no value starts, or where no value ends after it.
+      "it's retry: 1",
+      "a 'x' b",
+      "f('x'.length)",
+      "f('x'y)",
+      "f( 'x' y)",
+      // A string that is not closed on its line.
+      "f('x\n')",
+      "f('x\\\n')",
+      "f('x",
+      // A template.
+      'f(`x`)',
+    ]) {
+      expect(withoutStrings(text)).toBe(text);
+    }
+  });
+});
+
 describe('reachesOutside', () => {
   it('finds nothing in a spec that only calls its gate', () => {
     expect(reachesOutside(file(QUIET_SPEC), [])).toBeNull();
@@ -237,6 +281,25 @@ describe('reachesOutside', () => {
     expect(reachesOutside(file(`${QUIET_SPEC}${line}\n`), ['anything'])).toBe(`uses ${what}`);
   });
 
+  it('does not take the text of a string for a use', () => {
+    // A file of messages, as an app with translations has.
+    const messages =
+      'export default {\n  error: \'retry: wait and try again\',\n  hint: "retry: {count}",\n  list: [\'setTimeout(\', "process.env"],\n};\n';
+    expect(reachesOutside(file(messages), [])).toBeNull();
+    expect(reachesOutside(file("it('retry: once', () => {});"), [])).toBeNull();
+    expect(reachesOutside(file("expect(text).toBe('retry: 2');"), [])).toBeNull();
+    // ... but the option itself, also next to such a string.
+    expect(reachesOutside(file(`${messages}it('x', { retry: 2 }, () => {});`), [])).toBe(
+      'uses retry'
+    );
+    expect(reachesOutside(file("it('retry: 1', { retry: 1 }, () => {});"), [])).toBe('uses retry');
+  });
+
+  it('finds a use in a template, whose text may hold code', () => {
+    expect(reachesOutside(file('const text = `${process.env.HOME}`;'), [])).toBe('uses process');
+    expect(reachesOutside(file('const text = `retry: 1`;'), [])).toBe('uses retry');
+  });
+
   it('finds a use that is spread over lines', () => {
     expect(reachesOutside(file('const at = Date\n  .now();'), [])).toBe('uses Date.now');
     expect(reachesOutside(file('process\n  .env'), [])).toBe('uses process');
@@ -266,7 +329,9 @@ describe('reachesOutside', () => {
 
   it.each([
     "require('./fee')",
+    "require( './fee' )",
     'await import("./fee")',
+    "await import(\n  './fee'\n)",
     "jest.requireActual('./fee')",
     "require.resolve('./fee')",
     'const required = 1;',
