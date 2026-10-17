@@ -73,6 +73,14 @@ const refusal = (dir: string): string => {
   throw new Error('no refusal');
 };
 
+/** The gates that are blind (see core/affected.ts), with why. */
+const blindOf = (dir: string): Record<string, string> =>
+  Object.fromEntries(
+    Object.entries(inputs(dir).gates).flatMap(([gate, entry]) =>
+      entry.blind === undefined ? [] : [[gate, entry.blind]]
+    )
+  );
+
 describe('affectedInputs', () => {
   it('finds for each gate its specs, the specs that import it, and what they import', () => {
     const found = inputs(fixture());
@@ -257,6 +265,52 @@ describe('affectedInputs', () => {
       'src/round.ts:1 imports a module whose path is not written out',
     ],
     [
+      'a mock named by a path from __dirname',
+      {
+        'src/settings.ts':
+          "import { vi } from 'vitest';\nimport { join } from 'node:path';\n" +
+          "vi.mock(\n  join(__dirname, 'rates')\n);\nexport const env = 1;\n",
+      },
+      'src/settings.ts uses __dirname and mock, which can reach files that no import names',
+    ],
+    [
+      'a mock named by a template from __dirname',
+      {
+        'src/settings.ts':
+          "import { vi } from 'vitest';\nvi.mock(`${__dirname}/rates`);\nexport const env = 1;\n",
+      },
+      'src/settings.ts imports ${__dirname}/rates, which is neither a file nor an installed package (name an alias in settings.importAliases)',
+    ],
+    [
+      'an import that leads to no file',
+      { 'src/c.spec.ts': `${H}import { c } from './missing';\n` },
+      'src/c.spec.ts imports ./missing, which leads to no file',
+    ],
+    [
+      'an alias handed to createMockFromModule with a type argument',
+      {
+        'src/c.spec.ts': `${H}import { c } from './c';\nconst kit = jest.createMockFromModule<typeof c>('@/kit');\n`,
+      },
+      'src/c.spec.ts imports @/kit, which is neither a file nor an installed package (name an alias in settings.importAliases)',
+    ],
+    [
+      'an alias that is not named',
+      { 'src/c.spec.ts': `${H}import { c } from '@/c';\n` },
+      'src/c.spec.ts imports @/c, which is neither a file nor an installed package (name an alias in settings.importAliases)',
+    ],
+    [
+      'an absolute import that leads to no file',
+      { 'src/c.spec.ts': `${H}import { c } from '/no/such/file';\n` },
+      'src/c.spec.ts imports /no/such/file, which leads to no file',
+    ],
+  ])('refuses %s', (_name, files, message) => {
+    expect(refusal(fixture({ ...LOADS_SETTINGS, ...files }))).toBe(message);
+  });
+
+  // Only reads files no import names: the gates that depend on the file are blind, and the
+  // others are told apart. Gate c loads settings.ts and is the only gate c.spec.ts loads.
+  it.each([
+    [
       'a file read by a path from __dirname',
       {
         'src/settings.ts': `import { join } from 'node:path';\nexport const env = readFileSync(join(__dirname, '..', '.env'));\n`,
@@ -289,23 +343,6 @@ describe('affectedInputs', () => {
       'src/settings.ts uses import.meta.url and createReadStream, which can reach files that no import names',
     ],
     [
-      'a mock named by a path from __dirname',
-      {
-        'src/settings.ts':
-          "import { vi } from 'vitest';\nimport { join } from 'node:path';\n" +
-          "vi.mock(\n  join(__dirname, 'rates')\n);\nexport const env = 1;\n",
-      },
-      'src/settings.ts uses __dirname and mock, which can reach files that no import names',
-    ],
-    [
-      'a mock named by a template from __dirname',
-      {
-        'src/settings.ts':
-          "import { vi } from 'vitest';\nvi.mock(`${__dirname}/rates`);\nexport const env = 1;\n",
-      },
-      'src/settings.ts imports ${__dirname}/rates, which is neither a file nor an installed package (name an alias in settings.importAliases)',
-    ],
-    [
       'a file read with fs',
       {
         'src/c.spec.ts': `${H}import { readFileSync } from 'node:fs';\nimport { c } from './c';\n`,
@@ -318,29 +355,70 @@ describe('affectedInputs', () => {
       'src/c.spec.ts imports fs/promises, which can reach files that no import names',
     ],
     [
-      'an import that leads to no file',
-      { 'src/c.spec.ts': `${H}import { c } from './missing';\n` },
-      'src/c.spec.ts imports ./missing, which leads to no file',
-    ],
-    [
-      'an alias handed to createMockFromModule with a type argument',
+      'a file read by a spec of two gates',
       {
-        'src/c.spec.ts': `${H}import { c } from './c';\nconst kit = jest.createMockFromModule<typeof c>('@/kit');\n`,
+        'src/b.spec.ts': `${H}import { readFileSync } from 'node:fs';\nimport { b } from './b';\nimport { a } from './a';\n`,
       },
-      'src/c.spec.ts imports @/kit, which is neither a file nor an installed package (name an alias in settings.importAliases)',
+      'src/b.spec.ts uses readFileSync, which can reach files that no import names',
+      ['src/a.ts', 'src/b.ts'],
     ],
     [
-      'an alias that is not named',
-      { 'src/c.spec.ts': `${H}import { c } from '@/c';\n` },
-      'src/c.spec.ts imports @/c, which is neither a file nor an installed package (name an alias in settings.importAliases)',
+      'a helper of two gates that reads with glob',
+      {
+        'src/round.ts':
+          "import { globSync } from 'glob';\nexport const round = (x: number) => x + globSync('*').length;\n",
+        'node_modules/glob/package.json': '{ "name": "glob" }',
+      },
+      'src/round.ts imports glob, which can reach files that no import names',
+      ['src/a.ts', 'src/b.ts'],
     ],
+  ])(
+    'makes blind only the gates that depend on %s',
+    (_name, files, message, gates = ['src/c.ts']) => {
+      const dir = fixture({ ...LOADS_SETTINGS, ...files });
+      expect(blindOf(dir)).toEqual(Object.fromEntries(gates.map((one) => [one, message])));
+    }
+  );
+
+  it.each([
+    ['process.cwd', 'export const env = process.cwd();\n', 'process.cwd'],
+    ['createRequire', 'export const env = createRequire(import.meta.url);\n', 'createRequire'],
+    ['require.resolve', "export const env = require.resolve('./x');\n", 'require.resolve'],
+    ['import.meta.glob', "export const env = import.meta.glob('./*.ts');\n", 'import.meta.glob'],
     [
-      'an absolute import that leads to no file',
-      { 'src/c.spec.ts': `${H}import { c } from '/no/such/file';\n` },
-      'src/c.spec.ts imports /no/such/file, which leads to no file',
+      'readFileSync next to createRequire',
+      "export const a = readFileSync('x');\nexport const env = createRequire(import.meta.url);\n",
+      'createRequire',
     ],
-  ])('refuses %s', (_name, files, message) => {
-    expect(refusal(fixture({ ...LOADS_SETTINGS, ...files }))).toBe(message);
+  ])('refuses for every gate a file that may load modules: %s', (_name, source, used) => {
+    expect(refusal(fixture({ ...LOADS_SETTINGS, 'src/settings.ts': source }))).toBe(
+      `src/settings.ts uses ${used}, which can reach files that no import names`
+    );
+  });
+
+  it.each([
+    ['child_process', 'child_process'],
+    ['module', 'node:module'],
+    ['worker_threads', 'worker_threads'],
+  ])('refuses for every gate an import of %s', (_name, specifier) => {
+    const dir = fixture({
+      ...LOADS_SETTINGS,
+      'src/settings.ts': `import * as m from '${specifier}';\nexport const env = m;\n`,
+    });
+    expect(refusal(dir)).toBe(
+      `src/settings.ts imports ${specifier}, which can reach files that no import names`
+    );
+  });
+
+  it('refuses for every gate a worker started by a path from __dirname, though it also reads', () => {
+    const dir = fixture({
+      ...LOADS_SETTINGS,
+      'src/settings.ts':
+        "import { join } from 'node:path';\nexport const s = existsSync(join(__dirname, 'x'));\nexport const w = new Worker(join(__dirname, 'w.js'));\n",
+    });
+    expect(refusal(dir)).toBe(
+      'src/settings.ts uses __dirname and Worker, which can reach files that no import names'
+    );
   });
 
   it.each([
@@ -638,19 +716,24 @@ describe('a function that reads a file by a path it is given', () => {
       'fromURL',
       "export const c = (J: { fromURL(p: string): void }) => J.fromURL('file:src/t.html');\n",
     ],
-  ])('refuses %s, which can read any file', (name, source) => {
+  ])('makes blind the gate of %s, which can read any file', (name, source) => {
     const dir = fixture({ 'src/t.html': '<p>t</p>\n', 'src/c.ts': source });
-    expect(refusal(dir)).toBe(`src/c.ts uses ${name}, which can reach files that no import names`);
+    expect(blindOf(dir)).toEqual({
+      'src/c.ts': `src/c.ts uses ${name}, which can reach files that no import names`,
+    });
   });
 
-  it.each(['fs/promises', 'node:fs/promises'])('refuses an import of %s', (module) => {
-    const dir = fixture({
-      'src/c.ts': `import { open } from '${module}';\nexport const c = () => open;\n`,
-    });
-    expect(refusal(dir)).toBe(
-      `src/c.ts imports ${module}, which can reach files that no import names`
-    );
-  });
+  it.each(['fs/promises', 'node:fs/promises'])(
+    'makes blind the gate of an import of %s',
+    (module) => {
+      const dir = fixture({
+        'src/c.ts': `import { open } from '${module}';\nexport const c = () => open;\n`,
+      });
+      expect(blindOf(dir)).toEqual({
+        'src/c.ts': `src/c.ts imports ${module}, which can reach files that no import names`,
+      });
+    }
+  );
 });
 
 describe('an import with a query of Vite', () => {
@@ -771,9 +854,9 @@ describe('comments', () => {
     ],
   ])('keeps what follows %s', (_name, source) => {
     const dir = fixture({ 'src/c.ts': source });
-    expect(refusal(dir)).toBe(
-      'src/c.ts uses readFileSync, which can reach files that no import names'
-    );
+    expect(blindOf(dir)).toEqual({
+      'src/c.ts': 'src/c.ts uses readFileSync, which can reach files that no import names',
+    });
   });
 
   it('still takes out a comment after a /', () => {
@@ -789,9 +872,9 @@ describe('comments', () => {
       'src/c.ts':
         "const strip = (s: string) => s.replace(/\\/*/g, '');\nexport const c = () => readFileSync('x');\n/* */\n",
     });
-    expect(refusal(dir)).toBe(
-      'src/c.ts uses readFileSync, which can reach files that no import names'
-    );
+    expect(blindOf(dir)).toEqual({
+      'src/c.ts': 'src/c.ts uses readFileSync, which can reach files that no import names',
+    });
   });
 });
 

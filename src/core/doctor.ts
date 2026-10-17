@@ -3,6 +3,7 @@
  * results of the last one, and what to change so that it can. The facts are gathered by
  * commands/doctor.ts; this module only judges them.
  */
+import { listed } from './reuse-guard.js';
 
 /** A git hook (or a hook manager's config) that runs `test-gates mutation`. */
 export interface HookUse {
@@ -25,8 +26,12 @@ export interface DoctorFacts {
   scope: { files: number } | { every: string } | null;
   /** Hooks that run a mutation run of this subproject. */
   hooks: HookUse[];
-  /** Why --affected cannot tell what a gate depends on, or null. */
+  /** Why --affected cannot tell the gates apart at all, or null. */
   blind: string | null;
+  /** The gates --affected runs again after a change of any file, with why (see core/affected.ts). */
+  blindGates: Array<{ gate: string; reason: string }>;
+  /** How many gates test-gates.json lists. */
+  gates: number;
 }
 
 export interface Finding {
@@ -73,12 +78,24 @@ export function diagnose(facts: DoctorFacts): Finding[] {
       fix: 'write such a path from the directory of its file (path.resolve(__dirname, …)) so that it can be followed, or keep it out of the files the run loads',
     });
   }
+  const everyBlind = facts.blindGates.length >= facts.gates;
   if (facts.blind !== null) {
     // A problem where a hook relies on --affected; else only worth knowing.
     findings.push({
       level: facts.hooks.some((hook) => hook.affected) ? 'problem' : 'note',
       text: `with --affected, a change of any file runs every mutant: what a gate depends on cannot be told (${facts.blind})`,
       fix: 'keep what reads files or loads modules by a computed name out of what the gates and their specs import, or run without --affected',
+    });
+  } else if (facts.blindGates.length > 0) {
+    // The other gates are still told apart: only worth knowing, unless there are none and a hook
+    // relies on --affected.
+    const gates = facts.blindGates.map((one) => one.gate);
+    const reasons = [...new Set(facts.blindGates.map((one) => one.reason))];
+    const more = reasons.length > 1 ? ` (and ${reasons.length - 1} more reason(s))` : '';
+    findings.push({
+      level: everyBlind && facts.hooks.some((hook) => hook.affected) ? 'problem' : 'note',
+      text: `with --affected, a change of any file runs ${gates.length} of ${facts.gates} gate(s) again (${listed(gates)}): what they depend on cannot be told (${reasons[0] as string}${more})`,
+      fix: 'keep what reads files by a path no import names out of what those gates and their specs import',
     });
   }
   if (facts.scope !== null && 'every' in facts.scope) {
@@ -97,8 +114,10 @@ export function diagnose(facts: DoctorFacts): Finding[] {
       fix: null,
     });
   }
-  // --affected does not help where it cannot tell the gates apart.
-  for (const hook of facts.hooks.filter((one) => !one.affected && facts.blind === null)) {
+  // --affected does not help where it cannot tell the gates apart. Where only some gates are
+  // blind, it still tells the others apart.
+  const toldApart = facts.blind === null && !everyBlind;
+  for (const hook of facts.hooks.filter((one) => !one.affected && toldApart)) {
     findings.push({
       level: 'problem',
       text: `${hook.file} runs test-gates mutation without --affected: a change of any file of the subproject runs every mutant`,

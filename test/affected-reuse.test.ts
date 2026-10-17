@@ -273,6 +273,112 @@ describe.skipIf(!strykerRuns)('what --affected cannot follow, with a real Stryke
   );
 });
 
+// Four gates. `fee` loads `settings`, which reads a file no import names, and only the spec of
+// `tax` reads a page with readFile: those two are blind. `next` and `half` stand alone.
+function blindFixture(): string {
+  const dir = project({
+    'package.json': { name: 'affected-blind', private: true, type: 'module' },
+    'test-gates.json': {
+      gates: [gate('src/fee.ts'), gate('src/tax.ts'), gate('src/next.ts'), gate('src/half.ts')],
+      candidates: [],
+    },
+    'src/base.txt': 'xx\n',
+    'src/settings.ts':
+      "import { readFileSync } from 'node:fs';\n" +
+      "export const base = readFileSync(new URL('./base.txt', import.meta.url), 'utf8').trim().length;\n",
+    'src/fee.ts':
+      "import { base } from './settings';\nexport const fee = (kg: number) => (kg > base ? 9 : 5);\n",
+    'src/fee.spec.ts':
+      `${H}import { fee } from './fee';\n` +
+      "it('goes by weight', () => {\n  expect(fee(2)).toBe(5);\n  expect(fee(3)).toBe(9);\n});\n",
+    'src/tax.ts': 'export const tax = (price: number) => price * 2;\n',
+    'src/rates.html': '<p>2</p>\n',
+    'src/tax.spec.ts':
+      `${H}import { readFile } from 'node:fs/promises';\nimport { tax } from './tax';\n` +
+      "it('doubles', async () => {\n  const page = await readFile('src/rates.html', 'utf8');\n" +
+      '  expect(tax(3)).toBe(3 * Number(page.replace(/<[^>]*>/g, "")));\n});\n',
+    'src/next.ts': 'export const next = (value: number) => value + 1;\n',
+    'src/next.spec.ts': `${H}import { next } from './next';\nit('adds one', () => { expect(next(2)).toBe(3); });\n`,
+    'src/half.ts': 'export const half = (value: number) => value / 2;\n',
+    'src/half.spec.ts': `${H}import { half } from './half';\nit('halves', () => { expect(half(6)).toBe(3); });\n`,
+    'vitest.gates.config.ts':
+      `import { createVitestGatesConfig } from ${JSON.stringify(helper('vitest'))};\n` +
+      'export default createVitestGatesConfig({ rootDir: import.meta.url });\n',
+    'stryker.gates.config.mjs':
+      `import { createStrykerGatesConfig } from ${JSON.stringify(helper('stryker'))};\n` +
+      "export default createStrykerGatesConfig({ rootDir: import.meta.url, testRunner: 'vitest', " +
+      "vitest: { configFile: 'vitest.gates.config.ts' }, concurrency: 1 });\n",
+  });
+  fs.symlinkSync(path.join(repoRoot, 'node_modules'), path.join(dir, 'node_modules'), 'dir');
+  return dir;
+}
+
+describe.skipIf(!strykerRuns)('gates that read files no import names, with a real Stryker', () => {
+  it(
+    'runs those again for any change and tells the others apart, and reuses all when nothing changed',
+    { timeout: 600_000 },
+    async () => {
+      const dir = blindFixture();
+      const run = () => testGatesAsync(['mutation', '--dir', dir, '--affected']);
+      const blind =
+        '  2 gate(s) run again for any change, as what they depend on cannot be told: src/settings.ts uses readFileSync, which can reach files that no import names (and 1 more reason(s))';
+      const first = await run();
+      expect(first.stdout).toContain(OK);
+      expect(first.status).toBe(0);
+
+      // Nothing changed: every gate is reused, the blind ones too.
+      const unchanged = await run();
+      expect(unchanged.stdout).toContain(
+        'test-gates mutation --affected: 4 of 4 gate(s) reused, 0 run again'
+      );
+      expect(unchanged.stdout).not.toContain('run again for any change');
+      expect(unchanged.status).toBe(0);
+
+      // A change only `next` depends on: `next` and the two blind gates run again, `half` is
+      // reused.
+      write(dir, { 'src/next.ts': 'export const next = (value: number) => value + 1; // x\n' });
+      const told = await run();
+      expect(told.stdout).toContain(
+        'test-gates mutation --affected: 1 of 4 gate(s) reused, 3 run again'
+      );
+      expect(told.stdout).toContain('  src/next.ts: changed src/next.ts');
+      expect(told.stdout).toContain(blind);
+      expect(told.stdout).toContain(OK);
+      expect(told.status).toBe(0);
+
+      // The file that is read: no import names it, so only the blind gates run again.
+      write(dir, { 'src/base.txt': 'yy\n' });
+      const read = await run();
+      expect(read.stdout).toContain(
+        'test-gates mutation --affected: 2 of 4 gate(s) reused, 2 run again'
+      );
+      expect(read.stdout).toContain(blind);
+      expect(read.stdout).toContain(OK);
+      expect(read.status).toBe(0);
+
+      // The page only the spec of `tax` reads: the blind gates run again, the others are reused.
+      write(dir, { 'src/rates.html': '<p>2</p> \n' });
+      const page = await run();
+      expect(page.stdout).toContain(
+        'test-gates mutation --affected: 2 of 4 gate(s) reused, 2 run again'
+      );
+      expect(page.stdout).toContain(blind);
+      expect(page.stdout).toContain(OK);
+      expect(page.status).toBe(0);
+
+      // What may load modules no import names concerns every gate: every mutant is run.
+      const settings = fs.readFileSync(path.join(dir, 'src/settings.ts'), 'utf8');
+      write(dir, { 'src/settings.ts': `${settings}export const where = process.cwd;\n` });
+      const every = await run();
+      expect(every.stdout).toContain(
+        `${FULL}, the results of the last run are not reused: what a gate depends on cannot be told: src/settings.ts uses process.cwd, which can reach files that no import names`
+      );
+      expect(every.stdout).toContain(OK);
+      expect(every.status).toBe(0);
+    }
+  );
+});
+
 describe.skipIf(!strykerRuns)('a run without --affected, with a real Stryker', () => {
   it(
     'writes down what each gate depends on for the next run with --affected, but not with --gate or in CI',

@@ -19,7 +19,7 @@ const snapshot = (changes: Partial<Snapshot> = {}): Snapshot => ({
   ...changes,
 });
 const record = (changes: object = {}) => ({
-  format: 2,
+  format: 3,
   incremental: 'hash-of-incremental',
   snapshot: snapshot(),
   ...changes,
@@ -29,7 +29,7 @@ const ask = (stored: unknown, now: Snapshot = snapshot(), incremental = 'hash-of
 
 describe('refuseReuse', () => {
   it('allows the reuse when nothing but gates and specs can have changed', () => {
-    expect(RECORD_FORMAT).toBe(2);
+    expect(RECORD_FORMAT).toBe(3);
     expect(ask(record())).toBeNull();
     // The order of the keys says nothing.
     expect(
@@ -52,7 +52,9 @@ describe('refuseReuse', () => {
     ['a string', 'x'],
     ['an array', [record()]],
     ['another format', record({ format: 1 })],
-    ['a format written as text', record({ format: '2' })],
+    // 2 knew no blind gate
+    ['of the format before', record({ format: 2 })],
+    ['a format written as text', record({ format: '3' })],
     ['no format', record({ format: undefined })],
     ['no hash of the incremental file', record({ incremental: undefined })],
     ['a hash that is not text', record({ incremental: 1 })],
@@ -88,6 +90,12 @@ describe('refuseReuse', () => {
       'a gate with files that are not text',
       record({ affected: { tests: [], gates: { 'src/a.ts': { specs: [], files: [1] } } } }),
     ],
+    [
+      'a gate blind for a reason that is not text',
+      record({
+        affected: { tests: [], gates: { 'src/a.ts': { specs: [], files: [], blind: 1 } } },
+      }),
+    ],
   ])('refuses a record that is %s', (_name, stored) => {
     expect(parseRecord(stored)).toBeNull();
     expect(ask(stored)).toBe('the record of the last run is not one this version can read');
@@ -103,9 +111,14 @@ describe('refuseReuse', () => {
       gates: {
         'src/a.ts': { specs: ['src/a.spec.ts'], files: ['src/a.ts', 'src/a.spec.ts'] },
         constructor: { specs: [], files: [] },
+        'src/b.ts': { specs: [], files: ['src/b.ts'], blind: 'src/b.ts uses readFileSync' },
       },
     };
     expect(parseRecord(record({ affected }))).toEqual(record({ affected }));
+    // A gate that is not blind gets no such key.
+    expect(
+      Object.keys(parseRecord(record({ affected }))?.affected?.gates['src/a.ts'] ?? {})
+    ).toEqual(['specs', 'files']);
     expect(parseRecord(record({ affected: { ...affected, extra: 1 } }))?.affected).toEqual(
       affected
     );
