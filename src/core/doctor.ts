@@ -154,6 +154,8 @@ const CD = /\bcd\s+(['"]?)([^\s'";&|)]+)\1/;
 /** What a variable holds in a part of a hook: one of the names, or null for any value. */
 interface Scope {
   kind: 'case' | 'loop';
+  /** The same for every branch of one case, and different for each other case or loop. */
+  id: number;
   variable: string | null;
   names: string[] | null;
 }
@@ -193,6 +195,7 @@ function partsOf(text: string): Part[] | null {
   let scopes = NONE;
   let start = 0;
   let loop: Scope | null = null;
+  let ids = 0;
   const enter = (scope: Scope) => {
     scopes = [...scopes, scope];
   };
@@ -212,16 +215,17 @@ function partsOf(text: string): Part[] | null {
     let awaiting = false;
     if (subject !== undefined) {
       const named = VARIABLE.exec(subject);
-      enter({ kind: 'case', variable: named?.[2] ?? named?.[3] ?? null, names: null });
+      enter({ kind: 'case', id: ++ids, variable: named?.[2] ?? named?.[3] ?? null, names: null });
       awaiting = true;
     } else if (variable !== undefined) {
       loop = {
         kind: 'loop',
+        id: ++ids,
         variable,
         names: list === undefined ? null : namesOf(list.trim().split(/\s+/)),
       };
     } else if (keyword === 'do') {
-      enter(loop ?? { kind: 'loop', variable: null, names: null });
+      enter(loop ?? { kind: 'loop', id: ++ids, variable: null, names: null });
       loop = null;
     } else if (keyword === 'done' || keyword === 'esac') {
       if (!leave(keyword === 'done' ? 'loop' : 'case')) {
@@ -253,6 +257,12 @@ function partsOf(text: string): Part[] | null {
   }
 }
 
+/** Whether a part lies in another branch of a case that a part in `scopes` lies in. */
+function sibling(of: Scope[], scopes: Scope[]): boolean {
+  const apart = of.findIndex((scope, at) => scope !== scopes[at]);
+  return apart !== -1 && of[apart]?.id === scopes[apart]?.id;
+}
+
 /** Each path a target can be, with the variables that a scope tells the names of put in. */
 function expansions(target: string, scopes: Scope[]): string[] {
   return [...target.matchAll(REFERENCE)].reduce(
@@ -274,7 +284,7 @@ function expansions(target: string, scopes: Scope[]): string[] {
  * (`cd "$project"`), or none, may be any subproject, except in a branch of `case "$project" in`
  * or in `for project in …` that writes the names out: there it is one of those names. A pattern
  * or a word that may stand for others (`*`, `app*`), and a hook that cannot be read so, leave it
- * any. The variable of a `cd` on a line before the run is narrowed only in the same branch. Comments (`#` at the
+ * any. A `cd` in another branch of the same case is not looked at, and the variable of a `cd` on a line before the run is narrowed only in the same branch. Comments (`#` at the
  * start or after a space) are left out.
  *
  * @param subproject The subproject, relative to the top of the repository; `''` for the top.
@@ -299,7 +309,7 @@ export function hookUses(input: {
     const before = cds
       .slice(0, index)
       .reverse()
-      .find((one) => one.cd !== undefined);
+      .find((one) => one.cd !== undefined && !sibling(one.scopes, part.scopes));
     const target = named?.[2] ?? before?.cd;
     const scopes = named !== null || before?.scopes === part.scopes ? part.scopes : NONE;
     const ours =

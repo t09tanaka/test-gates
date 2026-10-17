@@ -410,6 +410,21 @@ describe('hookUses', () => {
       ]);
     });
 
+    it('looks for the cd before the run in its own branch and outside of the case, not in another branch', () => {
+      const text = (before: string) =>
+        `${before}case "$p" in\na) cd tax ;;\nb) cd vat\n  case "$q" in\n  x) cd tax ;;\n  y) npx test-gates mutation ;;\n  esac ;;\nc) npx test-gates mutation ;;\nesac\n`;
+      expect(uses(text(''), 'vat')).toEqual([plain, plain]);
+      expect(uses(text(''), 'tax')).toEqual([plain]);
+      expect(uses(text('cd fee\n'), 'fee')).toEqual([plain]);
+      expect(uses(text('cd fee\n'), 'tax')).toEqual([]);
+      expect(uses('case "$p" in\na) cd tax ;;\nesac\nnpx test-gates mutation\n', 'tax')).toEqual([
+        plain,
+      ]);
+      expect(
+        uses('for p in a; do cd tax; done\nfor q in b; do npx test-gates mutation; done\n', 'tax')
+      ).toEqual([plain]);
+    });
+
     it('takes a loop over names written out the same way', () => {
       expect(uses('for p in tax vat; do\n  (cd "$p" && npx test-gates mutation)\ndone\n')).toEqual(
         []
