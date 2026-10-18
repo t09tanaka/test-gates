@@ -211,13 +211,16 @@ export interface ReuseDecision {
  * core/affected.ts for `--affected`). Changes nothing on disk.
  *
  * @param part Whether the run is one of `--gate`. Such a run takes nothing over.
+ * @param found Called with where Stryker keeps its sandboxes as soon as that is known, before
+ *   the files are looked at (see runMutation).
  */
 export function decideReuse(
   manifest: LoadedManifest,
   config: string,
   strykerArgs: string[],
   part: boolean,
-  affected: boolean
+  affected: boolean,
+  found: (temp: TempDirSetting) => void = () => undefined
 ): ReuseDecision {
   const loaded = loadStrykerConfig(manifest, config);
   const options = incrementalOptions(loaded, strykerArgs);
@@ -256,6 +259,7 @@ export function decideReuse(
     mainWorktree: null,
     seed: null,
   };
+  found(decision.temp);
   if (loaded !== undefined && !options.incremental) {
     // Stryker neither reads nor writes an incremental file
     return decision;
@@ -509,9 +513,10 @@ function guardIncremental(
   config: string,
   strykerArgs: string[],
   part: boolean,
-  affected: boolean
+  affected: boolean,
+  found: (temp: TempDirSetting) => void
 ): Guard {
-  const decision = decideReuse(manifest, config, strykerArgs, part, affected);
+  const decision = decideReuse(manifest, config, strykerArgs, part, affected, found);
   const nothing: Guard = {
     force: null,
     mutate: null,
@@ -756,12 +761,19 @@ export function runMutation(
   const reportFile = reportPathOf(manifest, null);
   fs.rmSync(reportFile, { force: true });
 
-  const guard = guardIncremental(manifest, config, strykerArgs, part, affected);
+  // What an interrupted run left would be found by every tool that walks the subproject, the
+  // listing of the files of this run among them: it is removed first, and told after what the
+  // guard says, whose first line is the one about the main worktree.
+  let removed: string[] = [];
+  const guard = guardIncremental(manifest, config, strykerArgs, part, affected, (temp) => {
+    removed = removeStaleSandboxes(manifest.dir, temp);
+  });
   if (guard.said.length > 0) {
     guard.said.forEach((line) => io.out(line));
   } else if (guard.force !== null) {
     io.out(forcedLine(guard.force));
   }
+  removed.forEach((line) => io.out(line));
   // Only some gates are run again: their mutants with --force, and Stryker takes the results of
   // the others over from its incremental file.
   const guardArgs = guard.force === null && guard.mutate === null ? [] : ['--force'];
@@ -771,8 +783,6 @@ export function runMutation(
       ? ['--mutate', guard.mutate.join(',')]
       : [];
 
-  // What an interrupted run left would be found by every tool that walks the subproject.
-  removeStaleSandboxes(manifest.dir, guard.temp).forEach((line) => io.out(line));
   // The marker stays while either run of Stryker (the first and the one of its timeouts) runs.
   const unmark = markRun(manifest.dir, guard.temp);
   let retried: ReturnType<typeof retryTimeouts>;

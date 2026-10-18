@@ -1307,6 +1307,17 @@ describe('test-gates mutation in a new linked worktree', () => {
     expect(fs.existsSync(path.join(linked, INCREMENTAL))).toBe(false);
   });
 
+  it('says first that it starts from the main worktree, then what it removed', () => {
+    const { main, linked } = worktrees();
+    write(linked, { '.stryker-tmp/sandbox-a1B2c3/src/age.ts': GATE_SOURCE });
+    const lines = testGates(['mutation', '--dir', linked]).stdout.split('\n');
+    expect(lines.slice(0, 2)).toEqual([
+      `${SEED}${main})`,
+      'test-gates mutation: removed 1 sandbox(es) an earlier Stryker run left in .stryker-tmp',
+    ]);
+    expect(fs.existsSync(path.join(linked, '.stryker-tmp/sandbox-a1B2c3'))).toBe(false);
+  });
+
   describe('a gate that reads a file git ignores', () => {
     // The helper of the spec reads `.env`, which git ignores: each worktree has its own.
     const BLIND = {
