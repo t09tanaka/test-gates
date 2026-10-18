@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.4.3
+
+This release spares more full runs of `test-gates mutation`: `--affected` keeps telling the gates apart where only some of them read files, a new linked worktree starts from the record of the main worktree, and timeouts on a loaded machine are run again before they fail the run. Three things to know when updating:
+
+- The record of a run has a new format (3: it says for each gate whether it is blind), and a record of an older format is not read. So the first run after the update is one of every mutant.
+- A new linked worktree that has no record of its own starts from the incremental file and the record of the main worktree. Every file that differs from the main worktree counts as changed.
+- Before it starts Stryker, `test-gates mutation` removes the sandboxes an interrupted run left in the subproject. A Stryker started by hand has no marker of a run, so if one runs in the same subproject at the same time, its sandbox is removed.
+
+### Added
+
+- A new linked worktree (`git worktree add`) that has neither an incremental file nor a record starts from those of the main worktree, at the same path. The incremental file is copied into place, and the record goes through the usual comparison, so a file that differs here (another branch, a change) counts as changed. The files of the main worktree are never written. The first line of the run says so, and `test-gates doctor` says beforehand whether the next run starts from the main worktree. Nothing is taken over with `--gate` or `--force`, or inside a Stryker sandbox. A blind gate (see below) never takes its results over from the main worktree, since a file git ignores, such as an `.env`, is not compared and differs between worktrees as a rule: with `--affected` it is run again, and without `--affected` the run is one of every mutant.
+- `test-gates mutation` runs again, once and one at a time (`--mutate` with their ranges, `--concurrency 1`, `--force`), the mutants that timed out outside `expectedTimeouts` when there are more of them than `settings.mutation.maxTimeouts` allows. Their new result takes the place of the timeout before the report is judged: killed is killed, a survivor fails the run, and a timeout again fails as before. In incremental mode the next run takes over the new result. If the run again fails or writes no report, the first run is judged, and the output says so. This is done in CI too. `mutation-result` runs nothing again.
+- `test-gates mutation` removes the sandboxes (`<tempDirName>/sandbox-*`) that an interrupted Stryker run left in the subproject, before it starts Stryker. Tools that walk the subproject no longer find a second copy of every file. `backup-*` of `inPlace` is never removed. Nothing is removed when the temp directory is outside the subproject, when `cleanTempDir` is `false`, or while another `test-gates mutation` runs there: each run keeps a marker with its pid and the start time of its process while Stryker runs. `test-gates doctor` notes the sandboxes that are left, and whether the next run removes them.
+
+### Changed
+
+- `mutation --affected` runs again only the gates that cannot be told apart. A file that reads files no import names (`readFileSync`, `readFile`, a glob, jsdom `fromFile` / `fromURL`, a path from `__dirname` handed to a reading function or to a package such as `dotenv`) now makes only the gates that depend on it blind. A blind gate runs again after a change of any compared file and keeps its results when nothing changed; the other gates are still told apart. What may load modules that are not followed still runs every gate. `test-gates doctor` names the blind gates in a note.
+- `mutation --affected` takes a `.html` or `.htm` file for a document, as the comparison does since 0.4.2, so a page that no gate depends on (the HTML report of Stryker, a page of the docs) no longer runs every mutant. `index.html` and `index.htm` still do, since Vite starts from one. To keep this safe:
+  - a path from the top of the subproject to a `.html`, `.htm`, `.md` or `.json` file, written as text (`'src/page.html'`), is now a file of the one that names it;
+  - `readFile` and jsdom `fromFile` / `fromURL` count as reading files, as `readFileSync` does;
+  - the query of a Vite import (`?raw`, `?url`, `?inline`, `?worker`) is cut off before the file is looked up, so `import page from './page.html?raw'` leads to `page.html`.
+- `test-gates doctor` reads `case "$var" in` and `for var in a b; do … done` in a hook. A hook that loops over the subprojects and gives `--affected` to some of them only is no longer reported as running every subproject without it. A pattern that may stand for other names (`*`, `app*`, `{a,b}`) still stands for any subproject, and a hook that cannot be read this way is read as before.
+- `selfcheck --jobs` shares the cores between the runs at the same time: each one gets `--maxWorkers=max(1, floor(cores / runs))` of Jest or Vitest. Nothing is added when the gate command or the config of the runner already sets the workers. `--jobs 1` is unchanged.
+- `selfcheck --jobs` no longer takes the text of a string in quotes (`'retry: {count}'` in a file of messages) for a use that keeps a gate out of the runs at the same time. Template literals, and strings that hold `${`, still count.
+
+### Fixed
+
+- `selfcheck --jobs` reported "N of N negative control(s) did not hold cleanly next to others", and ran every control on its own, when another `selfcheck --jobs` on the same machine removed its temporary directory at the wrong moment. The tidying of old directories now passes over an entry it cannot look at. When no directory for the runs can be made, the output now says so. The same fix applies to the shared run of `--quick`.
+
 ## 0.4.2
 
 Most of this release closes cases where `test-gates mutation` took over the results of the last run although a file the run depends on had changed, with `--affected` and without it. The rest spares full runs that were not needed. Two things to know when updating: the first run after it is one of every mutant, since the record holds the version of test-gates; and in a project whose runner config maps modules in a way that `settings.importAliases` does not name, `--affected` no longer tells the gates apart until the aliases are added (`test-gates doctor` names them).
