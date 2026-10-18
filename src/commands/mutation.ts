@@ -473,8 +473,14 @@ function blindInMainRecord(
   }
 ): string | null {
   const { last } = input;
-  if (last === undefined) {
-    return 'the record of the main worktree does not say what each gate depends on, so a gate may read files git does not list, which differ between worktrees';
+  // A gate the record leaves out (it had survivors there, or tests the report did not place):
+  // the specs that covered it are not known, nor whether one of them is blind.
+  const unknown =
+    last === undefined
+      ? 'each gate'
+      : manifest.gates.find((gate) => !Object.hasOwn(last.gates, gate.path))?.path;
+  if (last === undefined || unknown !== undefined) {
+    return `the record of the main worktree does not say what ${unknown as string} depends on, so it may read files git does not list, which differ between worktrees`;
   }
   try {
     const inputs = affectedInputs(manifest, {

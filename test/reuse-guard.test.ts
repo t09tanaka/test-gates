@@ -1358,6 +1358,22 @@ describe('test-gates mutation in a new linked worktree', () => {
       expect(mutation(plain.linked, '--affected')).toEqual(REUSED);
     });
 
+    it('makes a run without --affected one of every mutant when the record of the main worktree leaves a gate out', () => {
+      // As after a run with a survivor there: what covered the gate is not written down.
+      const { main, linked } = worktrees();
+      const record = JSON.parse(read(path.join(main, RECORD))) as {
+        incremental: string;
+        affected: { gates: Record<string, unknown> };
+      };
+      expect(Object.keys(record.affected.gates)).toEqual(['src/age.ts']);
+      write(main, { [RECORD]: { ...record, affected: { ...record.affected, gates: {} } } });
+      const lines = testGates(['mutation', '--dir', linked]).stdout.split('\n');
+      expect(lines[0]).toBe(`${SEED}${main})`);
+      expect(lines[1]).toBe(
+        `${NOTE}the record of the main worktree does not say what src/age.ts depends on, so it may read files git does not list, which differ between worktrees`
+      );
+    });
+
     it('makes a run one of every mutant where the gates cannot be told apart', () => {
       // No test runner that --affected knows: whether a gate reads such a file cannot be told.
       const { main, linked } = worktrees({
@@ -1369,7 +1385,7 @@ describe('test-gates mutation in a new linked worktree', () => {
         // (The main worktree could not write down what each gate depends on either.)
         expect(lines[1]).toMatch(
           extra.length === 0
-            ? /not reused: the record of the main worktree does not say what each gate depends on/
+            ? /not reused: the record of the main worktree does not say what each gate depends on, so it may read/
             : /not reused: what a gate depends on cannot be told/
         );
         const args = JSON.parse(read(path.join(linked, '.stryker-tmp/stryker-args.json')));
