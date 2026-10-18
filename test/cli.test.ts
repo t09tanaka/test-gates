@@ -1,3 +1,4 @@
+import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -492,7 +493,7 @@ describe('test-gates mutation-result: timeouts', () => {
       '  - src/age.ts:1:41 / EqualityOperator / age >= 18 → age > 18 / occurrence 1 of 2 (Timeout)',
       '  - src/age.ts:2:42 / EqualityOperator / age >= 18 → age > 18 / occurrence 2 of 2 (Timeout)',
     ]);
-    expect(result.stderr).toContain('Run again with less load (-- --concurrency 1)');
+    expect(result.stderr).toContain('(--concurrency 1) before it fails; these were not run again.');
     expect(result.stderr).toContain(
       '    src/age.ts: {"mutator":"EqualityOperator","original":"age >= 18","replacement":"age > 18","occurrence":2,"reason":""}'
     );
@@ -702,6 +703,193 @@ describe('test-gates mutation', () => {
     const result = testGates(['mutation', '--dir', dir]);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('cannot read the Stryker JSON report');
+  });
+
+  describe('timeouts outside expectedTimeouts', () => {
+    // The first run times out on both comparisons; the run again (one at a time) gives `again`,
+    // or exits with `exit`.
+    const RETRIED = "process.argv.includes('--mutate')";
+    const timingOut = (again: [string, string], exit = 0) =>
+      withStryker(
+        `fs.appendFileSync('stryker-calls.txt', JSON.stringify(process.argv.slice(2)) + '\\n');\n` +
+          `if (${RETRIED}) {\n${exit === 0 ? writeReport(...again) : `process.exit(${exit});`}\n} else {\n${writeReport('Timeout', 'Timeout')}\n}`
+      );
+    const calls = (dir: string) =>
+      fs
+        .readFileSync(path.join(dir, 'stryker-calls.txt'), 'utf8')
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as string[]);
+    const RANGES = 'src/age.ts:1:40-1:50,src/age.ts:2:41-2:51';
+    const BEFORE =
+      'test-gates mutation: 2 mutant(s) timed out outside expectedTimeouts, running them again one at a time (--concurrency 1)';
+
+    it('runs them again once, one at a time, and judges their new results', () => {
+      const dir = timingOut(['Killed', 'Killed']);
+      const result = testGates(['mutation', '--dir', dir, '--', '--concurrency', '4']);
+      expect(result.status).toBe(0);
+      expect(result.stdout.split('\n')).toEqual([
+        BEFORE,
+        'test-gates mutation: 2 mutant(s) that timed out were run again one at a time (--concurrency 1): 2 Killed',
+        'test-gates mutation: OK (mutants 2 / detected 2 (timeout 0) / allowed equivalent 0 / not evaluable 0 / unallowed survivors 0)',
+        '',
+      ]);
+      // The arguments of the project come first: the ones of the run again win.
+      expect(calls(dir)).toEqual([
+        ['run', 'stryker.gates.config.mjs', '--concurrency', '4'],
+        [
+          'run',
+          'stryker.gates.config.mjs',
+          '--concurrency',
+          '4',
+          '--mutate',
+          RANGES,
+          '--concurrency',
+          '1',
+          '--force',
+        ],
+      ]);
+      // `mutation-result` judges what the run again gave as well.
+      expect(testGates(['mutation-result', '--dir', dir]).status).toBe(0);
+    });
+
+    it('judges a mutant that survives the run again as a survivor', () => {
+      const result = testGates(['mutation', '--dir', timingOut(['Survived', 'Killed'])]);
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain('(--concurrency 1): 1 Killed, 1 Survived');
+      expect(result.stderr).toContain('1 surviving mutant(s) not in the allow list');
+      expect(result.stderr).not.toContain('timed out');
+    });
+
+    it('fails as before when they time out again', () => {
+      const result = testGates(['mutation', '--dir', timingOut(['Timeout', 'Killed'])]);
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain('(--concurrency 1): 1 Killed, 1 Timeout');
+      expect(result.stderr).toContain(
+        'test-gates mutation: 1 mutant(s) timed out (settings.mutation.maxTimeouts: 0)'
+      );
+      expect(result.stderr).toContain(
+        'They timed out again when they were run one at a time (--concurrency 1), so they'
+      );
+      expect(result.stderr).not.toContain('these were not run again');
+    });
+
+    it('does not say that a timeout the run again does not report timed out again', () => {
+      const dir = withStryker(
+        `if (process.argv.includes('--mutate')) {\n${writeReport('Timeout', 'Killed')}\n` +
+          `const written = JSON.parse(fs.readFileSync('reports/mutation/mutation.json', 'utf8'));\n` +
+          `written.files['src/age.ts'].mutants.pop();\n` +
+          `fs.writeFileSync('reports/mutation/mutation.json', JSON.stringify(written));\n` +
+          `} else {\n${writeReport('Timeout', 'Timeout')}\n}`
+      );
+      const result = testGates(['mutation', '--dir', dir]);
+      expect(result.status).toBe(1);
+      expect(result.stdout).toContain('1 Timeout, 1 not in the report (still Timeout)');
+      expect(result.stderr).toContain(
+        '1 of them timed out again when they were run one at a time (--concurrency 1).\n' +
+          '1 of them were not in the report of the run again (--concurrency 1),\n' +
+          'so they keep the timeout of the first run. Look at each mutant first. Only for a\n'
+      );
+      expect(result.stderr).not.toContain('They timed out again');
+      // none of them in the report of the run again
+      const none = withStryker(
+        `if (process.argv.includes('--mutate')) {\n${writeReport('Timeout', 'Killed')}\n` +
+          `const written = JSON.parse(fs.readFileSync('reports/mutation/mutation.json', 'utf8'));\n` +
+          `written.files['src/age.ts'].mutants = [];\n` +
+          `fs.writeFileSync('reports/mutation/mutation.json', JSON.stringify(written));\n` +
+          `} else {\n${writeReport('Timeout', 'Timeout')}\n}`
+      );
+      const missing = testGates(['mutation', '--dir', none]);
+      expect(missing.stderr).toContain('(settings.mutation.maxTimeouts: 0)');
+      expect(missing.stderr).not.toContain('timed out again');
+      expect(missing.stderr).toContain('2 of them were not in the report of the run again');
+    });
+
+    it('runs nothing again while the timeouts stay within settings.mutation.maxTimeouts', () => {
+      const within = timingOut(['Killed', 'Killed']);
+      write(within, {
+        'test-gates.json': {
+          gates: [gateEntry],
+          candidates: [],
+          settings: { mutation: { maxTimeouts: 2 } },
+        },
+      });
+      const result = testGates(['mutation', '--dir', within]);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('(timeout 2)');
+      expect(result.stdout).not.toContain('again');
+      expect(calls(within)).toHaveLength(1);
+      // One more than allowed: they are run again.
+      write(within, {
+        'test-gates.json': {
+          gates: [gateEntry],
+          candidates: [],
+          settings: { mutation: { maxTimeouts: 1 } },
+        },
+      });
+      fs.rmSync(path.join(within, 'stryker-calls.txt'));
+      const over = testGates(['mutation', '--dir', within]);
+      expect(over.stdout).toContain(BEFORE);
+      expect(over.status).toBe(0);
+      expect(calls(within)).toHaveLength(2);
+    });
+
+    it('judges the first run when the run again fails', () => {
+      const dir = timingOut(['Killed', 'Killed'], 3);
+      const result = testGates(['mutation', '--dir', dir]);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        'test-gates mutation: running the timed-out mutants again failed (exit 3). The first run is judged'
+      );
+      expect(result.stderr).toContain('2 mutant(s) timed out (settings.mutation.maxTimeouts: 0)');
+      expect(result.stderr).toContain(
+        'can time out instead. They were run again one at a time (--concurrency 1), but that\n' +
+          'run gave no result (see above), so these are those of the first run. Only for a\n'
+      );
+      expect(result.stderr).not.toContain('these were not run again');
+      expect(calls(dir)).toHaveLength(2);
+    });
+
+    it('judges the first run when the run again writes no report', () => {
+      const dir = withStryker(
+        `if (!process.argv.includes('--mutate')) {\n${writeReport('Timeout', 'Killed')}\n}`
+      );
+      const result = testGates(['mutation', '--dir', dir]);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        'test-gates mutation: running the timed-out mutants again failed (no report). The first run is judged'
+      );
+      expect(result.stderr).toContain('1 mutant(s) timed out (settings.mutation.maxTimeouts: 0)');
+    });
+
+    it('runs nothing again for the timeouts that expectedTimeouts lists, or when there are none', () => {
+      const dir = withStryker(
+        `fs.appendFileSync('stryker-calls.txt', 'x\\n');\n${writeReport('Timeout', 'Killed')}`,
+        {
+          'test-gates.json': {
+            gates: [
+              {
+                ...gateEntry,
+                expectedTimeouts: [
+                  {
+                    mutator: 'EqualityOperator',
+                    original: 'age >= 18',
+                    replacement: 'age > 18',
+                    occurrence: 1,
+                    reason: 'the loop never ends',
+                  },
+                ],
+              },
+            ],
+            candidates: [],
+          },
+        }
+      );
+      const result = testGates(['mutation', '--dir', dir]);
+      expect(result.status).toBe(0);
+      expect(result.stdout).not.toContain('again');
+      expect(fs.readFileSync(path.join(dir, 'stryker-calls.txt'), 'utf8')).toBe('x\n');
+    });
   });
 
   it('uses settings.stryker.configFile', () => {
@@ -1313,10 +1501,14 @@ describe('test-gates selfcheck', () => {
         const commands = fs.readFileSync(path.join(dir, 'at-once.log'), 'utf8').trim().split('\n');
         const places = commands.map((command) => {
           const words = command.split(' ');
-          // What the gate command is, then the two options of a run next to others.
+          // What the gate command is, then the options of a run next to others: its own
+          // directories, and its share of the cores.
           expect(words.slice(0, 3)).toEqual(['run', '--config', 'vitest.gates.config.ts']);
           expect(words[3]).toMatch(/^--coverage\.reportsDirectory=.+\/line-[012]\/coverage$/);
-          expect(words.slice(4)).toEqual(['--no-cache']);
+          expect(words.slice(4)).toEqual([
+            '--no-cache',
+            `--maxWorkers=${Math.max(1, Math.floor(os.availableParallelism() / 3))}`,
+          ]);
           return (words[3] as string).slice('--coverage.reportsDirectory='.length);
         });
         expect(new Set(places).size).toBe(3);
@@ -1326,6 +1518,33 @@ describe('test-gates selfcheck', () => {
           expect(fs.existsSync(path.dirname(path.dirname(place)))).toBe(false);
         }
         expect(fs.readdirSync(dir).filter((name) => name.startsWith('.test-gates'))).toEqual([]);
+      });
+
+      it('keeps the number of workers the gate command gives', () => {
+        const dir = asVitest({
+          'test-gates.json': manifest({
+            gateCommand: ['vitest', 'run', '--config', 'vitest.gates.config.ts', '--maxWorkers=2'],
+          }),
+        });
+        expect(testGates(['selfcheck', '--jobs', '3', '--dir', dir])).toEqual({
+          status: 0,
+          stdout: OK,
+          stderr: '',
+        });
+        expect(runs(dir).sort()).toEqual(atOnce);
+        for (const command of fs
+          .readFileSync(path.join(dir, 'at-once.log'), 'utf8')
+          .trim()
+          .split('\n')) {
+          const words = command.split(' ');
+          expect(words.slice(0, 4)).toEqual([
+            'run',
+            '--config',
+            'vitest.gates.config.ts',
+            '--maxWorkers=2',
+          ]);
+          expect(words.slice(5)).toEqual(['--no-cache']);
+        }
       });
 
       it.each([

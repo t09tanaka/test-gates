@@ -7,6 +7,13 @@
  * results only when no file they can depend on changed: the gate, every spec that can detect one
  * of its mutants, and every file those import. Anything that may change the results of every
  * gate (a config, a lock file, a tool, an argument) makes the run one of every mutant.
+ *
+ * A gate is "blind" when a file it depends on may read files that no import names (readFileSync,
+ * a path from __dirname handed to a package): every module it loads is known, but not every file
+ * it reads. Such a gate is run again after a change of any compared file, and keeps its results
+ * only when nothing changed. The other gates are still told apart by what they load. What may
+ * load modules that are not followed (see affected-files.ts) cannot be placed on a gate, and
+ * keeps every gate from being told apart.
  */
 import {
   expectedTimeoutMutants,
@@ -22,7 +29,7 @@ export type FileKind =
   | 'config'
   /** Only what imports it: sources, data, snapshots, styles, images. */
   | 'passive'
-  /** Written for people; never read by a test run through an import. */
+  /** Written for people: not searched for imports, and only what loads it depends on it. */
   | 'document'
   /** Anything else: also every file at the top of the subproject and outside of it. */
   | 'other';
@@ -41,7 +48,9 @@ const CONFIG_NAMES = [
 ];
 /** Jest uses a mock from the `__mocks__` next to node_modules without being asked to. */
 const ROOT_MOCKS = '__mocks__';
-const DOCUMENT = /\.(?:md|markdown|txt|rst|adoc)$/i;
+const DOCUMENT = /\.(?:md|markdown|txt|rst|adoc|html?)$/i;
+/** A page that a build tool or a test runner may start from (Vite, Vitest in a browser). */
+const ENTRY_PAGE = /^index\.html?$/i;
 const PASSIVE = /\.(?:[cm]?[jt]sx?|json|snap|css|scss|sass|less|svg|png|jpe?g|gif|webp|avif|ico)$/i;
 
 /**
@@ -65,7 +74,8 @@ export function kindOf(key: string, subproject: string): FileKind {
   if (isNestedMock(key, subproject)) {
     return 'other';
   }
-  if (DOCUMENT.test(name)) {
+  // A page is written for people, such as a report or the docs, unless a tool starts from it.
+  if (DOCUMENT.test(name) && !ENTRY_PAGE.test(name)) {
     return 'document';
   }
   const inside = subproject === '' || key.startsWith(`${subproject}/`);
@@ -97,17 +107,21 @@ export function isNestedMock(key: string, subproject: string): boolean {
  * @param input.covering For each gate, the specs whose tests covered or killed one of its mutants.
  * @param input.closures For the gate and each spec: the keys of the file and of every file it
  *   imports, directly or not.
- * @returns For each gate: the sorted keys, with the specs that were taken into account.
+ * @param input.blind Keys of files that may read files no import names, with why.
+ * @returns For each gate: the sorted keys, with the specs that were taken into account, and why
+ *   what it depends on cannot be told when one of those files is in `blind`.
  */
 export function gateDependencies(input: {
   gates: Array<{ key: string; specs: string[] }>;
   tests: string[];
   covering: Record<string, string[]>;
   closures: Record<string, string[]>;
-}): Record<string, { specs: string[]; files: string[] }> {
+  blind?: Record<string, string>;
+}): Record<string, GateDependencies> {
   const closureOf = (key: string): string[] =>
     Object.hasOwn(input.closures, key) ? (input.closures[key] as string[]) : [key];
-  const result = Object.create(null) as Record<string, { specs: string[]; files: string[] }>;
+  const blind = input.blind ?? {};
+  const result = Object.create(null) as Record<string, GateDependencies>;
   for (const gate of input.gates) {
     const covering = Object.hasOwn(input.covering, gate.key) ? input.covering[gate.key] : [];
     const specs = new Set([...gate.specs, ...(covering as string[])]);
@@ -120,15 +134,30 @@ export function gateDependencies(input: {
     for (const spec of specs) {
       closureOf(spec).forEach((file) => files.add(file));
     }
-    result[gate.key] = { specs: [...specs].sort(), files: [...files].sort() };
+    const sorted = [...files].sort();
+    const reason = sorted.find((file) => Object.hasOwn(blind, file));
+    result[gate.key] = {
+      specs: [...specs].sort(),
+      files: sorted,
+      ...(reason === undefined ? {} : { blind: blind[reason] as string }),
+    };
   }
   return result;
+}
+
+export interface GateDependencies {
+  specs: string[];
+  files: string[];
+  /** Why not every file the results depend on is known; absent when every one is. */
+  blind?: string;
 }
 
 export interface GateRerun {
   gate: string;
   /** The files that changed. Empty when the last run left no reusable result of the gate. */
   changed: string[];
+  /** Set when the gate is run again for any change: why what it depends on cannot be told. */
+  blind?: string;
 }
 
 export type AffectedPlan = { full: string } | { rerun: GateRerun[]; reused: string[] };
@@ -143,14 +172,18 @@ export type AffectedPlan = { full: string } | { rerun: GateRerun[]; reused: stri
  *   and of what they name (setup files, mocks), and of the mocks below the top named as a package
  *   (`src/__mocks__/axios.ts`): a change there may affect every gate.
  * @param input.gates Each gate (its path as in test-gates.json, the order of that file), with the
- *   keys its results depend on as they are now.
+ *   keys its results depend on as they are now, and why those cannot all be told, if so.
+ * @param input.seeded Whether the record is that of another worktree (the main one). A blind gate
+ *   is then run again even when nothing changed: the files it reads that are not compared (an
+ *   `.env` that git ignores) can differ from those of that worktree.
  */
 export function planAffected(input: {
   before: { files: Record<string, string>; affected: AffectedRecord | undefined };
   now: Record<string, string>;
   subproject: string;
   config: string[];
-  gates: Array<{ path: string; files: string[] }>;
+  gates: Array<{ path: string; files: string[]; blind?: string | undefined }>;
+  seeded?: boolean;
 }): AffectedPlan {
   const recorded = input.before.affected;
   if (recorded === undefined) {
@@ -181,6 +214,16 @@ export function planAffected(input: {
     const last = Object.hasOwn(recorded.gates, gate.path) ? recorded.gates[gate.path] : undefined;
     if (last === undefined) {
       rerun.push({ gate: gate.path, changed: [] });
+      continue;
+    }
+    // Blind now or in the last run: what it read then is not known either.
+    const blind = gate.blind ?? last.blind;
+    if (blind !== undefined) {
+      if (changed.length > 0 || input.seeded === true) {
+        rerun.push({ gate: gate.path, changed, blind });
+      } else {
+        reused.push(gate.path);
+      }
       continue;
     }
     const files = [...new Set([...last.files, ...gate.files])];
@@ -266,15 +309,26 @@ export function describePlan(plan: AffectedPlan, shown = 5, timeouts = 0, expect
   const lines = [
     `test-gates mutation --affected: ${plan.reused.length} of ${total} gate(s) reused, ${plan.rerun.length} run again`,
   ];
-  for (const { gate, changed } of plan.rerun.slice(0, shown)) {
+  // The gates that are run again for any change are counted, not listed one by one.
+  const told = plan.rerun.filter((entry) => entry.blind === undefined);
+  for (const { gate, changed } of told.slice(0, shown)) {
     lines.push(
       changed.length === 0
         ? `  ${gate}: the last run left no result of it that can be reused`
         : `  ${gate}: changed ${listed(changed)}`
     );
   }
-  if (plan.rerun.length > shown) {
-    lines.push(`  and ${plan.rerun.length - shown} more`);
+  if (told.length > shown) {
+    lines.push(`  and ${told.length - shown} more`);
+  }
+  const reasons = [
+    ...new Set(plan.rerun.flatMap((entry) => (entry.blind === undefined ? [] : [entry.blind]))),
+  ];
+  if (reasons.length > 0) {
+    const more = reasons.length > 1 ? ` (and ${reasons.length - 1} more reason(s))` : '';
+    lines.push(
+      `  ${plan.rerun.length - told.length} gate(s) run again for any change, as what they depend on cannot be told: ${reasons[0] as string}${more}`
+    );
   }
   if (timeouts > 0) {
     lines.push(`  and ${timeouts} mutant(s) of reused gates that timed out in the last run`);

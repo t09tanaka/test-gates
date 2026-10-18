@@ -7,7 +7,9 @@
  * everything the run depends on is what it was when they were written.
  */
 
-export const RECORD_FORMAT = 2;
+// 3: a gate may be written down as blind (see core/affected.ts). A record of 2 is not read: the
+// next run is one of every mutant, as it was for a record that could not be read before.
+export const RECORD_FORMAT = 3;
 
 /** Everything a run depends on. */
 export interface Snapshot {
@@ -37,6 +39,11 @@ export interface AffectedGate {
   specs: string[];
   /** Keys of the snapshot (`Snapshot.files`) that the results of the gate depend on. */
   files: string[];
+  /**
+   * Why not every file the results depend on is known (a file of it reads files that no import
+   * names); absent when every one is. Such a gate is run again after a change of any file.
+   */
+  blind?: string;
 }
 
 /** What is written next to the incremental file after a run that Stryker finished. */
@@ -70,11 +77,14 @@ function parseAffected(value: unknown): AffectedRecord | null {
   // No prototype: a gate may be called "constructor".
   const parsed = Object.create(null) as Record<string, AffectedGate>;
   for (const [gate, entry] of Object.entries(gates)) {
-    const { specs, files } = (entry ?? {}) as Record<string, unknown>;
+    const { specs, files, blind } = (entry ?? {}) as Record<string, unknown>;
     if (!isStringList(specs) || !isStringList(files)) {
       return null;
     }
-    parsed[gate] = { specs, files };
+    if (blind !== undefined && typeof blind !== 'string') {
+      return null;
+    }
+    parsed[gate] = { specs, files, ...(blind === undefined ? {} : { blind }) };
   }
   return { tests, gates: parsed };
 }

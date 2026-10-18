@@ -12,6 +12,7 @@ import {
   jobsRefused,
   knownCommand,
   type Runner,
+  workerFlags,
 } from '../core/jobs.js';
 import {
   EXCLUDE_ALL_ENV,
@@ -242,13 +243,22 @@ async function runAtOnce(
     // The directory cannot be listed: nothing is tidied this time.
   }
   const queue = [...gates];
+  const lines = Math.min(jobs, gates.length);
+  const workers = workerFlags({
+    runner,
+    args,
+    configSource: gateConfigSource(manifest, args),
+    lines,
+    // (os.availableParallelism is in Node 18.14 and later.)
+    cores: os.availableParallelism?.() ?? os.cpus().length,
+  });
   const line = async (dir: string): Promise<void> => {
     for (let gate = queue.shift(); gate !== undefined; gate = queue.shift()) {
       const spec = gate.spec as string;
       results.set(
         gate,
         await new Promise((resolve) => {
-          const child = spawn(executable, [...args, ...jobFlags(runner, dir)], {
+          const child = spawn(executable, [...args, ...jobFlags(runner, dir), ...workers], {
             cwd: manifest.dir,
             env: { ...process.env, [EXCLUDE_ENV]: spec, [EXCLUDE_ALL_ENV]: '', [TOUCH_ENV]: '' },
             shell: process.platform === 'win32',
@@ -267,9 +277,7 @@ async function runAtOnce(
   };
   try {
     await Promise.all(
-      Array.from({ length: Math.min(jobs, gates.length) }, (_unused, index) =>
-        line(path.join(root, `line-${index}`))
-      )
+      Array.from({ length: lines }, (_unused, index) => line(path.join(root, `line-${index}`)))
     );
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

@@ -131,6 +131,29 @@ describe('test-gates doctor', () => {
     expect(result.status).toBe(0);
   });
 
+  it('reads which branch of a case over the subprojects a run of the hook is in', () => {
+    const hook = (affected: string, plain: string) =>
+      [
+        'for project in fee-rules catalog-site; do',
+        '  case "$project" in',
+        `    ${affected}) (cd "$project" && npm run test:gates:mutation -- --affected) ;;`,
+        `    ${plain}) (cd "$project" && npm run test:gates:mutation) ;;`,
+        '    *) exit 1 ;;',
+        '  esac',
+        'done',
+        '',
+      ].join('\n');
+    const given = doctor(repository({ '.husky/pre-push': hook('fee-rules', 'catalog-site') }));
+    expect(given.stdout).toContain('test-gates doctor: OK');
+    expect(given.status).toBe(0);
+    const plain = doctor(repository({ '.husky/pre-push': hook('catalog-site', 'fee-rules') }));
+    expect(plain.stdout).toContain(
+      'problem: .husky/pre-push runs test-gates mutation without --affected'
+    );
+    expect(plain.stdout).toContain('test-gates doctor: 1 problem(s) that make runs full ones');
+    expect(plain.status).toBe(1);
+  });
+
   it('names what keeps --affected from telling the gates apart, instead of asking for it', () => {
     const blind = {
       'fee-rules/src/fee.spec.ts':
@@ -140,7 +163,7 @@ describe('test-gates doctor', () => {
     };
     const without = doctor(repository(blind));
     expect(without.stdout).toContain(
-      'note: with --affected, a change of any file runs every mutant: what a gate depends on cannot be told (src/cases.ts'
+      'note: with --affected, a change of any file runs 1 of 1 gate(s) again (src/fee.ts): what they depend on cannot be told (src/cases.ts'
     );
     expect(without.stdout).not.toContain('runs test-gates mutation without --affected');
     expect(without.status).toBe(0);
@@ -151,7 +174,7 @@ describe('test-gates doctor', () => {
       })
     );
     expect(relying.stdout).toContain(
-      'problem: with --affected, a change of any file runs every mutant'
+      'problem: with --affected, a change of any file runs 1 of 1 gate(s) again'
     );
     expect(relying.status).toBe(1);
   });

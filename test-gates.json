@@ -18,7 +18,7 @@
     },
     {
       "path": "src/core/jobs.ts",
-      "decides": "Whether negative controls may run at the same time, and whether a control that ran next to others can be taken as it is or has to be run again on its own",
+      "decides": "Whether negative controls may run at the same time, how many workers each of those runs may use, and whether a control that ran next to others can be taken as it is or has to be run again on its own",
       "impact": "A control that only looks as if it held, because another run disturbed it, is reported as holding"
     },
     {
@@ -74,7 +74,35 @@
     {
       "path": "src/core/doctor.ts",
       "decides": "What test-gates doctor reports as a problem that makes mutation runs full ones, and what it tells to change",
-      "impact": "A subproject whose runs are always full ones is reported as healthy, or a healthy one fails the doctor, and the fix it gives sends the user the wrong way"
+      "impact": "A subproject whose runs are always full ones is reported as healthy, or a healthy one fails the doctor, and the fix it gives sends the user the wrong way",
+      "equivalentMutants": [
+        {
+          "mutator": "ArrayDeclaration",
+          "original": "[]",
+          "replacement": "[\"Stryker was here\"]",
+          "occurrence": 4,
+          "reason": "A string put first in the parts has no text, so it is neither a run of mutation nor a cd, and it moves every other part by one place alike"
+        }
+      ],
+      "expectedTimeouts": [
+        {
+          "mutator": "StringLiteral",
+          "original": "'g'",
+          "replacement": "\"\"",
+          "reason": "Without the g flag TOKEN ignores lastIndex and finds the same token again from the start, so the loop over the tokens never ends"
+        },
+        {
+          "mutator": "BlockStatement",
+          "original": "{ const token = TOKEN.exec(text); parts.push({ text: text.slice(start, token?.index), scopes }); if (token === null) { return scopes.length === 0 ? parts : null; } const [word, subject, variable, list, keyword] = token; let awaiting = false; if (subject !== undefined) { const named = VARIABLE.exec(subject); enter({ kind: 'case', id: Symbol(), variable: named?.[2] ?? named?.[3] ?? null, names: null, }); awaiting = true; } else if (variable !== undefined) { loop = { kind: 'loop', id: Symbol(), variable, names: list === undefined ? null : namesOf(list.trim().split(/\\s+/)), }; } else if (keyword === 'do') { enter(loop ?? { kind: 'loop', id: Symbol(), variable: null, names: null }); loop = null; } else if (keyword === 'done' || keyword === 'esac') { if (!leave(keyword === 'done' ? 'loop' : 'case')) { return null; } } else if (word === ';&') { return null; } else if (word !== '\\n') { if (scopes.at(-1)?.kind !== 'case') { return null; } awaiting = true; } start = TOKEN.lastIndex; if (awaiting) { PATTERN.lastIndex = start; const pattern = PATTERN.exec(text); if (pattern === null) { return null; } start = PATTERN.lastIndex; TOKEN.lastIndex = start; const top = scopes.at(-1) as Scope; scopes = scopes.slice(0, -1); if (pattern[1] !== undefined) { enter({ ...top, names: namesOf(pattern[1].split('|')) }); } } }",
+          "replacement": "{}",
+          "reason": "With an empty body the loop over the tokens has no way out, so partsOf never returns"
+        }
+      ]
+    },
+    {
+      "path": "src/core/sandboxes.ts",
+      "decides": "Which directories in Stryker's temp directory a mutation run removes before it starts: only sandboxes an earlier run left, never while another run is going on, and nothing outside the subproject",
+      "impact": "A run removes the sandbox of a run going on at the same time, a backup of the original files or a directory outside the subproject, or leaves sandboxes that other tools then take for part of the project"
     },
     {
       "path": "src/core/vitest-coverage.ts",

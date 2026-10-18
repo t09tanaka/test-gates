@@ -13,7 +13,13 @@ import {
   timeoutRanges,
   withoutDots,
 } from '../core/affected.js';
-import type { MutationReport, MutationVerdict } from '../core/mutation-result.js';
+import {
+  formatRetry,
+  mergeRetry,
+  type MutationReport,
+  type MutationVerdict,
+  type RetryOutcome,
+} from '../core/mutation-result.js';
 import {
   type AffectedRecord,
   comparableArgs,
@@ -29,7 +35,9 @@ import {
 import { affectedRefused, gateRunRefused, selectControls } from '../core/selfcheck.js';
 import { findLocalBin } from '../fs.js';
 import { type LoadedManifest, readManifest } from '../load.js';
-import { hashFile, snapshotOf } from '../snapshot.js';
+import { inMainWorktree, linkedWorktreeOf } from '../main-worktree.js';
+import { markRun, removeStaleSandboxes, type TempDirSetting } from '../sandboxes.js';
+import { hashFile, hashOf, snapshotOf } from '../snapshot.js';
 import { findStrykerConfig } from './check.js';
 import { reportPathOf, runMutationResult } from './mutation-result.js';
 import type { Io } from './output.js';
@@ -59,7 +67,7 @@ function loadStrykerConfig(manifest: LoadedManifest, config: string): unknown {
     'testRunner: config.testRunner, vitestConfig: config.vitest?.configFile,' +
     'jestConfig: config.jest?.configFile, checkers: config.checkers,' +
     'htmlReporter: config.htmlReporter, jsonReporter: config.jsonReporter,' +
-    'ignorePatterns: config.ignorePatterns,' +
+    'ignorePatterns: config.ignorePatterns, cleanTempDir: config.cleanTempDir,' +
     `}) + ${JSON.stringify(CONFIG_MARK)});`;
   const result = spawnSync(process.execPath, ['--input-type=module', '--eval', script], {
     cwd: manifest.dir,
@@ -88,6 +96,9 @@ export function guardRecordPath(incrementalFile: string): string {
   return `${incrementalFile}.test-gates.json`;
 }
 
+const forcedLine = (reason: string): string =>
+  `test-gates mutation: running every mutant again (--force), the results of the last run are not reused: ${reason}`;
+
 /** What the guard decided for this run. */
 interface Guard {
   /** Why every mutant has to be run again, or null. */
@@ -96,6 +107,8 @@ interface Guard {
   mutate: string[] | null;
   /** Lines to print before Stryker starts. */
   said: string[];
+  /** Where Stryker keeps its sandboxes. */
+  temp: TempDirSetting;
   /**
    * Writes the record of this run; to be called only after Stryker finished it, with the
    * report and its verdict.
@@ -133,6 +146,21 @@ function coveringSpecs(report: MutationReport, gates: string[]): Record<string, 
   return covering;
 }
 
+/**
+ * The incremental file of the main worktree and its record (see decideReuse); null when either
+ * is missing or cannot be read, or when the record is not that of this incremental file.
+ */
+function readSeed(incrementalFile: string, recordFile: string): ReuseDecision['seed'] {
+  try {
+    const incremental = fs.readFileSync(incrementalFile);
+    const record = JSON.parse(fs.readFileSync(recordFile, 'utf8')) as unknown;
+    const named = (record as { incremental?: unknown } | null)?.incremental;
+    return named === hashOf(incremental) ? { incremental, record } : null;
+  } catch {
+    return null;
+  }
+}
+
 /** What is known before a run about reusing the results of the last one. */
 export interface ReuseDecision {
   /** Stryker runs in incremental mode: there is something to reuse at all. */
@@ -164,6 +192,18 @@ export interface ReuseDecision {
    */
   unchanged: string | null;
   configs: () => ReturnType<typeof runnerConfigs>;
+  /** Where Stryker keeps its sandboxes; for any run, also one not in incremental mode. */
+  temp: TempDirSetting;
+  /**
+   * In a linked worktree with neither an incremental file nor a record of its own: the top of
+   * the main worktree, whose files this run starts from when it has both (see `seed`).
+   */
+  mainWorktree: string | null;
+  /**
+   * The incremental file of the main worktree that this run starts from, as it was read once,
+   * and the record next to it, whose hash of the incremental file is the hash of this content.
+   */
+  seed: { incremental: Buffer; record: unknown } | null;
 }
 
 /**
@@ -171,13 +211,16 @@ export interface ReuseDecision {
  * core/affected.ts for `--affected`). Changes nothing on disk.
  *
  * @param part Whether the run is one of `--gate`. Such a run takes nothing over.
+ * @param found Called with where Stryker keeps its sandboxes as soon as that is known, before
+ *   the files are looked at (see runMutation).
  */
 export function decideReuse(
   manifest: LoadedManifest,
   config: string,
   strykerArgs: string[],
   part: boolean,
-  affected: boolean
+  affected: boolean,
+  found: (temp: TempDirSetting) => void = () => undefined
 ): ReuseDecision {
   const loaded = loadStrykerConfig(manifest, config);
   const options = incrementalOptions(loaded, strykerArgs);
@@ -209,7 +252,14 @@ export function decideReuse(
     ci: affected ? affectedRefused(process.env) : null,
     unchanged: null,
     configs,
+    temp: {
+      dir: loaded === undefined ? null : path.resolve(base, options.tempDirName),
+      keeps: (loaded as { cleanTempDir?: unknown } | undefined)?.cleanTempDir === false,
+    },
+    mainWorktree: null,
+    seed: null,
   };
+  found(decision.temp);
   if (loaded !== undefined && !options.incremental) {
     // Stryker neither reads nor writes an incremental file
     return decision;
@@ -272,7 +322,45 @@ export function decideReuse(
   decision.failure = snapshot === null ? failure : null;
   decision.root = root;
 
-  const incremental = hashFile(incrementalFile);
+  // A new linked worktree has neither file: both are ignored by git. It then starts from those
+  // of the main worktree, which are read here and copied by guardIncremental. The record of the
+  // main worktree holds the hashes of the files of the main worktree, and they are compared with
+  // the files here as with a record of this worktree. Every file that differs (on another
+  // branch, or after a change) counts as changed since the last run, and is run again or makes
+  // the run one of every mutant. But only the files git lists are compared: what a blind gate
+  // reads beyond them (an `.env` that git ignores) is not, and such files differ between
+  // worktrees as a rule. So a blind gate never takes its results over from the main worktree:
+  // with --affected it is run again, and where the gates cannot be told apart, or without
+  // --affected, a blind gate makes the run one of every mutant (see blindInMainRecord).
+  // Only the main worktree is looked at, not other linked ones; nothing is taken from it with
+  // --gate or --force, nor in a Stryker sandbox, which is a copy that git does not list
+  // (snapshot.mode is 'walk') below the temporary directory.
+  // The incremental file is read once, and only a record that names its hash is taken: a run in
+  // the main worktree can end between the two reads, and the record and the file it is compared
+  // with must be of the same run. guardIncremental writes this content, not the file again.
+  const tempDir = path.basename(options.tempDirName);
+  if (
+    !part &&
+    !options.force &&
+    snapshot?.mode === 'git' &&
+    !path.relative(root, base).split(path.sep).includes(tempDir) &&
+    !fs.existsSync(incrementalFile) &&
+    !fs.existsSync(recordFile)
+  ) {
+    const linked = linkedWorktreeOf(base);
+    const mainIncremental = linked === null ? null : inMainWorktree(linked, incrementalFile);
+    const mainRecord = linked === null ? null : inMainWorktree(linked, recordFile);
+    if (linked !== null && mainIncremental !== null && mainRecord !== null) {
+      decision.mainWorktree = linked.main;
+      const seed = readSeed(mainIncremental, mainRecord);
+      if (seed !== null) {
+        decision.seed = seed;
+      }
+    }
+  }
+
+  const incremental =
+    decision.seed === null ? hashFile(incrementalFile) : hashOf(decision.seed.incremental);
   decision.incrementalHash = incremental;
   if (part) {
     // Stryker would take over the old results of the named gates, which the change that is
@@ -283,11 +371,13 @@ export function decideReuse(
         : null;
     return decision;
   }
-  let stored: unknown;
-  try {
-    stored = JSON.parse(fs.readFileSync(recordFile, 'utf8')) as unknown;
-  } catch {
-    stored = undefined;
+  let stored: unknown = decision.seed?.record;
+  if (decision.seed === null) {
+    try {
+      stored = JSON.parse(fs.readFileSync(recordFile, 'utf8')) as unknown;
+    } catch {
+      stored = undefined;
+    }
   }
   const ci = decision.ci;
 
@@ -303,6 +393,9 @@ export function decideReuse(
         // Every result is taken over: what the last run wrote down about each gate still holds.
         const read = readRecord({ record: stored, incremental, snapshot });
         last = 'record' in read ? read.record.affected : undefined;
+        if (decision.seed !== null) {
+          force = blindInMainRecord(manifest, { root, snapshot, configs, last });
+        }
       }
     } else if (ci !== null) {
       force = ci;
@@ -330,7 +423,9 @@ export function decideReuse(
             gates: manifest.gates.map((gate) => ({
               path: gate.path,
               files: inputs.gates[gate.path]?.files ?? [],
+              blind: inputs.gates[gate.path]?.blind,
             })),
+            seeded: decision.seed !== null,
           });
         } catch (error) {
           if (!(error instanceof AffectedError)) {
@@ -340,8 +435,12 @@ export function decideReuse(
         }
         if ('full' in plan) {
           // What cannot be told gate by gate may still be told for the run as a whole: when
-          // nothing at all changed, every result is reused, as without --affected.
-          if (refuseReuse({ record: stored, incremental, snapshot }) === null) {
+          // nothing at all changed, every result is reused, as without --affected. Not from the
+          // main worktree: what cannot be told may be a blind gate (see above).
+          if (
+            decision.seed === null &&
+            refuseReuse({ record: stored, incremental, snapshot }) === null
+          ) {
             decision.unchanged = plan.full;
             plan = null;
           } else {
@@ -360,6 +459,55 @@ export function decideReuse(
 }
 
 /**
+ * Why a run without --affected that starts from the record of the main worktree takes none of
+ * its results over (see decideReuse), or null: a gate that is blind now or was in that run, or
+ * gates that cannot be told apart.
+ */
+function blindInMainRecord(
+  manifest: LoadedManifest,
+  input: {
+    root: string;
+    snapshot: Snapshot;
+    configs: () => ReturnType<typeof runnerConfigs>;
+    last: AffectedRecord | undefined;
+  }
+): string | null {
+  const { last } = input;
+  // A gate the record leaves out (it had survivors there, or tests the report did not place):
+  // the specs that covered it are not known, nor whether one of them is blind.
+  const unknown =
+    last === undefined
+      ? 'each gate'
+      : manifest.gates.find((gate) => !Object.hasOwn(last.gates, gate.path))?.path;
+  if (last === undefined || unknown !== undefined) {
+    return `the record of the main worktree does not say what ${unknown as string} depends on, so it may read files git does not list, which differ between worktrees`;
+  }
+  try {
+    const inputs = affectedInputs(manifest, {
+      root: input.root,
+      files: input.snapshot.files,
+      configs: input.configs(),
+      tests: last.tests,
+      covering: Object.fromEntries(
+        Object.entries(last.gates).map(([gate, entry]) => [gate, entry.specs])
+      ),
+    });
+    for (const gate of manifest.gates) {
+      const blind = inputs.gates[gate.path]?.blind ?? last.gates[gate.path]?.blind;
+      if (blind !== undefined) {
+        return `${gate.path} may read files git does not list, which differ between worktrees (${blind})`;
+      }
+    }
+    return null;
+  } catch (error) {
+    if (!(error instanceof AffectedError)) {
+      throw error;
+    }
+    return `what a gate depends on cannot be told, so it may read files git does not list, which differ between worktrees: ${error.message}`;
+  }
+}
+
+/**
  * Decides whether this run may reuse the results of the last one (see decideReuse), and removes
  * the record, so that a run that fails leaves none.
  *
@@ -371,10 +519,17 @@ function guardIncremental(
   config: string,
   strykerArgs: string[],
   part: boolean,
-  affected: boolean
+  affected: boolean,
+  found: (temp: TempDirSetting) => void
 ): Guard {
-  const nothing: Guard = { force: null, mutate: null, said: [], record: () => undefined };
-  const decision = decideReuse(manifest, config, strykerArgs, part, affected);
+  const decision = decideReuse(manifest, config, strykerArgs, part, affected, found);
+  const nothing: Guard = {
+    force: null,
+    mutate: null,
+    said: [],
+    temp: decision.temp,
+    record: () => undefined,
+  };
   if (!decision.incremental) {
     return affected
       ? {
@@ -393,6 +548,13 @@ function guardIncremental(
   if (part) {
     fs.rmSync(recordFile, { force: true });
     return { ...nothing, force };
+  }
+  // Stryker reads the incremental file here, so the one of the main worktree is copied into
+  // place (see decideReuse); that of the main worktree is never written. Its record is not
+  // copied: like any record it is removed below, and this run writes its own.
+  if (decision.seed !== null) {
+    fs.mkdirSync(path.dirname(incrementalFile), { recursive: true });
+    fs.writeFileSync(incrementalFile, decision.seed.incremental);
   }
   // A run that is interrupted or fails must not leave a record that says "nothing changed".
   fs.rmSync(recordFile, { force: true });
@@ -458,11 +620,21 @@ function guardIncremental(
       said.push(`test-gates mutation: ${describeExpected(expected)}`);
     }
   }
+  if (decision.seed !== null) {
+    if (said.length === 0 && everyGate !== null) {
+      // printed in place of the line below, which would otherwise be left out
+      said.push(forcedLine(everyGate));
+    }
+    said.unshift(
+      `test-gates mutation: this worktree has no record of its own, so it starts from the one of the main worktree (${decision.mainWorktree})`
+    );
+  }
   return {
     // Every gate is run again: the same as a run of every mutant.
     force: everyGate,
     mutate: subset.length + ranges.length > 0 ? [...subset, ...ranges] : null,
     said,
+    temp: decision.temp,
     record: (judged) => {
       // Only for an incremental file this run wrote. Stryker can end without writing one
       // (a dry run, no tests): what is on disk then still belongs to an earlier state.
@@ -522,7 +694,12 @@ function guardIncremental(
       for (const gate of Object.keys(covering)) {
         const entry = inputs.gates[gate];
         if (entry !== undefined) {
-          recorded[gate] = { specs: entry.specs, files: entry.files };
+          // A blind gate is written down too: the next run reuses it when nothing changed.
+          recorded[gate] = {
+            specs: entry.specs,
+            files: entry.files,
+            ...(entry.blind === undefined ? {} : { blind: entry.blind }),
+          };
         }
       }
       return { tests: Object.keys(judged.report.testFiles ?? {}).sort(), gates: recorded };
@@ -590,14 +767,19 @@ export function runMutation(
   const reportFile = reportPathOf(manifest, null);
   fs.rmSync(reportFile, { force: true });
 
-  const guard = guardIncremental(manifest, config, strykerArgs, part, affected);
+  // What an interrupted run left would be found by every tool that walks the subproject, the
+  // listing of the files of this run among them: it is removed first, and told after what the
+  // guard says, whose first line is the one about the main worktree.
+  let removed: string[] = [];
+  const guard = guardIncremental(manifest, config, strykerArgs, part, affected, (temp) => {
+    removed = removeStaleSandboxes(manifest.dir, temp);
+  });
   if (guard.said.length > 0) {
     guard.said.forEach((line) => io.out(line));
   } else if (guard.force !== null) {
-    io.out(
-      `test-gates mutation: running every mutant again (--force), the results of the last run are not reused: ${guard.force}`
-    );
+    io.out(forcedLine(guard.force));
   }
+  removed.forEach((line) => io.out(line));
   // Only some gates are run again: their mutants with --force, and Stryker takes the results of
   // the others over from its incremental file.
   const guardArgs = guard.force === null && guard.mutate === null ? [] : ['--force'];
@@ -607,25 +789,47 @@ export function runMutation(
       ? ['--mutate', guard.mutate.join(',')]
       : [];
 
-  const result = spawnSync(stryker, ['run', config, ...strykerArgs, ...partArgs, ...guardArgs], {
-    cwd: manifest.dir,
-    stdio: 'inherit',
-    shell: process.platform === 'win32',
-  });
-  if (result.error) {
-    io.err(`test-gates mutation: cannot start Stryker (${result.error.message})`);
-    return 1;
-  }
-  if (result.status !== 0) {
-    io.err(
-      `test-gates mutation: Stryker failed (${result.signal ? `signal ${result.signal}` : `exit ${result.status}`}). The result was not judged`
+  // The marker stays while either run of Stryker (the first and the one of its timeouts) runs.
+  const unmark = markRun(manifest.dir, guard.temp);
+  let retried: ReturnType<typeof retryTimeouts>;
+  try {
+    const result = spawnSync(stryker, ['run', config, ...strykerArgs, ...partArgs, ...guardArgs], {
+      cwd: manifest.dir,
+      stdio: 'inherit',
+      shell: process.platform === 'win32',
+    });
+    if (result.error) {
+      io.err(`test-gates mutation: cannot start Stryker (${result.error.message})`);
+      return 1;
+    }
+    if (result.status !== 0) {
+      io.err(
+        `test-gates mutation: Stryker failed (${result.signal ? `signal ${result.signal}` : `exit ${result.status}`}). The result was not judged`
+      );
+      return 1;
+    }
+    retried = retryTimeouts(
+      stryker,
+      [config, ...strykerArgs],
+      manifest,
+      reportFile,
+      part ? manifest.gates.filter((gate) => chosen.selected.includes(gate.path)) : manifest.gates,
+      io
     );
-    return 1;
+  } finally {
+    unmark();
   }
   let judged: Parameters<Guard['record']>[0] = null;
-  const status = runMutationResult(dir, null, io, part ? chosen.selected : [], (seen) => {
-    judged = seen;
-  });
+  const status = runMutationResult(
+    dir,
+    null,
+    io,
+    part ? chosen.selected : [],
+    (seen) => {
+      judged = seen;
+    },
+    retried
+  );
   guard.record(judged);
   if (part) {
     // Not for `mutation-result`: it would judge every gate from this report, the others by
@@ -633,4 +837,81 @@ export function runMutation(
     fs.rmSync(reportFile, { force: true });
   }
   return status;
+}
+
+/**
+ * Runs the mutants that timed out outside `expectedTimeouts` once more, one at a time, and puts
+ * their new results into the report before it is judged (see mergeRetry). Only when there are
+ * more of them than `settings.mutation.maxTimeouts`: up to that the run passes as it is, and a
+ * project that tolerates a few would pay for the run again every time.
+ *
+ * On a loaded machine a mutant that a test kills in a second can time out; with nothing else
+ * running next to it, it is killed, or it survives and is judged as a survivor. Only one run
+ * again: a mutant that times out in it as well fails as before. Also in CI: a runner with two
+ * cores times out under its own load too, and one more run only costs the time of the mutants
+ * that timed out.
+ *
+ * In incremental mode the run again also writes the incremental file, with the new results, so
+ * that the next run does not take an old timeout over.
+ *
+ * @returns What the run again changed (the results are then in the report); null when the
+ *   timeouts were not run again, 'failed' when the run again gave no report.
+ */
+function retryTimeouts(
+  stryker: string,
+  args: string[],
+  manifest: LoadedManifest,
+  reportFile: string,
+  gates: LoadedManifest['gates'],
+  io: Io
+): RetryOutcome | 'failed' | null {
+  let first: MutationReport;
+  try {
+    first = JSON.parse(fs.readFileSync(reportFile, 'utf8')) as MutationReport;
+  } catch {
+    return null; // judged (and refused) by runMutationResult
+  }
+  if (typeof first !== 'object' || first === null) {
+    return null;
+  }
+  const { ranges, rerun } = timeoutRanges(first, gates);
+  if (ranges.length === 0 || rerun <= manifest.settings.maxTimeouts) {
+    return null;
+  }
+  io.out(
+    `test-gates mutation: ${rerun} mutant(s) timed out outside expectedTimeouts, running them again one at a time (--concurrency 1)`
+  );
+  // The first report must not be taken for one of the run again if that writes none.
+  fs.rmSync(reportFile, { force: true });
+  const result = spawnSync(
+    stryker,
+    ['run', ...args, '--mutate', ranges.join(','), '--concurrency', '1', '--force'],
+    { cwd: manifest.dir, stdio: 'inherit', shell: process.platform === 'win32' }
+  );
+  let retry: MutationReport | null = null;
+  if (!result.error && result.status === 0) {
+    try {
+      retry = JSON.parse(fs.readFileSync(reportFile, 'utf8')) as MutationReport;
+    } catch {
+      retry = null;
+    }
+  }
+  if (retry === null || typeof retry !== 'object') {
+    const why = result.error
+      ? result.error.message
+      : result.signal
+        ? `signal ${result.signal}`
+        : result.status === 0
+          ? 'no report'
+          : `exit ${result.status}`;
+    io.err(
+      `test-gates mutation: running the timed-out mutants again failed (${why}). The first run is judged`
+    );
+    fs.writeFileSync(reportFile, JSON.stringify(first));
+    return 'failed';
+  }
+  const merged = mergeRetry(first, retry, gates);
+  fs.writeFileSync(reportFile, JSON.stringify(merged.report));
+  io.out(formatRetry(merged.outcome));
+  return merged.outcome;
 }

@@ -31,7 +31,14 @@ export interface ReportFile {
 export interface MutationReport {
   files?: Record<string, ReportFile>;
   /** The spec files, with the ids of their tests (read by `mutation --affected`). */
-  testFiles?: Record<string, { tests?: Array<{ id: string }> }>;
+  testFiles?: Record<string, { tests?: ReportTest[] }>;
+}
+
+/** A test of a spec file in the report. Stryker numbers them anew on every run. */
+export interface ReportTest {
+  id: string;
+  name?: string;
+  location?: { start: Position };
 }
 
 /** A survivor that no allowance covers. `allowance` can be pasted into `equivalentMutants`. */
@@ -460,6 +467,140 @@ export function judgeMutationReport(input: {
   }
 
   return { violations, survivors, unexpectedTimeouts, summary };
+}
+
+/** The start of an id of a test that the first run does not have (see mergeRetry). */
+export const UNKNOWN_TEST = 'not-in-the-first-run:';
+
+/** What running the timed-out mutants again changed (see mergeRetry). */
+export interface RetryOutcome {
+  /** How many mutants were run again. */
+  retried: number;
+  /** Their status in the run again, by status. */
+  statuses: Record<string, number>;
+  /** How many of them the report of the run again does not hold; they stay `Timeout`. */
+  missing: number;
+}
+
+/** The same mutant in the report of another run of the same source. */
+function sameMutant(a: ReportMutant, b: ReportMutant): boolean {
+  return (
+    a.mutatorName === b.mutatorName &&
+    (a.replacement ?? '') === (b.replacement ?? '') &&
+    a.location.start.line === b.location.start.line &&
+    a.location.start.column === b.location.start.column &&
+    a.location.end.line === b.location.end.line &&
+    a.location.end.column === b.location.end.column
+  );
+}
+
+/**
+ * Puts the results of a run again of the timed-out mutants into the report of the first run.
+ *
+ * The mutants run again are those of the given gates that timed out and that no
+ * `expectedTimeouts` entry points at (matched as expectedTimeoutMutants matches them, as
+ * timeoutRanges picks them for `--mutate`). Each takes its result from the run again, whatever
+ * it is: a mutant that survives there is a survivor, not a timeout. One that the run again does
+ * not report stays `Timeout`. Every other mutant keeps its result from the first run.
+ *
+ * The report keeps the tests of the first run. Stryker numbers the tests anew on every run, so
+ * the ids in a mutant taken from the run again are turned into those of the same tests (by file,
+ * name and place) in the first run; one that names no test of the first run, or more than one,
+ * becomes an id that no test has.
+ */
+export function mergeRetry(
+  first: MutationReport,
+  retry: MutationReport,
+  gates: Array<Pick<Gate, 'path' | 'expectedTimeouts'>>
+): { report: MutationReport; outcome: RetryOutcome } {
+  const outcome: RetryOutcome = { retried: 0, statuses: {}, missing: 0 };
+  const firstId = translator(first, retry);
+  const files = { ...first.files };
+  const again = retry.files ?? {};
+  for (const named of gates) {
+    // Stryker names its files without `./`, which a path in test-gates.json may have.
+    const gate = named.path
+      .split('/')
+      .filter((part) => part !== '.')
+      .join('/');
+    const result = Object.hasOwn(files, gate) ? files[gate] : undefined;
+    if (result?.mutants === undefined) {
+      continue;
+    }
+    const expected = expectedTimeoutMutants(named, result.source, result.mutants);
+    const rerun = Object.hasOwn(again, gate) ? again[gate]?.mutants : undefined;
+    files[gate] = {
+      ...result,
+      mutants: result.mutants.map((mutant) => {
+        if (mutant.status !== 'Timeout' || expected.has(mutant)) {
+          return mutant;
+        }
+        outcome.retried += 1;
+        const found = rerun?.find((other) => sameMutant(other, mutant));
+        if (found === undefined) {
+          outcome.missing += 1;
+          return mutant;
+        }
+        outcome.statuses[found.status] = (outcome.statuses[found.status] ?? 0) + 1;
+        return {
+          ...found,
+          ...(found.coveredBy === undefined ? {} : { coveredBy: found.coveredBy.map(firstId) }),
+          ...(found.killedBy === undefined ? {} : { killedBy: found.killedBy.map(firstId) }),
+        };
+      }),
+    };
+  }
+  return { report: { ...first, files }, outcome };
+}
+
+/** What tells a test apart from the others, the same in every run: its file, name and place. */
+function testKey(file: string, test: ReportTest): string {
+  const start = test.location?.start;
+  return JSON.stringify([file, test.name ?? '', start?.line, start?.column]);
+}
+
+/** The tests of a report, each with the key of testKey. */
+function* keyedTests(report: MutationReport): Generator<{ id: string; key: string }> {
+  for (const [file, entry] of Object.entries(report.testFiles ?? {})) {
+    if (entry.tests !== undefined) {
+      for (const test of entry.tests) {
+        yield { id: test.id, key: testKey(file, test) };
+      }
+    }
+  }
+}
+
+/**
+ * Turns the ids of the tests in a mutant of the run again into those of the same tests in the
+ * first run (see mergeRetry), as Stryker's incremental mode matches tests across runs.
+ */
+function translator(first: MutationReport, retry: MutationReport): (id: string) => string {
+  // null for a key that more than one test of the first run has
+  const firstIds = new Map<string, string | null>();
+  for (const { id, key } of keyedTests(first)) {
+    firstIds.set(key, firstIds.has(key) ? null : id);
+  }
+  const ids = new Map<string, string | null | undefined>();
+  for (const { id, key } of keyedTests(retry)) {
+    ids.set(id, firstIds.get(key));
+  }
+  return (id) => {
+    const found = ids.get(id);
+    // An id that is not one of the first run: it names no spec file, so that no spec is ever
+    // written down for the gate, rather than a wrong one or too few.
+    return typeof found === 'string' ? found : `${UNKNOWN_TEST}${id}`;
+  };
+}
+
+/** One line on what running the timed-out mutants again gave. */
+export function formatRetry(outcome: RetryOutcome): string {
+  const statuses = Object.entries(outcome.statuses)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([status, count]) => `${count} ${status}`);
+  if (outcome.missing > 0) {
+    statuses.push(`${outcome.missing} not in the report (still Timeout)`);
+  }
+  return `test-gates mutation: ${outcome.retried} mutant(s) that timed out were run again one at a time (--concurrency 1): ${statuses.join(', ')}`;
 }
 
 /** `file:line:column / mutator / original → replacement / occurrence n of m`. */

@@ -6,6 +6,7 @@ import {
   judgeMutationReport,
   type MutationReport,
   type MutationVerdict,
+  type RetryOutcome,
 } from '../core/mutation-result.js';
 import { gateRunCaveat } from '../core/selfcheck.js';
 import { readManifest, type LoadedManifest } from '../load.js';
@@ -19,13 +20,16 @@ export function reportPathOf(manifest: LoadedManifest, override: string | null):
  * @param only The gates of `mutation --gate`: only they are judged. The report of such a run
  *   can hold old results of the other gates (Stryker takes them over from its incremental
  *   file), which say nothing about the code as it is now.
+ * @param retried What came of the run again of the timeouts of this report, one at a time, by
+ *   `mutation`: null when they were not run again, 'failed' when that run gave no report.
  */
 export function runMutationResult(
   dir: string,
   reportOverride: string | null,
   io: Io,
   only: string[] = [],
-  seen: (judged: { report: MutationReport; verdict: MutationVerdict }) => void = () => undefined
+  seen: (judged: { report: MutationReport; verdict: MutationVerdict }) => void = () => undefined,
+  retried: RetryOutcome | 'failed' | null = null
 ): number {
   const manifest = readManifest(dir);
   const gates =
@@ -105,8 +109,34 @@ export function runMutationResult(
       io.err(`  - ${formatSurvivor(mutant)}`);
     }
     io.err('');
-    io.err('A timeout counts as detected, but on a loaded machine a mutant that would survive');
-    io.err('can time out instead. Run again with less load (-- --concurrency 1). Only for a');
+    if (retried === null || retried === 'failed') {
+      io.err('A timeout counts as detected, but on a loaded machine a mutant that would survive');
+      if (retried === null) {
+        io.err(
+          'can time out instead. `test-gates mutation` runs such timeouts again one at a time'
+        );
+        io.err('(--concurrency 1) before it fails; these were not run again. Only for a');
+      } else {
+        io.err(
+          'can time out instead. They were run again one at a time (--concurrency 1), but that'
+        );
+        io.err('run gave no result (see above), so these are those of the first run. Only for a');
+      }
+    } else if (retried.missing === 0) {
+      io.err('They timed out again when they were run one at a time (--concurrency 1), so they');
+      io.err('most likely never finish. Look at each mutant first. Only for a');
+    } else {
+      const again = retried.statuses['Timeout'] ?? 0;
+      if (again > 0) {
+        io.err(
+          `${again} of them timed out again when they were run one at a time (--concurrency 1).`
+        );
+      }
+      io.err(
+        `${retried.missing} of them were not in the report of the run again (--concurrency 1),`
+      );
+      io.err('so they keep the timeout of the first run. Look at each mutant first. Only for a');
+    }
     io.err('mutant that can never finish (a loop that no longer ends), add it to');
     io.err('"expectedTimeouts" of the gate in test-gates.json and fill in "reason"');
     io.err('(settings.mutation.maxTimeouts raises the limit for the whole project):');

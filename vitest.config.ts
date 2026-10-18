@@ -6,11 +6,13 @@ export const HEAVY_TESTS = [
   'test/affected-reuse.test.ts',
   'test/incremental-reuse.test.ts',
   'test/incremental-stale.test.ts',
+  'test/retry-timeouts.test.ts',
   'test/reuse-guard.test.ts',
   'test/selfcheck-runners-jest.test.ts',
   'test/selfcheck-runners-other.test.ts',
   'test/selfcheck-runners-vitest-threads.test.ts',
   'test/selfcheck-runners-vitest.test.ts',
+  'test/stale-sandboxes.test.ts',
 ];
 
 export default defineConfig({

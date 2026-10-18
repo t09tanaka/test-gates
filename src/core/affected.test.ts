@@ -78,20 +78,34 @@ describe('kindOf', () => {
     expect(kindOf(key, 'pkg')).toBe('passive');
   });
 
-  it.each(['pkg/README.md', 'pkg/docs/a.markdown', 'notes.txt', 'pkg/a.RST', 'pkg/a.adoc'])(
-    'takes %s for a document',
-    (key) => {
-      expect(kindOf(key, 'pkg')).toBe('document');
-    }
-  );
+  it.each([
+    'pkg/README.md',
+    'pkg/docs/a.markdown',
+    'notes.txt',
+    'pkg/a.RST',
+    'pkg/a.adoc',
+    'pkg/src/a.html',
+    'pkg/docs/a.htm',
+    'pkg/reports/mutation/mutation.HTML',
+    'pkg/report.html',
+    'pkg/src/my-index.html',
+    'pkg/src/index.html.html',
+  ])('takes %s for a document', (key) => {
+    expect(kindOf(key, 'pkg')).toBe('document');
+  });
 
   it.each([
     // at the top of the subproject, outside of it, or of a kind that is not known
     'pkg/index.ts',
     'pkg/Makefile',
     'pkg/src/fixtures/a.yaml',
-    'pkg/src/a.html',
     'shared/round.ts',
+    // a page that a build tool or a test runner may start from
+    'pkg/index.html',
+    'pkg/index.htm',
+    'pkg/INDEX.HTML',
+    'pkg/src/index.html',
+    'pkg/coverage/index.html',
     'pkgx/src/a.ts',
     'pkg/src/a.ts.orig',
     'pkg/src/a.json5',
@@ -212,6 +226,49 @@ describe('gateDependencies', () => {
     ).toEqual({ 'src/x.ts': { specs: [], files: ['src/x.ts'] } });
   });
 
+  it('makes a gate blind when one of the files it depends on is, through a spec as well', () => {
+    const blind = { 'src/round.ts': 'src/round.ts uses readFileSync' };
+    const found = gateDependencies({ gates, tests, covering: {}, closures, blind });
+    expect(found['src/a.ts']?.blind).toBe('src/round.ts uses readFileSync');
+    // b loads round itself, and through the spec of b
+    expect(found['src/b.ts']?.blind).toBe('src/round.ts uses readFileSync');
+    // Not blind: no such key at all, as the record writes it.
+    expect(found['src/c.ts']).toStrictEqual({
+      specs: ['src/c.spec.ts'],
+      files: ['src/c.spec.ts', 'src/c.ts'],
+    });
+    // Only through a spec: the spec of a loads expect.ts, which neither gate a loads itself.
+    const spec = gateDependencies({
+      gates,
+      tests,
+      covering: { 'src/c.ts': ['src/a.spec.ts'] },
+      closures,
+      blind: { 'src/expect.ts': 'src/expect.ts uses readdirSync', 'src/z.ts': 'z' },
+    });
+    expect(spec['src/a.ts']?.blind).toBe('src/expect.ts uses readdirSync');
+    expect(spec['src/c.ts']?.blind).toBe('src/expect.ts uses readdirSync');
+    expect(spec['src/b.ts']?.blind).toBeUndefined();
+    // the first file in order gives the reason
+    const two = gateDependencies({
+      gates,
+      tests,
+      covering: {},
+      closures,
+      blind: { 'src/round.ts': 'r', 'src/a.ts': 'a' },
+    });
+    expect(two['src/b.ts']?.blind).toBe('a');
+    // not a property of every object
+    expect(
+      gateDependencies({
+        gates: [{ key: 'constructor', specs: [] }],
+        tests: [],
+        covering: {},
+        closures: {},
+        blind: {},
+      }).constructor
+    ).toEqual({ specs: [], files: ['constructor'] });
+  });
+
   it('keeps a gate called like a property of every object', () => {
     const found = gateDependencies({
       gates: [{ key: 'constructor', specs: [] }],
@@ -315,6 +372,103 @@ describe('planAffected', () => {
         { gate: 'src/b.ts', changed: ['pkg/src/round.ts'] },
       ],
       reused: ['src/c.ts'],
+    });
+  });
+
+  describe('a blind gate', () => {
+    const blindNow = gates.map((gate) =>
+      gate.path === 'src/c.ts' ? { ...gate, blind: 'pkg/src/c.ts uses readFileSync' } : gate
+    );
+    const blindBefore = {
+      ...affected,
+      gates: {
+        ...affected.gates,
+        'src/c.ts': { specs: [], files: sets['src/c.ts'], blind: 'pkg/src/c.ts uses readFileSync' },
+      },
+    };
+
+    it('runs again for a change that no file of it is, and the others by what they load', () => {
+      expect(plan({ 'pkg/src/round.ts': 'r2' }, { gates: blindNow })).toEqual({
+        rerun: [
+          { gate: 'src/a.ts', changed: ['pkg/src/round.ts'] },
+          { gate: 'src/b.ts', changed: ['pkg/src/round.ts'] },
+          {
+            gate: 'src/c.ts',
+            changed: ['pkg/src/round.ts'],
+            blind: 'pkg/src/c.ts uses readFileSync',
+          },
+        ],
+        reused: [],
+      });
+      // a file that only the blind gate may read, and that no gate loads
+      expect(plan({ 'pkg/src/data.json': 'd1' }, { gates: blindNow })).toEqual({
+        rerun: [
+          {
+            gate: 'src/c.ts',
+            changed: ['pkg/src/data.json'],
+            blind: 'pkg/src/c.ts uses readFileSync',
+          },
+        ],
+        reused: ['src/a.ts', 'src/b.ts'],
+      });
+    });
+
+    it('is blind when the last run wrote it down as such, though it is not now', () => {
+      expect(
+        plan({ 'pkg/src/a.ts': 'a2' }, { before: { files: before, affected: blindBefore } })
+      ).toEqual({
+        rerun: [
+          { gate: 'src/a.ts', changed: ['pkg/src/a.ts'] },
+          { gate: 'src/b.ts', changed: ['pkg/src/a.ts'] },
+          { gate: 'src/c.ts', changed: ['pkg/src/a.ts'], blind: 'pkg/src/c.ts uses readFileSync' },
+        ],
+        reused: [],
+      });
+    });
+
+    it('is reused when nothing changed', () => {
+      expect(plan({}, { gates: blindNow })).toEqual({
+        rerun: [],
+        reused: ['src/a.ts', 'src/b.ts', 'src/c.ts'],
+      });
+      expect(plan({}, { before: { files: before, affected: blindBefore } })).toEqual({
+        rerun: [],
+        reused: ['src/a.ts', 'src/b.ts', 'src/c.ts'],
+      });
+      expect(plan({}, { gates: blindNow, seeded: false })).toEqual(plan({}, { gates: blindNow }));
+    });
+
+    it('is run again when nothing changed, with the record of another worktree', () => {
+      const rerun = {
+        rerun: [{ gate: 'src/c.ts', changed: [], blind: 'pkg/src/c.ts uses readFileSync' }],
+        reused: ['src/a.ts', 'src/b.ts'],
+      };
+      expect(plan({}, { gates: blindNow, seeded: true })).toEqual(rerun);
+      expect(plan({}, { before: { files: before, affected: blindBefore }, seeded: true })).toEqual(
+        rerun
+      );
+      // the gates that are not blind are told apart as ever
+      expect(plan({}, { seeded: true })).toEqual(plan({}));
+      expect(plan({ 'pkg/src/a.ts': 'a2' }, { gates: blindNow, seeded: true })).toEqual(
+        plan({ 'pkg/src/a.ts': 'a2' }, { gates: blindNow })
+      );
+    });
+
+    it('is run again without a result of the last run, and a change for every gate is still one', () => {
+      const missing = { ...affected, gates: { 'src/a.ts': affected.gates['src/a.ts'] } };
+      expect(
+        plan(
+          {},
+          { gates: blindNow, before: { files: before, affected: missing as typeof affected } }
+        )
+      ).toEqual({
+        rerun: [
+          { gate: 'src/b.ts', changed: [] },
+          { gate: 'src/c.ts', changed: [] },
+        ],
+        reused: ['src/a.ts'],
+      });
+      expect(plan({ 'pkg/package.json': 'p2' }, { gates: blindNow })).toHaveProperty('full');
     });
   });
 
@@ -460,6 +614,26 @@ describe('planAffected', () => {
     });
   });
 
+  it('ignores a change of a page that no gate depends on, such as a report or the docs', () => {
+    expect(
+      plan({
+        'pkg/reports/mutation/mutation.html': 'h1',
+        'pkg/docs/guide.htm': 'g1',
+        'pkg/report.html': 'r1',
+      })
+    ).toEqual({ rerun: [], reused: ['src/a.ts', 'src/b.ts', 'src/c.ts'] });
+  });
+
+  it('runs a gate again for a page that it loads', () => {
+    const page = gates.map((gate) =>
+      gate.path === 'src/c.ts' ? { ...gate, files: [...gate.files, 'pkg/src/c.html'] } : gate
+    );
+    expect(plan({ 'pkg/src/c.html': 'h2' }, { gates: page })).toEqual({
+      rerun: [{ gate: 'src/c.ts', changed: ['pkg/src/c.html'] }],
+      reused: ['src/a.ts', 'src/b.ts'],
+    });
+  });
+
   it('takes a file outside the subproject that a gate depends on for that gate alone', () => {
     expect(plan({ 'shared/money.ts': 'm2' })).toEqual({
       rerun: [{ gate: 'src/c.ts', changed: ['shared/money.ts'] }],
@@ -484,6 +658,8 @@ describe('planAffected', () => {
     ['a file at the top of the subproject', 'pkg/index.ts'],
     ['a file outside the subproject that no gate depends on', 'shared/unused.ts'],
     ['a new lock file', 'package-lock.json'],
+    ['the page a build tool may start from', 'pkg/index.html'],
+    ['a page a build tool may start from, below the top', 'pkg/src/index.html'],
   ])('runs every gate after a change of %s', (_name, key) => {
     expect(plan({ [key]: 'changed' })).toEqual({
       full: `changed since the last run, and may affect every gate: ${key}`,
@@ -699,6 +875,46 @@ describe('describePlan', () => {
     expect(describePlan({ rerun: [], reused: ['src/a.ts'] })).toEqual([
       'test-gates mutation --affected: 1 of 1 gate(s) reused, 0 run again',
     ]);
+  });
+
+  it('counts the gates run again for any change, with why, and lists only the others', () => {
+    expect(
+      describePlan(
+        {
+          rerun: [
+            { gate: 'src/a.ts', changed: ['x'], blind: 'src/env.ts uses readFileSync' },
+            { gate: 'src/b.ts', changed: ['x'] },
+            { gate: 'src/c.ts', changed: ['x'], blind: 'src/env.ts uses readFileSync' },
+          ],
+          reused: ['src/d.ts'],
+        },
+        1,
+        2
+      )
+    ).toEqual([
+      'test-gates mutation --affected: 1 of 4 gate(s) reused, 3 run again',
+      '  src/b.ts: changed x',
+      '  2 gate(s) run again for any change, as what they depend on cannot be told: src/env.ts uses readFileSync',
+      '  and 2 mutant(s) of reused gates that timed out in the last run',
+    ]);
+    const blind = ['a', 'b', 'c'].map((name) => ({
+      gate: `src/${name}.ts`,
+      changed: ['x'],
+      blind: name === 'a' ? 'one' : 'two',
+    }));
+    expect(describePlan({ rerun: blind, reused: [] }, 1)).toEqual([
+      'test-gates mutation --affected: 0 of 3 gate(s) reused, 3 run again',
+      '  3 gate(s) run again for any change, as what they depend on cannot be told: one (and 1 more reason(s))',
+    ]);
+    // the blind gates take no place among those listed
+    const told = ['d', 'e'].map((name) => ({ gate: `src/${name}.ts`, changed: ['x'] }));
+    expect(describePlan({ rerun: [...blind, ...told], reused: [] }, 2)).toEqual([
+      'test-gates mutation --affected: 0 of 5 gate(s) reused, 5 run again',
+      '  src/d.ts: changed x',
+      '  src/e.ts: changed x',
+      '  3 gate(s) run again for any change, as what they depend on cannot be told: one (and 1 more reason(s))',
+    ]);
+    expect(describePlan({ rerun: [...told, ...told], reused: [] }, 3).at(-1)).toBe('  and 1 more');
   });
 
   it('names a few gates and counts the rest', () => {

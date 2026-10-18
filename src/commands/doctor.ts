@@ -5,6 +5,7 @@ import { describePlan } from '../core/affected.js';
 import { diagnose, formatFindings, type HookUse, hookUses } from '../core/doctor.js';
 import { ManifestError } from '../core/manifest.js';
 import { readManifest } from '../load.js';
+import { sandboxPlan } from '../sandboxes.js';
 import { gitEnvironment } from '../snapshot.js';
 import { findStrykerConfig } from './check.js';
 import { AffectedError, affectedInputs } from '../affected-files.js';
@@ -105,6 +106,16 @@ export function runDoctor(dir: string, io: Io): number {
         ? '  next run: reuses the results of the last run'
         : `  next run: every mutant, ${reuse}`
     );
+    // A new linked worktree has no record of its own (see decideReuse).
+    if (plain.seed !== null) {
+      io.out(
+        `  this worktree has no record of its own: the next run starts from the one of the main worktree (${plain.mainWorktree})`
+      );
+    } else if (plain.mainWorktree !== null) {
+      io.out(
+        `  this worktree has no record of its own, and the main worktree (${plain.mainWorktree}) has none this worktree can start from`
+      );
+    }
     if (affected.ci !== null) {
       io.out(`  next run with --affected: every mutant, ${affected.ci}`);
     } else if (affected.plan !== null && 'rerun' in affected.plan) {
@@ -122,14 +133,19 @@ export function runDoctor(dir: string, io: Io): number {
   }
   // Whether --affected can tell the gates apart, whatever the record holds.
   let blind: string | null = null;
+  let blindGates: Array<{ gate: string; reason: string }> = [];
   if (plain.snapshot !== null) {
     try {
-      affectedInputs(manifest, {
+      const inputs = affectedInputs(manifest, {
         root: plain.root,
         files: plain.snapshot.files,
         configs: plain.configs(),
         tests: [],
         covering: {},
+      });
+      blindGates = manifest.gates.flatMap((gate) => {
+        const reason = inputs.gates[gate.path]?.blind;
+        return reason === undefined ? [] : [{ gate: gate.path, reason }];
       });
     } catch (error) {
       if (!(error instanceof AffectedError)) {
@@ -138,6 +154,8 @@ export function runDoctor(dir: string, io: Io): number {
       blind = error.message;
     }
   }
+  const left = sandboxPlan(manifest.dir, plain.temp);
+  const count = 'kept' in left.plan ? left.plan.kept.length : left.plan.remove.length;
   const { lines, status } = formatFindings(
     diagnose({
       incremental: plain.incremental,
@@ -147,6 +165,17 @@ export function runDoctor(dir: string, io: Io): number {
       scope: plain.scope,
       hooks: hooksOf(fs.realpathSync(manifest.dir)),
       blind,
+      blindGates,
+      gates: manifest.gates.length,
+      sandboxes:
+        count === 0
+          ? null
+          : {
+              tempDir: left.shown,
+              count,
+              kept: 'kept' in left.plan ? left.plan.why : null,
+              running: 'kept' in left.plan ? left.plan.running : null,
+            },
     })
   );
   lines.forEach((line) => io.out(line));
