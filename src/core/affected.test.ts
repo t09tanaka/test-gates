@@ -435,6 +435,23 @@ describe('planAffected', () => {
         rerun: [],
         reused: ['src/a.ts', 'src/b.ts', 'src/c.ts'],
       });
+      expect(plan({}, { gates: blindNow, seeded: false })).toEqual(plan({}, { gates: blindNow }));
+    });
+
+    it('is run again when nothing changed, with the record of another worktree', () => {
+      const rerun = {
+        rerun: [{ gate: 'src/c.ts', changed: [], blind: 'pkg/src/c.ts uses readFileSync' }],
+        reused: ['src/a.ts', 'src/b.ts'],
+      };
+      expect(plan({}, { gates: blindNow, seeded: true })).toEqual(rerun);
+      expect(plan({}, { before: { files: before, affected: blindBefore }, seeded: true })).toEqual(
+        rerun
+      );
+      // the gates that are not blind are told apart as ever
+      expect(plan({}, { seeded: true })).toEqual(plan({}));
+      expect(plan({ 'pkg/src/a.ts': 'a2' }, { gates: blindNow, seeded: true })).toEqual(
+        plan({ 'pkg/src/a.ts': 'a2' }, { gates: blindNow })
+      );
     });
 
     it('is run again without a result of the last run, and a change for every gate is still one', () => {

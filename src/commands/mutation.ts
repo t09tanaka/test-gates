@@ -319,13 +319,18 @@ export function decideReuse(
   decision.root = root;
 
   // A new linked worktree has neither file: both are ignored by git. It then starts from those
-  // of the main worktree, which are read here and copied by guardIncremental. That is safe: the
-  // record of the main worktree holds the hashes of the files of the main worktree, and they are
-  // compared with the files here as with a record of this worktree. Every file that differs (on
-  // another branch, or after a change) counts as changed since the last run, and is run again or
-  // makes the run one of every mutant. Only the main worktree is looked at, not other linked
-  // ones; nothing is taken from it with --gate or --force, nor in a Stryker sandbox, which is a
-  // copy that git does not list (snapshot.mode is 'walk') below the temporary directory.
+  // of the main worktree, which are read here and copied by guardIncremental. The record of the
+  // main worktree holds the hashes of the files of the main worktree, and they are compared with
+  // the files here as with a record of this worktree. Every file that differs (on another
+  // branch, or after a change) counts as changed since the last run, and is run again or makes
+  // the run one of every mutant. But only the files git lists are compared: what a blind gate
+  // reads beyond them (an `.env` that git ignores) is not, and such files differ between
+  // worktrees as a rule. So a blind gate never takes its results over from the main worktree:
+  // with --affected it is run again, and where the gates cannot be told apart, or without
+  // --affected, a blind gate makes the run one of every mutant (see blindInMainRecord).
+  // Only the main worktree is looked at, not other linked ones; nothing is taken from it with
+  // --gate or --force, nor in a Stryker sandbox, which is a copy that git does not list
+  // (snapshot.mode is 'walk') below the temporary directory.
   // The incremental file is read once, and only a record that names its hash is taken: a run in
   // the main worktree can end between the two reads, and the record and the file it is compared
   // with must be of the same run. guardIncremental writes this content, not the file again.
@@ -384,6 +389,9 @@ export function decideReuse(
         // Every result is taken over: what the last run wrote down about each gate still holds.
         const read = readRecord({ record: stored, incremental, snapshot });
         last = 'record' in read ? read.record.affected : undefined;
+        if (decision.seed !== null) {
+          force = blindInMainRecord(manifest, { root, snapshot, configs, last });
+        }
       }
     } else if (ci !== null) {
       force = ci;
@@ -413,6 +421,7 @@ export function decideReuse(
               files: inputs.gates[gate.path]?.files ?? [],
               blind: inputs.gates[gate.path]?.blind,
             })),
+            seeded: decision.seed !== null,
           });
         } catch (error) {
           if (!(error instanceof AffectedError)) {
@@ -422,8 +431,12 @@ export function decideReuse(
         }
         if ('full' in plan) {
           // What cannot be told gate by gate may still be told for the run as a whole: when
-          // nothing at all changed, every result is reused, as without --affected.
-          if (refuseReuse({ record: stored, incremental, snapshot }) === null) {
+          // nothing at all changed, every result is reused, as without --affected. Not from the
+          // main worktree: what cannot be told may be a blind gate (see above).
+          if (
+            decision.seed === null &&
+            refuseReuse({ record: stored, incremental, snapshot }) === null
+          ) {
             decision.unchanged = plan.full;
             plan = null;
           } else {
@@ -439,6 +452,49 @@ export function decideReuse(
   decision.plan = plan;
   decision.last = last;
   return decision;
+}
+
+/**
+ * Why a run without --affected that starts from the record of the main worktree takes none of
+ * its results over (see decideReuse), or null: a gate that is blind now or was in that run, or
+ * gates that cannot be told apart.
+ */
+function blindInMainRecord(
+  manifest: LoadedManifest,
+  input: {
+    root: string;
+    snapshot: Snapshot;
+    configs: () => ReturnType<typeof runnerConfigs>;
+    last: AffectedRecord | undefined;
+  }
+): string | null {
+  const { last } = input;
+  if (last === undefined) {
+    return 'the record of the main worktree does not say what each gate depends on, so a gate may read files git does not list, which differ between worktrees';
+  }
+  try {
+    const inputs = affectedInputs(manifest, {
+      root: input.root,
+      files: input.snapshot.files,
+      configs: input.configs(),
+      tests: last.tests,
+      covering: Object.fromEntries(
+        Object.entries(last.gates).map(([gate, entry]) => [gate, entry.specs])
+      ),
+    });
+    for (const gate of manifest.gates) {
+      const blind = inputs.gates[gate.path]?.blind ?? last.gates[gate.path]?.blind;
+      if (blind !== undefined) {
+        return `${gate.path} may read files git does not list, which differ between worktrees (${blind})`;
+      }
+    }
+    return null;
+  } catch (error) {
+    if (!(error instanceof AffectedError)) {
+      throw error;
+    }
+    return `what a gate depends on cannot be told, so it may read files git does not list, which differ between worktrees: ${error.message}`;
+  }
 }
 
 /**

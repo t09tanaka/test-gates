@@ -1208,9 +1208,17 @@ describe('test-gates mutation in a new linked worktree', () => {
   const linkedDirs: string[] = [];
   afterAll(() => linkedDirs.forEach((dir) => fs.rmSync(dir, { recursive: true, force: true })));
 
+  // A test runner --affected knows: without one the gates cannot be told apart, and a new
+  // worktree takes nothing over (it cannot tell whether a gate reads files git ignores).
+  const RUNNER = {
+    'stryker.gates.config.mjs':
+      "export default { incremental: true, testRunner: 'vitest', vitest: { configFile: 'vitest.gates.config.ts' } };\n",
+    'vitest.gates.config.ts': 'export default {};\n',
+  };
+
   /** The main worktree after a run of every mutant, and a linked worktree of it that has none. */
-  function worktrees(): { main: string; linked: string } {
-    const main = fs.realpathSync(create(subproject(), 'git'));
+  function worktrees(extra: Record<string, string> = {}): { main: string; linked: string } {
+    const main = fs.realpathSync(create({ ...subproject(), ...RUNNER, ...extra }, 'git'));
     expect(mutation(main)).toEqual(REUSED);
     const linked = `${main}-linked`;
     linkedDirs.push(linked);
@@ -1297,6 +1305,69 @@ describe('test-gates mutation in a new linked worktree', () => {
     write(linked, { '.stryker-tmp/silent': '' });
     expect(firstLine(linked)).not.toContain('main worktree');
     expect(fs.existsSync(path.join(linked, INCREMENTAL))).toBe(false);
+  });
+
+  describe('a gate that reads a file git ignores', () => {
+    // The helper of the spec reads `.env`, which git ignores: each worktree has its own.
+    const BLIND = {
+      '.gitignore': `${IGNORE}.env\n`,
+      '.env': 'MODE=main\n',
+      'src/expect-true.ts':
+        "import { readFileSync } from 'node:fs';\n" +
+        "export const mode = readFileSync('.env', 'utf8');\n" +
+        'export const expectTrue = (value: boolean) => expect(value).toBe(true);\n',
+    };
+    const WHY = 'src/age.ts may read files git does not list, which differ between worktrees (';
+
+    it('makes a run without --affected one of every mutant, whatever is in that file', () => {
+      for (const env of ['MODE=linked\n', 'MODE=main\n']) {
+        const { main, linked } = worktrees(BLIND);
+        write(linked, { '.env': env });
+        const result = testGates(['mutation', '--dir', linked]);
+        const lines = result.stdout.split('\n');
+        expect(lines[0]).toBe(`${SEED}${main})`);
+        expect(lines[1]).toContain(`${NOTE}${WHY}src/expect-true.ts uses readFileSync`);
+        const args = JSON.parse(read(path.join(linked, '.stryker-tmp/stryker-args.json')));
+        expect(args).toContain('--force');
+      }
+    });
+
+    it('runs such a gate again with --affected, though no file git lists differs', () => {
+      const { main, linked } = worktrees(BLIND);
+      write(linked, { '.env': 'MODE=linked\n' });
+      const result = testGates(['mutation', '--dir', linked, '--affected']);
+      const lines = result.stdout.split('\n');
+      expect(lines[0]).toBe(`${SEED}${main})`);
+      expect(lines[1]).toBe('test-gates mutation --affected: 0 of 1 gate(s) reused, 1 run again');
+      expect(lines[2]).toContain('  1 gate(s) run again for any change');
+      const args = JSON.parse(read(path.join(linked, '.stryker-tmp/stryker-args.json')));
+      expect(args).toContain('--force');
+      // A gate that is not blind takes its results over, as without --affected.
+      const plain = worktrees();
+      expect(mutation(plain.linked, '--affected')).toEqual(REUSED);
+    });
+
+    it('makes a run one of every mutant where the gates cannot be told apart', () => {
+      // No test runner that --affected knows: whether a gate reads such a file cannot be told.
+      const { main, linked } = worktrees({
+        'stryker.gates.config.mjs': 'export default { incremental: true };\n',
+      });
+      for (const extra of [[], ['--affected']]) {
+        const lines = testGates(['mutation', '--dir', linked, ...extra]).stdout.split('\n');
+        expect(lines[0]).toBe(`${SEED}${main})`);
+        // (The main worktree could not write down what each gate depends on either.)
+        expect(lines[1]).toMatch(
+          extra.length === 0
+            ? /not reused: the record of the main worktree does not say what each gate depends on/
+            : /not reused: what a gate depends on cannot be told/
+        );
+        const args = JSON.parse(read(path.join(linked, '.stryker-tmp/stryker-args.json')));
+        expect(args).toContain('--force');
+        // the run wrote its own record: start again from none
+        fs.rmSync(path.join(linked, RECORD), { force: true });
+        fs.rmSync(path.join(linked, INCREMENTAL), { force: true });
+      }
+    });
   });
 
   it('takes nothing from the main worktree in a Stryker sandbox below a linked worktree', () => {

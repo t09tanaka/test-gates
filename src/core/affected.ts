@@ -173,6 +173,9 @@ export type AffectedPlan = { full: string } | { rerun: GateRerun[]; reused: stri
  *   (`src/__mocks__/axios.ts`): a change there may affect every gate.
  * @param input.gates Each gate (its path as in test-gates.json, the order of that file), with the
  *   keys its results depend on as they are now, and why those cannot all be told, if so.
+ * @param input.seeded Whether the record is that of another worktree (the main one). A blind gate
+ *   is then run again even when nothing changed: the files it reads that are not compared (an
+ *   `.env` that git ignores) can differ from those of that worktree.
  */
 export function planAffected(input: {
   before: { files: Record<string, string>; affected: AffectedRecord | undefined };
@@ -180,6 +183,7 @@ export function planAffected(input: {
   subproject: string;
   config: string[];
   gates: Array<{ path: string; files: string[]; blind?: string | undefined }>;
+  seeded?: boolean;
 }): AffectedPlan {
   const recorded = input.before.affected;
   if (recorded === undefined) {
@@ -215,7 +219,7 @@ export function planAffected(input: {
     // Blind now or in the last run: what it read then is not known either.
     const blind = gate.blind ?? last.blind;
     if (blind !== undefined) {
-      if (changed.length > 0) {
+      if (changed.length > 0 || input.seeded === true) {
         rerun.push({ gate: gate.path, changed, blind });
       } else {
         reused.push(gate.path);
