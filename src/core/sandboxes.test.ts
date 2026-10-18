@@ -6,6 +6,7 @@ import {
   markerText,
   planSandboxes,
   type SandboxFacts,
+  START_SLACK_SECONDS,
 } from './sandboxes';
 
 const dir = (name: string) => ({ name, directory: true });
@@ -160,6 +161,31 @@ describe('markerAlive', () => {
         started: 'Sun Oct 18 09:00:00 2026',
       })
     ).toBe(false);
+  });
+
+  it('takes prints of the start a few seconds apart for the same start', () => {
+    expect(START_SLACK_SECONDS).toBe(5);
+    const at = (time: string) =>
+      markerAlive({
+        there: true,
+        text: markerText(5, STARTED),
+        started: `Sat Oct 17 ${time} 2026`,
+      });
+    expect(at('14:25:25')).toBe(true);
+    expect(at('14:25:19')).toBe(true);
+    expect(at('14:25:29')).toBe(true);
+    expect(at('14:25:18')).toBe(false);
+    expect(at('14:25:30')).toBe(false);
+    // what is not a time: only the same text is the same start
+    for (const [recorded, started, same] of [
+      ['at boot', 'at boot', true],
+      ['at boot', 'later', false],
+      [STARTED, 'later', false],
+    ] as const) {
+      expect(
+        markerAlive({ there: true, text: markerText(5, recorded), started: started.trim() })
+      ).toBe(same);
+    }
   });
 
   it('takes the process for the run when either started cannot be told', () => {

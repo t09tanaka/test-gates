@@ -12,8 +12,8 @@
 // names of the sandboxes are random, so which one belongs to that run cannot be told. A run that
 // was interrupted leaves its marker too, but the process in it is gone. Its pid can be given to
 // a new process later, so the marker also holds when the process started: a process with the
-// pid that started at another time is not the run. Where that time cannot be read (no `ps`),
-// a process with the pid is taken for the run.
+// pid that started at another time (more than a few seconds apart) is not the run. Where that
+// time cannot be read (no `ps`), a process with the pid is taken for the run.
 //
 // A Stryker started by hand, not through test-gates, has no marker. Two runs in the same
 // subproject at the same time are not meant to happen anyway (they write the same report and
@@ -50,7 +50,24 @@ export function markerAlive(input: {
 }): boolean {
   // a marker of an older version holds only the pid
   const recorded = input.text?.split('\n')[1]?.trim() || null;
-  return input.there && (recorded === null || input.started === null || recorded === input.started);
+  return (
+    input.there &&
+    (recorded === null || input.started === null || sameStart(recorded, input.started))
+  );
+}
+
+/** Seconds two prints of the start of one process can differ by (see sameStart). */
+export const START_SLACK_SECONDS = 5;
+
+/**
+ * Whether two prints of when a process started are of the same start. On Linux `ps` counts it
+ * from the time of boot, which it takes from the clock and the uptime: two prints of the same
+ * process can be a second or more apart. A new process with a reused pid starts later than that.
+ */
+function sameStart(a: string, b: string): boolean {
+  const difference = Math.abs(Date.parse(a) - Date.parse(b));
+  // what cannot be read as a time is compared as text
+  return Number.isNaN(difference) ? a === b : difference <= START_SLACK_SECONDS * 1000;
 }
 
 /** An entry of the temp directory. */

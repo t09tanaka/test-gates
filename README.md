@@ -301,7 +301,7 @@ It removes nothing:
 
 - when the Stryker config sets `cleanTempDir: false`: the sandboxes are kept on purpose,
 - when the temp directory is not a directory inside the subproject (a `tempDirName` outside it, or a link out of it),
-- while another run of `test-gates mutation` is going on in the subproject: a marker whose process is still there, and started when the marker says. The names of the sandboxes are random, so which one belongs to that run cannot be told, and none is removed. A process that has the pid of a marker but started at another time is not that run; where the start cannot be read (no `ps`), a process with the pid is taken for the run.
+- while another run of `test-gates mutation` is going on in the subproject: a marker whose process is still there, and started when the marker says (within a few seconds: on Linux two prints of the same start can differ by a second). The names of the sandboxes are random, so which one belongs to that run cannot be told, and none is removed. A process that has the pid of a marker but started at another time is not that run; where the start cannot be read (no `ps`), a process with the pid is taken for the run.
 
 **A Stryker started by hand (`npx stryker run`) has no marker.** If `test-gates mutation` starts in the same subproject while it runs, it removes the sandbox of that Stryker, which then fails. Do not run the two at the same time; they would also write the same report and incremental file.
 
