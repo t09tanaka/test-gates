@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { afterAll, afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import {
   cleanup,
   GATE_SOURCE,
@@ -1207,6 +1207,17 @@ describe('test-gates mutation in a new linked worktree', () => {
     'test-gates mutation: this worktree has no record of its own, so it starts from the one of the main worktree (';
   const linkedDirs: string[] = [];
   afterAll(() => linkedDirs.forEach((dir) => fs.rmSync(dir, { recursive: true, force: true })));
+  // Locally, as a worktree is used: in CI a run writes down nothing about the gates, and a new
+  // worktree cannot tell then whether a gate reads files git ignores.
+  const ci = process.env.CI;
+  beforeAll(() => {
+    delete process.env.CI;
+  });
+  afterAll(() => {
+    if (ci !== undefined) {
+      process.env.CI = ci;
+    }
+  });
 
   // A test runner --affected knows: without one the gates cannot be told apart, and a new
   // worktree takes nothing over (it cannot tell whether a gate reads files git ignores).
