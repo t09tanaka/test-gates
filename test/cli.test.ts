@@ -1032,18 +1032,28 @@ describe('test-gates mutation', () => {
         }
       );
 
-      it('says so and succeeds without running Stryker when the part has no gate', () => {
+      it('refuses more parts than gates, as selfcheck does, and does not run Stryker', () => {
         const dir = twoGates('Killed', 'Killed');
-        const result = testGates(['mutation', '--shard', '3/3', '--dir', dir], {
+        const mutation = testGates(['mutation', '--shard', '3/3', '--dir', dir], {
           env: { CI: 'true' },
         });
-        expect(result).toEqual({
-          status: 0,
-          stdout:
-            'test-gates mutation: OK (--shard 3/3: there are only 2 gate(s), so this part has none and nothing was run)\n',
-          stderr: '',
-        });
+        const selfcheck = testGates(['selfcheck', '--shard', '3/3', '--dir', dir]);
+        expect(mutation.status).toBe(2);
+        expect(mutation.stderr).toBe(selfcheck.stderr);
+        expect(mutation.stderr).toContain('--shard 3/3: there are only 2 gate(s).');
         expect(fs.existsSync(path.join(dir, 'stryker-args.json'))).toBe(false);
+      });
+
+      it('says that --shard 1/1 ran every gate', () => {
+        const dir = twoGates('Killed', 'Killed');
+        const result = testGates(['mutation', '--shard', '1/1', '--dir', dir], {
+          env: { CI: 'true' },
+        });
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain(
+          '. All 2 gate(s) were run and judged (--shard 1/1 is the only part)\n'
+        );
+        expect(result.stdout).not.toContain('Only part');
       });
 
       it.each([

@@ -119,21 +119,6 @@ export function selectControls(input: {
   return { selected: mode === 'first' ? gates.slice(0, 1) : gates };
 }
 
-/**
- * The gates of one part of `mutation --shard`: the gates sorted by path (plain code-unit order,
- * the same on every machine), dealt out round-robin, so that gate `k` of the sorted ones belongs
- * to part `k % total + 1`. The parts are disjoint and together they are every gate; with more
- * parts than gates the last ones are empty.
- *
- * @param gates Paths of all gates, in any order.
- * @returns The paths of part `shard.index`, sorted.
- */
-export function mutationShardGates(gates: string[], shard: Shard): string[] {
-  return [...gates]
-    .sort() // without a comparator: by UTF-16 code unit, the same on every machine
-    .filter((_path, position) => position % shard.total === shard.index - 1);
-}
-
 /** The hit counts of one file: statements, functions, and every arm of every branch. */
 export interface Counters {
   s: number[];
@@ -249,6 +234,9 @@ export function affectedRefused(env: Record<string, string | undefined>): string
 
 /** What is said in the last line of a mutation run of one part (`--shard`) of the gates. */
 export function shardRunCaveat(shard: Shard, judged: number, all: number): string {
+  if (shard.total === 1) {
+    return `. All ${all} gate(s) were run and judged (--shard 1/1 is the only part)`;
+  }
   return `. Only part ${shard.index}/${shard.total} (${judged} of ${all} gate(s)) was run and judged (--shard): every part has to pass for the final check`;
 }
 

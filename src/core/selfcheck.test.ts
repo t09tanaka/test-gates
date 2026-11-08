@@ -12,7 +12,6 @@ import {
   affectedRefused,
   quickCaveat,
   quickRefused,
-  mutationShardGates,
   selectControls,
   shardRunCaveat,
   sharedRunPrecheck,
@@ -207,59 +206,48 @@ describe('selectControls', () => {
   });
 });
 
-describe('mutationShardGates', () => {
-  // Not in sorted order, as test-gates.json can list them.
+describe('shard assignment shared by selfcheck and mutation', () => {
+  // Not in sorted order: the order of test-gates.json decides, not the path.
   const listed = ['src/z.ts', 'src/b.ts', 'src/a/deep.ts', 'src/B.ts', 'src/a.ts', 'src/c.ts'];
-  const sorted = [...listed].sort();
 
-  it('deals the gates out in turn, after sorting them by path', () => {
-    const part = (index: number, total: number) => mutationShardGates(listed, { index, total });
-    expect(sorted).toEqual([
-      'src/B.ts',
-      'src/a.ts',
-      'src/a/deep.ts',
-      'src/b.ts',
-      'src/c.ts',
-      'src/z.ts',
-    ]);
-    expect(part(1, 2)).toEqual(['src/B.ts', 'src/a/deep.ts', 'src/c.ts']);
-    expect(part(2, 2)).toEqual(['src/a.ts', 'src/b.ts', 'src/z.ts']);
-    expect(part(1, 4)).toEqual(['src/B.ts', 'src/c.ts']);
-    expect(part(4, 4)).toEqual(['src/b.ts']);
+  it('keeps the order of test-gates.json, not the order of the paths', () => {
+    const part = (index: number, total: number) =>
+      selectControls({ gates: listed, mode: 'all', only: [], shard: { index, total } });
+    expect(part(1, 2)).toEqual({ selected: ['src/z.ts', 'src/a/deep.ts', 'src/a.ts'] });
+    expect(part(2, 2)).toEqual({ selected: ['src/b.ts', 'src/B.ts', 'src/c.ts'] });
   });
 
-  it('does not depend on the order test-gates.json lists the gates in', () => {
-    const reversed = [...listed].reverse();
-    for (let total = 1; total <= 8; total++) {
+  it('is the one assignment of both commands: a part is the same for selfcheck and mutation', () => {
+    for (let total = 1; total <= listed.length; total++) {
       for (let index = 1; index <= total; index++) {
-        expect(mutationShardGates(reversed, { index, total })).toEqual(
-          mutationShardGates(listed, { index, total })
-        );
+        const selected = selectControls({
+          gates: listed,
+          mode: 'first',
+          only: [],
+          shard: { index, total },
+        });
+        expect(selected).toEqual({
+          selected: listed.filter((_path, position) => position % total === index - 1),
+        });
       }
     }
   });
 
-  // For every number of parts: every gate is in exactly one part, whichever the parts are.
-  it.each(Array.from({ length: 9 }, (_unused, position) => position + 1))(
-    'puts every gate into exactly one of %i part(s)',
-    (total) => {
-      const seen = Array.from({ length: total }, (_unused, position) =>
-        mutationShardGates(listed, { index: position + 1, total })
-      ).flat();
-      expect(seen).toHaveLength(listed.length);
-      expect([...seen].sort()).toEqual(sorted);
-      expect(new Set(seen).size).toBe(listed.length);
-    }
-  );
-
-  it('leaves the parts beyond the number of gates empty', () => {
-    expect(mutationShardGates(listed, { index: 7, total: 7 })).toEqual([]);
-    expect(mutationShardGates([], { index: 1, total: 1 })).toEqual([]);
+  it('refuses more parts than gates for mutation too (see the CLI test)', () => {
+    expect(
+      selectControls({ gates: listed, mode: 'all', only: [], shard: { index: 1, total: 7 } })
+    ).toHaveProperty('error');
   });
 
   it('says in the caveat which part was run', () => {
     expect(shardRunCaveat({ index: 2, total: 4 }, 3, 11)).toBe(
       '. Only part 2/4 (3 of 11 gate(s)) was run and judged (--shard): every part has to pass for the final check'
+    );
+  });
+
+  it('says that a single part is a run of every gate', () => {
+    expect(shardRunCaveat({ index: 1, total: 1 }, 5, 5)).toBe(
+      '. All 5 gate(s) were run and judged (--shard 1/1 is the only part)'
     );
   });
 });

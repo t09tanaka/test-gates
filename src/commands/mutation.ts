@@ -32,12 +32,7 @@ import {
   type Snapshot,
   strykerIgnores,
 } from '../core/reuse-guard.js';
-import {
-  affectedRefused,
-  gateRunRefused,
-  mutationShardGates,
-  selectControls,
-} from '../core/selfcheck.js';
+import { affectedRefused, gateRunRefused, selectControls } from '../core/selfcheck.js';
 import { findLocalBin } from '../fs.js';
 import { type LoadedManifest, readManifest } from '../load.js';
 import { inMainWorktree, linkedWorktreeOf } from '../main-worktree.js';
@@ -754,26 +749,15 @@ export function runMutation(
     gates: manifest.gates.map((gate) => gate.path),
     mode: 'all',
     only,
-    shard: null,
+    shard,
   });
   if ('error' in chosen) {
     throw new UsageError(chosen.error);
   }
   // A part of --shard is every mutant of its gates (not a run of the kind of --gate, which takes
-  // nothing over): the handling of an incremental file stays as in a run of every gate.
-  const shardGates =
-    shard === null
-      ? null
-      : mutationShardGates(
-          manifest.gates.map((gate) => gate.path),
-          shard
-        );
-  if (shard !== null && shardGates?.length === 0) {
-    io.out(
-      `test-gates mutation: OK (--shard ${shard.index}/${shard.total}: there are only ${manifest.gates.length} gate(s), so this part has none and nothing was run)`
-    );
-    return 0;
-  }
+  // nothing over): the handling of an incremental file stays as in a run of every gate. The
+  // gates of the part are those `selfcheck --shard` gives the same part.
+  const shardGates = shard === null ? null : chosen.selected;
   const config = findStrykerConfig(manifest);
   if (config === null) {
     throw new ManifestError(

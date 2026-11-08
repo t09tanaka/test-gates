@@ -4,7 +4,7 @@
 
 ### Added
 
-- `test-gates mutation --shard <index>/<total>` runs the mutants of one part of the gates, so that the mutation run can be split over parallel CI jobs. The gates are sorted by path and dealt out in turn; every gate is in exactly one part. Unlike `--gate` it is accepted when `CI` is set, and it cannot be combined with `--gate`, `--affected` or `--mutate`. A part without a gate passes and says so.
+- `test-gates mutation --shard <index>/<total>` runs the mutants of one part of the gates, so that the mutation run can be split over parallel CI jobs. The assignment is the one of `selfcheck --shard`: the gates are dealt out in turn in the order of `test-gates.json`, so the same `--shard i/n` takes the same gates in both commands. More parts than gates is an error. One passing part is not a guarantee for the whole: run every part (the number of matrix entries has to be `<total>`) and make each one a required check. Unlike `--gate` it is accepted when `CI` is set, and it cannot be combined with `--gate`, `--affected` or `--mutate`.
 
 ## 0.4.3
 
