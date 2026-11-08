@@ -1780,9 +1780,9 @@ describe('test-gates selfcheck', () => {
           loads('src/fee.spec.ts imports node:fs'),
         ],
         [
-          'a built-in module that only computes',
-          { 'src/fee.spec.ts': `import path from 'node:path';\n${LOADS_TAX}${SPEC}` },
-          loads('src/fee.spec.ts imports node:path'),
+          'a built-in module that keeps a setting',
+          { 'src/fee.spec.ts': `import util from 'node:util';\n${LOADS_TAX}${SPEC}` },
+          loads('src/fee.spec.ts imports node:util'),
         ],
         [
           'a wait',

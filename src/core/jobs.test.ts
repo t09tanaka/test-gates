@@ -353,18 +353,60 @@ describe('reachesOutside', () => {
     expect(reachesOutside(file(line), [])).toBeNull();
   });
 
-  it.each(['fs', 'node:fs', 'node:fs/promises', 'net', 'node:child_process', 'os', 'path'])(
-    'does not take the built-in module %s',
-    (specifier) => {
-      expect(reachesOutside(file('', [{ specifier, builtin: true }]), [])).toBe(
-        `imports ${specifier}`
-      );
-      // a built-in module is not trusted by a name
-      expect(reachesOutside(file('', [{ specifier, builtin: true }]), [specifier])).toBe(
-        `imports ${specifier}`
-      );
-    }
-  );
+  it.each([
+    'fs',
+    'node:fs',
+    'node:fs/promises',
+    'net',
+    'node:child_process',
+    'os',
+    'util',
+    'node:events',
+    'buffer',
+    'node:timers/promises',
+    'node:path-extra',
+    'xnode:path',
+    // (only the beginning of a name is the prefix)
+    'pnode:ath',
+    'node:crypto/webcrypto',
+  ])('does not take the built-in module %s', (specifier) => {
+    expect(reachesOutside(file('', [{ specifier, builtin: true }]), [])).toBe(
+      `imports ${specifier}`
+    );
+    // a built-in module is not trusted by a name
+    expect(reachesOutside(file('', [{ specifier, builtin: true }]), [specifier])).toBe(
+      `imports ${specifier}`
+    );
+  });
+
+  it.each([
+    'path',
+    'node:path',
+    'node:path/posix',
+    'path/win32',
+    'node:url',
+    'querystring',
+    'string_decoder',
+    'punycode',
+    'node:assert',
+    'assert/strict',
+    'node:util/types',
+    'crypto',
+    'node:crypto',
+  ])('takes the built-in module %s, which only computes', (specifier) => {
+    expect(reachesOutside(file('', [{ specifier, builtin: true }]), [])).toBeNull();
+  });
+
+  it.each([
+    ['crypto.setFips(1);', 'setFips'],
+    ['crypto.setEngine(e);', 'setEngine'],
+    ['crypto.setDefaultEncoding(e);', 'setDefaultEncoding'],
+    ['crypto.DEFAULT_ENCODING = 1;', 'DEFAULT_ENCODING'],
+  ])('does not take a setting of crypto that is changed: %s', (line, mark) => {
+    expect(reachesOutside(file(line, [{ specifier: 'node:crypto', builtin: true }]), [])).toBe(
+      `uses ${mark}`
+    );
+  });
 
   it('takes the packages of the runners, and their subpaths', () => {
     for (const specifier of ['vitest', 'vitest/config', '@jest/globals']) {

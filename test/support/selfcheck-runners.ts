@@ -505,3 +505,73 @@ export function jobsTests(only: 'vitest' | 'jest'): void {
     );
   });
 }
+
+// `--jobs` and the built-in modules a spec imports. In each project the spec of every gate but
+// the first loads the gate before it (an import for its effect, which runs its top-level code
+// but covers none of it), so the file the spec imports decides whether that control may run
+// next to others. A module that only computes does not keep it apart, one that reaches the file
+// system does, and both give the lines a control at a time gives.
+export function builtinTests(only: 'vitest' | 'jest'): void {
+  const dialect = only === 'vitest' ? vitest : jest;
+  describe.each([
+    ['node:path', 0],
+    ['node:crypto', 0],
+    ['node:fs', 1],
+  ] as const)(
+    `test-gates selfcheck --jobs with a real ${only}, specs that import %s`,
+    (id, alone) => {
+      it(`runs ${alone} controls on their own, and says what one at a time says`, async () => {
+        const names = ['one', 'two', 'three', 'four'];
+        const src = (name: string) => `src/${name}.${dialect.ext}`;
+        const head = (index: number) =>
+          dialect.ext === 'ts'
+            ? `import * as unused${index} from '${id}';\nvoid unused${index};\n`
+            : `require('${id}');\n`;
+        const dir = project({
+          ...dialect.files,
+          'test-gates.json': {
+            gates: names.map((name) => ({ path: src(name), decides: 'd', impact: 'i' })),
+            candidates: [],
+          },
+          ...Object.fromEntries(
+            names.flatMap((name, index) => [
+              [src(name), dialect.module({ price: 'return value ? 10 : 5;' })],
+              [
+                `src/${name}.spec.${dialect.ext}`,
+                dialect.specHead +
+                  dialect.use(['price'], name) +
+                  // only the spec of `three` reaches the file system, and it loads `two`
+                  (index > 0 ? dialect.load(names[index - 1] as string) : '') +
+                  (name === 'three' ? head(index) : '') +
+                  (id !== 'node:fs' && index === 1 ? head(index) : '') +
+                  "it('prices', () => {\n  expect(price(1)).toBe(10);\n  expect(price(0)).toBe(5);\n});\n",
+              ],
+            ])
+          ),
+        });
+        fs.symlinkSync(path.join(repoRoot, 'node_modules'), path.join(dir, 'node_modules'), 'dir');
+        const config = fs
+          .readdirSync(dir)
+          .find((name) => name.includes('.gates.config.')) as string;
+        fs.writeFileSync(
+          path.join(dir, config),
+          fs.readFileSync(path.join(dir, config), 'utf8').replace(/setupFiles: \[[^\]]*\],? ?/, '')
+        );
+        const verdicts = (result: { stdout: string; stderr: string }) =>
+          `${result.stdout}${result.stderr}`
+            .split('\n')
+            .filter((line) => /^ {2}[✓✗] |^test-gates selfcheck: (?:OK|FAILED)/.test(line));
+
+        const perGate = await testGatesAsync(['selfcheck', '--dir', dir]);
+        const atOnce = await testGatesAsync(['selfcheck', '--jobs', '4', '--dir', dir]);
+        expect(verdicts(atOnce)).toEqual(verdicts(perGate));
+        expect(atOnce.status).toBe(perGate.status);
+        const line = /(\d+) of \d+ negative control\(s\) run one at a time/.exec(atOnce.stdout);
+        expect(line === null ? 0 : Number(line[1])).toBe(alone);
+        if (alone > 0) {
+          expect(atOnce.stdout).toContain(`imports ${id}`);
+        }
+      }, 600_000);
+    }
+  );
+}
