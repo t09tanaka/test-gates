@@ -162,6 +162,11 @@ const REACHES = [
   'WebSocket',
   'XMLHttpRequest',
   'navigator',
+  // What crypto keeps as a setting of its module, for every spec file of a worker after it.
+  'setFips',
+  'setEngine',
+  'setDefaultEncoding',
+  'DEFAULT_ENCODING',
   'Atomics',
   'WeakRef',
   'FinalizationRegistry',
@@ -190,6 +195,25 @@ export function withoutStrings(source: string): string {
       inside.includes('${') ? all : `${before}${space}${quote}${' '.repeat(inside.length)}${quote}`
   );
 }
+// Built-in modules that a file may import without keeping a control from running next to
+// others: their functions compute from their arguments. None of them reads a file, the
+// environment, the clock or the machine, opens a port or a handle, or waits, and what each keeps
+// as a setting of its module is either named in REACHES for crypto, or not something an import
+// of the module can reach by name for the rest. Any other built-in module, `util`, `events` and `buffer` among them
+// (they keep settings that every spec of a worker sees), keeps its controls apart.
+const PURE_BUILTINS = [
+  'assert',
+  'assert/strict',
+  'crypto',
+  'path',
+  'path/posix',
+  'path/win32',
+  'punycode',
+  'querystring',
+  'string_decoder',
+  'url',
+  'util/types',
+];
 const RUNNER_PACKAGES = ['vitest', '@jest/globals'];
 
 /**
@@ -214,10 +238,13 @@ export function reachesOutside(file: LoadedFile, trusted: string[]): string | nu
     return COMPUTED;
   }
   for (const { specifier, builtin } of file.imports) {
-    // Also one that only computes: with Jest the spec files of a worker share the objects of
-    // the built-in modules, and a setting changed on one of them is seen by the next spec.
+    // Also one that only computes (but not one of PURE_BUILTINS): with Jest the spec files of a
+    // worker share the objects of the built-in modules, and a setting changed on one of them
+    // is seen by the next spec. A project cannot vouch for a built-in module by its name.
     if (builtin) {
-      return `imports ${specifier}`;
+      if (!PURE_BUILTINS.includes(specifier.replace(/^node:/, ''))) {
+        return `imports ${specifier}`;
+      }
     } else if (
       ![...RUNNER_PACKAGES, ...trusted].some(
         (name) => specifier === name || specifier.startsWith(`${name}/`)

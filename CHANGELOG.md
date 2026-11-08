@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- `selfcheck --jobs` no longer keeps a control apart because a file its run loads imports `path`, `url`, `querystring`, `string_decoder`, `punycode`, `assert`, `util/types` or `crypto` (with or without `node:`, and the subpaths `path/posix`, `path/win32` and `assert/strict`). They only compute. A use of `crypto.setFips`, `setEngine`, `setDefaultEncoding` or `DEFAULT_ENCODING` still counts. Every other built-in module (`fs`, `os`, `util`, `events`, `buffer`, `timers/promises`, ...) keeps its controls apart as before, and a project cannot vouch for one by its name. `--jobs` is still 1 by default, and `--quick` is still refused when `CI` is set.
+
 ## 0.4.3
 
 This release spares more full runs of `test-gates mutation`: `--affected` keeps telling the gates apart where only some of them read files, a new linked worktree starts from the record of the main worktree, and timeouts on a loaded machine are run again before they fail the run. Three things to know when updating:

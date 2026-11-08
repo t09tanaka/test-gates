@@ -1,8 +1,9 @@
 import { afterAll } from 'vitest';
 import { cleanup } from './helpers';
-import { jobsTests, sharedRunTests } from './support/selfcheck-runners';
+import { builtinTests, jobsTests, sharedRunTests } from './support/selfcheck-runners';
 
 afterAll(cleanup);
 
 sharedRunTests('jest');
 jobsTests('jest');
+builtinTests('jest');
