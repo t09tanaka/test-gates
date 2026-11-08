@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `test-gates mutation --shard <index>/<total>` runs the mutants of one part of the gates, so that the mutation run can be split over parallel CI jobs. The assignment is the one of `selfcheck --shard`: the gates are dealt out in turn in the order of `test-gates.json`, so the same `--shard i/n` takes the same gates in both commands. More parts than gates is an error. One passing part is not a guarantee for the whole: run every part (the number of matrix entries has to be `<total>`) and make each one a required check. Unlike `--gate` it is accepted when `CI` is set, and it cannot be combined with `--gate`, `--affected` or `--mutate`.
+
 ## 0.4.3
 
 This release spares more full runs of `test-gates mutation`: `--affected` keeps telling the gates apart where only some of them read files, a new linked worktree starts from the record of the main worktree, and timeouts on a loaded machine are run again before they fail the run. Three things to know when updating:

@@ -996,6 +996,91 @@ describe('test-gates mutation', () => {
       expect(fs.existsSync(path.join(dir, REPORT))).toBe(true);
     });
 
+    describe('--shard', () => {
+      const SHARD_CAVEAT = (part: string) =>
+        `. Only part ${part} (1 of 2 gate(s)) was run and judged (--shard): every part has to pass for the final check\n`;
+
+      it.each(['true', '1', ''])(
+        'hands the gates of one part to Stryker as --mutate and judges only them (CI=%j)',
+        (ci) => {
+          const dir = twoGates('Killed', 'Survived');
+          const first = testGates(['mutation', '--shard', '1/2', '--dir', dir], {
+            env: { CI: ci },
+          });
+          expect(first).toEqual({
+            status: 0,
+            stdout: `test-gates mutation: OK (mutants 2 / detected 2 (timeout 0) / allowed equivalent 0 / not evaluable 0 / unallowed survivors 0)${SHARD_CAVEAT('1/2')}`,
+            stderr: '',
+          });
+          expect(strykerArgs(dir)).toEqual([
+            'run',
+            'stryker.gates.config.mjs',
+            '--mutate',
+            'src/age.ts',
+          ]);
+          const second = testGates(['mutation', '--shard=2/2', '--dir', dir], {
+            env: { CI: ci },
+          });
+          expect(second.status).toBe(1);
+          expect(second.stderr).toContain(`unallowed survivors 2)${SHARD_CAVEAT('2/2')}`);
+          expect(strykerArgs(dir)).toEqual([
+            'run',
+            'stryker.gates.config.mjs',
+            '--mutate',
+            'src/fee.ts',
+          ]);
+        }
+      );
+
+      it('refuses more parts than gates, as selfcheck does, and does not run Stryker', () => {
+        const dir = twoGates('Killed', 'Killed');
+        const mutation = testGates(['mutation', '--shard', '3/3', '--dir', dir], {
+          env: { CI: 'true' },
+        });
+        const selfcheck = testGates(['selfcheck', '--shard', '3/3', '--dir', dir]);
+        expect(mutation.status).toBe(2);
+        expect(mutation.stderr).toBe(selfcheck.stderr);
+        expect(mutation.stderr).toContain('--shard 3/3: there are only 2 gate(s).');
+        expect(fs.existsSync(path.join(dir, 'stryker-args.json'))).toBe(false);
+      });
+
+      it('says that --shard 1/1 ran every gate', () => {
+        const dir = twoGates('Killed', 'Killed');
+        const result = testGates(['mutation', '--shard', '1/1', '--dir', dir], {
+          env: { CI: 'true' },
+        });
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain(
+          '. All 2 gate(s) were run and judged (--shard 1/1 is the only part)\n'
+        );
+        expect(result.stdout).not.toContain('Only part');
+      });
+
+      it.each([
+        [['--shard', '0/2'], '--shard needs <index>/<total> with 1 <= index <= total'],
+        [['--shard', '3/2'], '--shard needs <index>/<total> with 1 <= index <= total'],
+        [['--shard', '1/0'], '--shard needs <index>/<total> with 1 <= index <= total'],
+        [['--shard', 'one/two'], '--shard needs <index>/<total> with 1 <= index <= total'],
+        [['--shard', '1-2'], '--shard needs <index>/<total> with 1 <= index <= total'],
+        [['--shard', '1/2', '--gate', 'src/age.ts'], '--gate and --shard cannot be combined'],
+        [
+          ['--shard', '1/2', '--affected'],
+          '--affected and --shard cannot be combined: --shard runs every mutant of its gates, --affected decides which gates run',
+        ],
+        [
+          ['--shard', '1/2', '--mutate', 'src/fee.ts'],
+          '--shard and --mutate cannot be combined: --shard sets --mutate itself',
+        ],
+        [['--', '--shard', '1/2'], '--shard after "--" would go to Stryker. Write it before "--"'],
+      ])('exits 2 for %j, also in CI, before Stryker runs', (args, message) => {
+        const dir = twoGates('Killed', 'Killed');
+        const result = testGates(['mutation', '--dir', dir, ...args], { env: { CI: 'true' } });
+        expect(result.status).toBe(2);
+        expect(result.stderr).toContain(`test-gates: ${message}`);
+        expect(fs.existsSync(path.join(dir, 'stryker-args.json'))).toBe(false);
+      });
+    });
+
     it.each(['true', '1'])('is refused when CI is %s, before Stryker runs', (ci) => {
       const dir = twoGates('Killed', 'Killed');
       const result = testGates(['mutation', '--gate', 'src/age.ts', '--dir', dir], {
