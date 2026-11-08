@@ -34,7 +34,9 @@ Options:
   --affected                  mutation: run again only the gates that a change since the last
                               run can affect, and reuse the results of the others. Every
                               mutant is run when CI is set
-  --shard <index>/<total>     selfcheck: one of <total> parts of the gates, for parallel CI jobs
+  --shard <index>/<total>     selfcheck, mutation: one of <total> parts of the gates, for parallel CI
+                              jobs. For mutation the gates are sorted and dealt out in turn; every
+                              part has to run. Accepted when CI is set
   --jobs <n>                  selfcheck: run <n> negative controls at the same time. One that does
                               not hold cleanly there is run again on its own
   --quick                     selfcheck: one run for the gates only their own spec touches.
@@ -69,7 +71,7 @@ function main(argv: string[]): number | Promise<number> {
     case 'doctor':
       return runDoctor(args.dir, io);
     case 'mutation':
-      return runMutation(args.dir, args.rest, io, args.gates, args.affected);
+      return runMutation(args.dir, args.rest, io, args.gates, args.affected, args.shard);
     case 'mutation-result':
       return runMutationResult(args.dir, args.report, io);
     case 'selfcheck':

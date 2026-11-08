@@ -232,6 +232,14 @@ export function affectedRefused(env: Record<string, string | undefined>): string
   return inCi(env) ? 'CI is set, and there every mutant is run (the final check)' : null;
 }
 
+/** What is said in the last line of a mutation run of one part (`--shard`) of the gates. */
+export function shardRunCaveat(shard: Shard, judged: number, all: number): string {
+  if (shard.total === 1) {
+    return `. All ${all} gate(s) were run and judged (--shard 1/1 is the only part)`;
+  }
+  return `. Only part ${shard.index}/${shard.total} (${judged} of ${all} gate(s)) was run and judged (--shard): every part has to pass for the final check`;
+}
+
 /** What is said in the last line of a mutation run of the gates named with `--gate`. */
 export function gateRunCaveat(judged: number, all: number): string {
   return `. Only ${judged} of ${all} gate(s) were run and judged (--gate), and a change in one gate can make a mutant of another survive: run without --gate for the final check`;

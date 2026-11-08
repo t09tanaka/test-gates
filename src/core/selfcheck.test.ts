@@ -13,6 +13,7 @@ import {
   quickCaveat,
   quickRefused,
   selectControls,
+  shardRunCaveat,
   sharedRunPrecheck,
   unverifiedRun,
   unverifiedVersion,
@@ -202,6 +203,52 @@ describe('selectControls', () => {
     expect(
       selectControls({ gates, mode: 'all', only: [], shard: { index: 1, total: 6 } })
     ).toHaveProperty('error');
+  });
+});
+
+describe('shard assignment shared by selfcheck and mutation', () => {
+  // Not in sorted order: the order of test-gates.json decides, not the path.
+  const listed = ['src/z.ts', 'src/b.ts', 'src/a/deep.ts', 'src/B.ts', 'src/a.ts', 'src/c.ts'];
+
+  it('keeps the order of test-gates.json, not the order of the paths', () => {
+    const part = (index: number, total: number) =>
+      selectControls({ gates: listed, mode: 'all', only: [], shard: { index, total } });
+    expect(part(1, 2)).toEqual({ selected: ['src/z.ts', 'src/a/deep.ts', 'src/a.ts'] });
+    expect(part(2, 2)).toEqual({ selected: ['src/b.ts', 'src/B.ts', 'src/c.ts'] });
+  });
+
+  it('is the one assignment of both commands: a part is the same for selfcheck and mutation', () => {
+    for (let total = 1; total <= listed.length; total++) {
+      for (let index = 1; index <= total; index++) {
+        const selected = selectControls({
+          gates: listed,
+          mode: 'first',
+          only: [],
+          shard: { index, total },
+        });
+        expect(selected).toEqual({
+          selected: listed.filter((_path, position) => position % total === index - 1),
+        });
+      }
+    }
+  });
+
+  it('refuses more parts than gates for mutation too (see the CLI test)', () => {
+    expect(
+      selectControls({ gates: listed, mode: 'all', only: [], shard: { index: 1, total: 7 } })
+    ).toHaveProperty('error');
+  });
+
+  it('says in the caveat which part was run', () => {
+    expect(shardRunCaveat({ index: 2, total: 4 }, 3, 11)).toBe(
+      '. Only part 2/4 (3 of 11 gate(s)) was run and judged (--shard): every part has to pass for the final check'
+    );
+  });
+
+  it('says that a single part is a run of every gate', () => {
+    expect(shardRunCaveat({ index: 1, total: 1 }, 5, 5)).toBe(
+      '. All 5 gate(s) were run and judged (--shard 1/1 is the only part)'
+    );
   });
 });
 

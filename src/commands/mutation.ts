@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { UsageError } from '../core/args.js';
+import { type Shard, UsageError } from '../core/args.js';
 import { ManifestError } from '../core/manifest.js';
 import { AffectedError, affectedInputs, loadedScope, runnerConfigs } from '../affected-files.js';
 import {
@@ -723,12 +723,16 @@ export function runMutation(
   strykerArgs: string[],
   io: Io,
   only: string[] = [],
-  affected = false
+  affected = false,
+  shard: Shard | null = null
 ): number {
   const part = only.length > 0;
-  if (affected && strykerArgs.some((arg) => /^(?:--mutate|-m)(?:=|$)/.test(arg))) {
+  if (
+    (affected || shard !== null) &&
+    strykerArgs.some((arg) => /^(?:--mutate|-m)(?:=|$)/.test(arg))
+  ) {
     throw new UsageError(
-      '--affected and --mutate cannot be combined: --affected sets --mutate itself'
+      `${affected ? '--affected' : '--shard'} and --mutate cannot be combined: ${affected ? '--affected' : '--shard'} sets --mutate itself`
     );
   }
   if (part) {
@@ -745,11 +749,15 @@ export function runMutation(
     gates: manifest.gates.map((gate) => gate.path),
     mode: 'all',
     only,
-    shard: null,
+    shard,
   });
   if ('error' in chosen) {
     throw new UsageError(chosen.error);
   }
+  // A part of --shard is every mutant of its gates (not a run of the kind of --gate, which takes
+  // nothing over): the handling of an incremental file stays as in a run of every gate. The
+  // gates of the part are those `selfcheck --shard` gives the same part.
+  const shardGates = shard === null ? null : chosen.selected;
   const config = findStrykerConfig(manifest);
   if (config === null) {
     throw new ManifestError(
@@ -783,11 +791,15 @@ export function runMutation(
   // Only some gates are run again: their mutants with --force, and Stryker takes the results of
   // the others over from its incremental file.
   const guardArgs = guard.force === null && guard.mutate === null ? [] : ['--force'];
-  const partArgs = part
-    ? ['--mutate', chosen.selected.join(',')]
-    : guard.mutate !== null
-      ? ['--mutate', guard.mutate.join(',')]
-      : [];
+  const partArgs =
+    part || shardGates !== null
+      ? ['--mutate', (shardGates ?? chosen.selected).join(',')]
+      : guard.mutate !== null
+        ? ['--mutate', guard.mutate.join(',')]
+        : [];
+
+  // The gates this run judges; none: every gate.
+  const judged = part ? chosen.selected : (shardGates ?? []);
 
   // The marker stays while either run of Stryker (the first and the one of its timeouts) runs.
   const unmark = markRun(manifest.dir, guard.temp);
@@ -813,24 +825,27 @@ export function runMutation(
       [config, ...strykerArgs],
       manifest,
       reportFile,
-      part ? manifest.gates.filter((gate) => chosen.selected.includes(gate.path)) : manifest.gates,
+      judged.length > 0
+        ? manifest.gates.filter((gate) => judged.includes(gate.path))
+        : manifest.gates,
       io
     );
   } finally {
     unmark();
   }
-  let judged: Parameters<Guard['record']>[0] = null;
+  let lastSeen: Parameters<Guard['record']>[0] = null;
   const status = runMutationResult(
     dir,
     null,
     io,
-    part ? chosen.selected : [],
+    judged,
     (seen) => {
-      judged = seen;
+      lastSeen = seen;
     },
-    retried
+    retried,
+    shard
   );
-  guard.record(judged);
+  guard.record(lastSeen);
   if (part) {
     // Not for `mutation-result`: it would judge every gate from this report, the others by
     // results of an earlier run.

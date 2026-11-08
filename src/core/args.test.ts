@@ -217,6 +217,14 @@ describe('parseArgs', () => {
     expect(() => parseArgs(['selfcheck', `--shard=${value}`])).toThrow(new UsageError(message));
   });
 
+  it('reads --shard for mutation, and refuses it for the other commands without it', () => {
+    expect(parseArgs(['mutation', '--shard', '2/4']).shard).toEqual({ index: 2, total: 4 });
+    expect(parseArgs(['mutation', '--shard=2/4', '--', '--force']).rest).toEqual(['--force']);
+    expect(() => parseArgs(['check', '--shard', '1/2'])).toThrow(
+      'unknown argument for check: --shard'
+    );
+  });
+
   it.each([
     [['frobnicate'], 'unknown command: frobnicate'],
     [['--frob'], 'unknown argument: --frob'],
@@ -281,17 +289,27 @@ describe('parseArgs', () => {
     expect(() => parseArgs(argv)).toThrow(new UsageError(message));
   });
 
-  it('takes --gate of the mutation command for itself, and still hands --shard to Stryker', () => {
-    expect(parseArgs(['mutation', '--gate', 'x', '--shard', '1/2', '--gate=y'])).toEqual({
+  it('refuses --shard of the mutation command with --affected', () => {
+    expect(() => parseArgs(['mutation', '--shard', '1/2', '--affected'])).toThrow(
+      new UsageError(
+        '--affected and --shard cannot be combined: --shard runs every mutant of its gates, --affected decides which gates run'
+      )
+    );
+  });
+
+  it('takes --gate of the mutation command for itself', () => {
+    expect(parseArgs(['mutation', '--gate', 'x', '--gate=y', '--', '--concurrency', '1'])).toEqual({
       ...base,
       command: 'mutation',
       gates: ['x', 'y'],
-      rest: ['--shard', '1/2'],
+      rest: ['--concurrency', '1'],
     });
-    expect(parseArgs(['mutation', '--gate', 'x', '--', '--shard', '1/2']).rest).toEqual([
-      '--shard',
-      '1/2',
-    ]);
+  });
+
+  it('refuses --shard of the mutation command after "--", where Stryker would get it', () => {
+    expect(() => parseArgs(['mutation', '--', '--shard', '1/2'])).toThrow(
+      new UsageError('--shard after "--" would go to Stryker. Write it before "--"')
+    );
   });
 
   it.each([

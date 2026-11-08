@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- `test-gates mutation --shard <index>/<total>` runs the mutants of one part of the gates, so that the mutation run can be split over parallel CI jobs. The assignment is the one of `selfcheck --shard`: the gates are dealt out in turn in the order of `test-gates.json`, so the same `--shard i/n` takes the same gates in both commands. More parts than gates is an error. One passing part is not a guarantee for the whole: run every part (the number of matrix entries has to be `<total>`) and make each one a required check. Unlike `--gate` it is accepted when `CI` is set, and it cannot be combined with `--gate`, `--affected` or `--mutate`.
+
 ### Changed
 
 - `selfcheck --jobs` no longer keeps a control apart because a file its run loads imports `path`, `url`, `querystring`, `string_decoder`, `punycode`, `assert`, `util/types` or `crypto` (with or without `node:`, and the subpaths `path/posix`, `path/win32` and `assert/strict`). They only compute. A use of `crypto.setFips`, `setEngine`, `setDefaultEncoding` or `DEFAULT_ENCODING` still counts. Every other built-in module (`fs`, `os`, `util`, `events`, `buffer`, `timers/promises`, ...) keeps its controls apart as before, and a project cannot vouch for one by its name. `--jobs` is still 1 by default, and `--quick` is still refused when `CI` is set.
