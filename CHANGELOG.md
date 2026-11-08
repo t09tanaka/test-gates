@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.5.0
+
+This release makes the gates quicker to check in CI: `test-gates mutation --shard <index>/<total>` splits the mutation run over parallel jobs, and `selfcheck --jobs` runs more controls side by side. Nothing changes for a run without the new option:
+
+- `--shard` deals the gates out in the same way as `selfcheck --shard`. A passing part says nothing about the others, so run every part and make each one a required check.
+- `selfcheck --jobs` judges every control as before. Only the reason that kept a control apart because of an import of `path`, `url`, `crypto` and the like is gone.
 
 ### Added
 
