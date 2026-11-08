@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `test-gates mutation --shard <index>/<total>` runs the mutants of one part of the gates, so that the mutation run can be split over parallel CI jobs. The gates are sorted by path and dealt out in turn; every gate is in exactly one part. Unlike `--gate` it is accepted when `CI` is set, and it cannot be combined with `--gate`, `--affected` or `--mutate`. A part without a gate passes and says so.
+
 ## 0.4.3
 
 This release spares more full runs of `test-gates mutation`: `--affected` keeps telling the gates apart where only some of them read files, a new linked worktree starts from the record of the main worktree, and timeouts on a loaded machine are run again before they fail the run. Three things to know when updating:

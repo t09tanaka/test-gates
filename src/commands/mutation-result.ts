@@ -8,7 +8,8 @@ import {
   type MutationVerdict,
   type RetryOutcome,
 } from '../core/mutation-result.js';
-import { gateRunCaveat } from '../core/selfcheck.js';
+import type { Shard } from '../core/args.js';
+import { gateRunCaveat, shardRunCaveat } from '../core/selfcheck.js';
 import { readManifest, type LoadedManifest } from '../load.js';
 import { type Io, printViolations } from './output.js';
 
@@ -29,12 +30,18 @@ export function runMutationResult(
   io: Io,
   only: string[] = [],
   seen: (judged: { report: MutationReport; verdict: MutationVerdict }) => void = () => undefined,
-  retried: RetryOutcome | 'failed' | null = null
+  retried: RetryOutcome | 'failed' | null = null,
+  shard: Shard | null = null
 ): number {
   const manifest = readManifest(dir);
   const gates =
     only.length === 0 ? manifest.gates : manifest.gates.filter((gate) => only.includes(gate.path));
-  const caveat = only.length === 0 ? '' : gateRunCaveat(gates.length, manifest.gates.length);
+  const caveat =
+    only.length === 0
+      ? ''
+      : shard === null
+        ? gateRunCaveat(gates.length, manifest.gates.length)
+        : shardRunCaveat(shard, gates.length, manifest.gates.length);
   const reportPath = reportPathOf(manifest, reportOverride);
   const shown = path.relative(manifest.dir, reportPath) || reportPath;
 

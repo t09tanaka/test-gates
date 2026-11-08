@@ -234,7 +234,7 @@ Static checks, before the gate run. Reports every violation as `file:line: reaso
 - The Stryker config does not use `excludedMutations`, `ignoreStatic` or `ignorers`.
 - A Vitest gate run below Vitest 4 does not use the plain v8 coverage provider (since 0.3.0), see [Vitest: v8 or istanbul](#vitest-v8-or-istanbul).
 
-### `test-gates mutation [--gate <path>…] [--affected] [-- <stryker arguments>]`
+### `test-gates mutation [--gate <path>… | --shard <index>/<total>] [--affected] [-- <stryker arguments>]`
 
 Runs `stryker run <config>` from the project's own `node_modules`, then judges the JSON report (see `mutation-result`). Unknown arguments, and everything after `--`, are handed to Stryker. If Stryker itself fails, the exit code is 1 and nothing is judged. A report from an earlier run is deleted first, so a run that writes none cannot pass on old results.
 
@@ -322,6 +322,34 @@ So a run with `--gate`
 - **is refused when `CI` is set** in the environment (to anything but an empty value, `false` or `0`), with exit code 2, like `selfcheck --quick`.
 
 `--gate` is written before `--`, and cannot be combined with a `--mutate` of your own.
+
+#### `--shard <index>/<total>`: the mutants of one part of the gates, for parallel CI jobs
+
+When the mutation run takes too long for one CI job, split it: `test-gates mutation --shard 2/4` runs the mutants of part 2 of 4 (the index starts at 1) and judges those gates. Unlike `--gate` it is for the final check, so **it is accepted when `CI` is set**, and **every part has to run**: a single part says nothing about the gates of the others.
+
+- The gates are sorted by path (plain string order, the same on every machine) and dealt out in turn: the gate at position `k` of the sorted list (from 0) belongs to part `k % total + 1`. The order of `test-gates.json` does not matter, and the parts are disjoint and together every gate exactly once, whichever number of parts you choose.
+- The gates of the part are handed to Stryker as `--mutate` and judged; the last line says which part it was (`Only part 2/4 (3 of 11 gate(s)) was run and judged (--shard)`). Every mutant of those gates is run: the handling of an incremental file is the one of a run without `--shard`, which is not what `--gate` does. The timeouts of the part are run again one at a time (`--concurrency 1`) as in any run, and only for the gates of the part.
+- A part that has no gate (more parts than gates) passes at once, says so, and does not start Stryker.
+- `<index>/<total>` outside `1 <= index <= total`, or not written as two plain numbers, is an error (exit code 2). `--shard` cannot be combined with `--gate`, `--affected` or a `--mutate` of your own, and is written before `--`.
+
+A matrix of a hosted CI, in parts:
+
+```yaml
+test-gates-mutation:
+  runs-on: ubuntu-latest
+  strategy:
+    fail-fast: false
+    matrix:
+      part: [1, 2, 3, 4]
+  defaults:
+    run:
+      working-directory: backend
+  steps:
+    # checkout, setup-node and npm ci as above
+    - run: npm run test:gates:mutation -- --shard ${{ matrix.part }}/4
+```
+
+The number of parts is written twice, in `matrix.part` and after the `/`; keep the two in step. Make every part a required check, so that none can be left out.
 
 #### `--affected`: run again only the gates a change can affect
 
