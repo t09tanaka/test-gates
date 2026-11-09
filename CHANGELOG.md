@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.1
+
+### Fixed
+
+- `selfcheck --jobs` no longer keeps every other control apart because the word `require` appears inside a string, a template, a comment or a regular expression (`'sslmode=require'`, `// pass it to require`). Only code is looked at now. Handing `require` on under another name (`const r = require`) still counts as loading a module whose name is computed.
+
 ## 0.5.0
 
 This release makes the gates quicker to check in CI: `test-gates mutation --shard <index>/<total>` splits the mutation run over parallel jobs, and `selfcheck --jobs` runs more controls side by side. Nothing changes for a run without the new option:
