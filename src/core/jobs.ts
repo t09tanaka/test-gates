@@ -174,7 +174,8 @@ const REACHES = [
   'Function(',
 ];
 // A module that is named by an expression cannot be followed, and neither can `require` once it
-// is handed on under another name.
+// is handed on under another name. Tested on the code alone (withoutLiterals): the word in
+// `'sslmode=require'` or in a comment loads nothing.
 const COMPUTED_LOAD =
   /(?:require|import)\((?!['"])|\brequire(?!\(|\.resolve\b|[\w$])|\bimport\.meta\.glob\b/;
 const COMPUTED = 'loads a module whose name is computed';
@@ -195,6 +196,91 @@ export function withoutStrings(source: string): string {
       inside.includes('${') ? all : `${before}${space}${quote}${' '.repeat(inside.length)}${quote}`
   );
 }
+// Where a `/` starts a regular expression rather than divides: after one of these, or at the
+// start of the text.
+const BEFORE_REGEX =
+  /(?:^|[(,=:[!&|?{};+\-*%<>~^]|\b(?:return|typeof|case|in|of|void|delete|throw|new|yield|await))\s*$/;
+// At a place in code: a comment, or a string in quotes up to its quote or the end of its line.
+const COMMENT_OR_STRING = /\/\/[^\n]*|\/\*[\s\S]*?(?:\*\/|$)|(['"])(?:\\.|(?!\1)[^\\\n])*\1?/y;
+// At a `/` that starts a regular expression: it up to its `/` or the end of its line.
+const REGEX = /\/(?:\\.|\[(?:\\.|[^\]\\\n])*\]?|[^/\\\n[])*\/?/y;
+// At the text of a template: it up to its backtick or a `${`.
+const TEMPLATE_TEXT = /(?:\\[\s\S]|[^`\\$]|\$(?!\{))*/y;
+
+/**
+ * The text with the inside of every string, template text, comment and regular expression
+ * left blank: the quotes, the backticks, the slashes of a regular expression and what is in
+ * `${…}` stay, and so do line breaks. A string or a regular expression that seems not to close
+ * ends at its line, so a misreading does not hide more than the rest of one line.
+ */
+export function withoutLiterals(source: string): string {
+  let out = '';
+  let i = 0;
+  const blank = (text: string): string => text.replace(/[^\n]/g, ' ');
+  // A literal with its opening mark, and its closing one when it has it, kept.
+  const enclosed = (literal: string): string => {
+    const closed = literal.length > 1 && literal.endsWith(literal.charAt(0));
+    return (
+      literal.charAt(0) +
+      blank(literal.slice(1, closed ? -1 : undefined)) +
+      (closed ? literal.charAt(0) : '')
+    );
+  };
+  const take = (pattern: RegExp): string | null => {
+    pattern.lastIndex = i;
+    const found = pattern.exec(source)?.[0] ?? null;
+    if (found !== null) {
+      i += found.length;
+    }
+    return found;
+  };
+  // Code up to the end, or in braces up to the `}` that closes them.
+  const code = (inBraces: boolean): void => {
+    while (i < source.length) {
+      const c = source[i];
+      const literal = take(COMMENT_OR_STRING);
+      if (literal !== null) {
+        out += literal.startsWith('/') ? blank(literal) : enclosed(literal);
+      } else if (c === '/' && BEFORE_REGEX.test(out)) {
+        out += enclosed(take(REGEX) as string);
+      } else if (c === '`') {
+        i += 1;
+        out += '`';
+        template();
+      } else if (c === '}' && inBraces) {
+        return;
+      } else if (c === '{' && inBraces) {
+        braces('{');
+      } else {
+        out += c;
+        i += 1;
+      }
+    }
+  };
+  // From an opening `{` or `${` in a template, to after the `}` that closes it.
+  const braces = (open: string): void => {
+    i += open.length;
+    out += open;
+    code(true);
+    if (i < source.length) {
+      i += 1;
+      out += '}';
+    }
+  };
+  const template = (): void => {
+    out += blank(take(TEMPLATE_TEXT) as string);
+    if (source.startsWith('${', i)) {
+      braces('${');
+      template();
+    } else if (i < source.length) {
+      i += 1;
+      out += '`';
+    }
+  };
+  code(false);
+  return out;
+}
+
 // Built-in modules that a file may import without keeping a control from running next to
 // others: their functions compute from their arguments. None of them reads a file, the
 // environment, the clock or the machine, opens a port or a handle, or waits, and what each keeps
@@ -228,7 +314,7 @@ const RUNNER_PACKAGES = ['vitest', '@jest/globals'];
  *   package).
  */
 export function reachesOutside(file: LoadedFile, trusted: string[]): string | null {
-  const dense = file.source.replace(/\s/g, '');
+  const dense = withoutLiterals(file.source).replace(/\s/g, '');
   const code = withoutStrings(file.source).replace(/\s/g, '');
   const mark = REACHES.find((text) => code.includes(text));
   if (mark !== undefined) {

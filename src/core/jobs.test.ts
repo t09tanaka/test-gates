@@ -7,6 +7,7 @@ import {
   knownCommand,
   reachesOutside,
   type LoadedFile,
+  withoutLiterals,
   withoutStrings,
   workerFlags,
 } from './jobs';
@@ -198,6 +199,45 @@ const file = (source: string, imports: LoadedFile['imports'] = []): LoadedFile =
 const QUIET_SPEC =
   "import { fee } from './fee';\nit('charges', () => {\n  expect(fee(2)).toBe(6);\n});\n";
 
+describe('withoutLiterals', () => {
+  it('leaves strings, template text and comments blank, and code as it is', () => {
+    expect(withoutLiterals('f(\'ab\', "cd")')).toBe('f(\'  \', "  ")');
+    expect(withoutLiterals('`a${b}c`')).toBe('` ${b} `');
+    expect(withoutLiterals('`a${ {x: `y`}.x }c`')).toBe('` ${ {x: ` `}.x } `');
+    expect(withoutLiterals('a // b\nc')).toBe('a     \nc');
+    expect(withoutLiterals('a /* b\nc */ d')).toBe('a     \n     d');
+    expect(withoutLiterals("x = /'[/]/g; y")).toBe('x = /    /g; y');
+    expect(withoutLiterals('x = a / b / c')).toBe('x = a / b / c');
+    expect(withoutLiterals('`a\\`b`')).toBe('`    `');
+    expect(withoutLiterals("} 'ab' {")).toBe("} '  ' {");
+    expect(withoutLiterals('`a\\\nb`')).toBe('`  \n `');
+    expect(withoutLiterals("// it's\n'a'")).toBe("       \n' '");
+    expect(withoutLiterals("`${ {} }a` 'b'")).toBe("`${ {} } ` ' '");
+    expect(withoutLiterals('x = /a\\/b/; y')).toBe('x = /    /; y');
+    expect(withoutLiterals("'a\\'b'")).toBe("'    '");
+  });
+
+  it('ends a literal that does not close at its line', () => {
+    expect(withoutLiterals("'ab\nc")).toBe("'  \nc");
+    expect(withoutLiterals('x = /ab\nc')).toBe('x = /  \nc');
+    expect(withoutLiterals('/* a')).toBe('    ');
+    expect(withoutLiterals("'ab")).toBe("'  ");
+    expect(withoutLiterals("'")).toBe("'");
+    expect(withoutLiterals('`ab')).toBe('`  ');
+    expect(withoutLiterals('`a${b')).toBe('` ${b');
+  });
+
+  it('knows where a regular expression starts', () => {
+    expect(withoutLiterals('/a/.test(x)')).toBe('/ /.test(x)');
+    expect(withoutLiterals('x=/a/')).toBe('x=/ /');
+    expect(withoutLiterals('return /a/')).toBe('return / /');
+    expect(withoutLiterals('x = /[/]a/; y')).toBe('x = /    /; y');
+    expect(withoutLiterals('x = /[ab/]c/; y')).toBe('x = /      /; y');
+    expect(withoutLiterals('x = /[a')).toBe('x = /  ');
+    expect(withoutLiterals('f(a) / 2 / b')).toBe('f(a) / 2 / b');
+  });
+});
+
 describe('withoutStrings', () => {
   it('leaves the inside of a string blank, and its quotes', () => {
     expect(withoutStrings('f(\'ab\', "cd")')).toBe('f(\'  \', "  ")');
@@ -320,6 +360,30 @@ describe('reachesOutside', () => {
   it('takes a date that is given for what it is', () => {
     expect(reachesOutside(file("const at = new Date('2024-01-01');"), [])).toBeNull();
     expect(reachesOutside(file('const at = new Date(2024, 0, 1);'), [])).toBeNull();
+  });
+
+  it.each([
+    "const url = 'postgres://db?sslmode=require';",
+    'const url = "sslmode=require";',
+    'const url = `postgres://${host}/db?sslmode=require`;',
+    'const m = `${a ? `x require` : "require"}`;',
+    '// pass it on to require',
+    '/* require */ const a = 1;',
+    "const re = /require/; const s = 'it\\'s require';",
+  ])('takes the word require in a string or a comment for no load: %s', (line) => {
+    expect(reachesOutside(file(line), [])).toBeNull();
+  });
+
+  it('still takes require handed on next to a string that names it', () => {
+    expect(reachesOutside(file("const s = 'require';\nconst r = require;"), [])).toBe(
+      'loads a module whose name is computed'
+    );
+    expect(reachesOutside(file('const s = `${require}`;'), [])).toBe(
+      'loads a module whose name is computed'
+    );
+    expect(reachesOutside(file('const n = a / 2; const r = require;'), [])).toBe(
+      'loads a module whose name is computed'
+    );
   });
 
   it.each([
