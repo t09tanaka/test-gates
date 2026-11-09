@@ -19,7 +19,96 @@
     {
       "path": "src/core/jobs.ts",
       "decides": "Whether negative controls may run at the same time, how many workers each of those runs may use, and whether a control that ran next to others can be taken as it is or has to be run again on its own",
-      "impact": "A control that only looks as if it held, because another run disturbed it, is reported as holding"
+      "impact": "A control that only looks as if it held, because another run disturbed it, is reported as holding",
+      "expectedTimeouts": [
+        {
+          "mutator": "ConditionalExpression",
+          "original": "found !== null",
+          "replacement": "false",
+          "reason": "Without taking the comment or string it found, withoutLiterals stays at the same place and finds it again forever"
+        },
+        {
+          "mutator": "BlockStatement",
+          "original": "{ i += found.length; }",
+          "replacement": "{}",
+          "reason": "Without taking the comment or string it found, withoutLiterals stays at the same place and finds it again forever"
+        },
+        {
+          "mutator": "AssignmentOperator",
+          "original": "i += found.length",
+          "replacement": "i -= found.length",
+          "reason": "Going back by the length of what it took, withoutLiterals reads the same text again forever"
+        },
+        {
+          "mutator": "BlockStatement",
+          "original": "{ const c = source[i]; const literal = take(COMMENT_OR_STRING); if (literal !== null) { out += literal.startsWith('/') ? blank(literal) : enclosed(literal); } else if (c === '/' && BEFORE_REGEX.test(out)) { out += enclosed(take(REGEX) as string); } else if (c === '`') { i += 1; out += '`'; template(); } else if (c === '}' && inBraces) { return; } else if (c === '{' && inBraces) { braces('{'); } else { out += c; i += 1; } }",
+          "replacement": "{}",
+          "reason": "With an empty body the loop over the code never moves on, so withoutLiterals never returns"
+        },
+        {
+          "mutator": "BlockStatement",
+          "original": "{ out += enclosed(take(REGEX) as string); }",
+          "replacement": "{}",
+          "reason": "Without taking the regular expression the scan stays at its slash and looks at it again forever"
+        },
+        {
+          "mutator": "BlockStatement",
+          "original": "{ i += 1; out += '`'; template(); }",
+          "replacement": "{}",
+          "reason": "Without passing the backtick the scan stays at it and looks at it again forever"
+        },
+        {
+          "mutator": "AssignmentOperator",
+          "original": "i += 1",
+          "replacement": "i -= 1",
+          "occurrence": 1,
+          "reason": "Going back from a backtick, the scan reads the same text again forever"
+        },
+        {
+          "mutator": "BlockStatement",
+          "original": "{ return; }",
+          "replacement": "{}",
+          "reason": "A closing brace in braces is then neither returned at nor passed, so the scan looks at it again forever"
+        },
+        {
+          "mutator": "BlockStatement",
+          "original": "{ braces('{'); }",
+          "replacement": "{}",
+          "reason": "An opening brace in braces is then neither entered nor passed, so the scan looks at it again forever"
+        },
+        {
+          "mutator": "StringLiteral",
+          "original": "'{'",
+          "replacement": "\"\"",
+          "occurrence": 2,
+          "reason": "Opening braces of no length does not pass the brace, so the scan enters the same braces again without end"
+        },
+        {
+          "mutator": "BlockStatement",
+          "original": "{ out += c; i += 1; }",
+          "replacement": "{}",
+          "reason": "Without passing a character of plain code the scan looks at it again forever"
+        },
+        {
+          "mutator": "AssignmentOperator",
+          "original": "i += 1",
+          "replacement": "i -= 1",
+          "occurrence": 2,
+          "reason": "Going back from a character of plain code, the scan reads the same text again forever"
+        },
+        {
+          "mutator": "BlockStatement",
+          "original": "{ i += open.length; out += open; code(true); if (i < source.length) { i += 1; out += '}'; } }",
+          "replacement": "{}",
+          "reason": "Braces that are not passed leave the scan at their opening, so a template with a value in it is read again forever"
+        },
+        {
+          "mutator": "AssignmentOperator",
+          "original": "i += open.length",
+          "replacement": "i -= open.length",
+          "reason": "Going back instead of passing the opening of braces, the scan enters the same braces again forever"
+        }
+      ]
     },
     {
       "path": "src/core/manifest.ts",
