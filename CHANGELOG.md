@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.2
+
+### Fixed
+
+- `selfcheck --jobs` really no longer keeps every other control apart because of the word `require` in a string, a template, a comment or a regular expression. 0.5.1 fixed the reason given for a spec, but the plan of which controls run on their own still looked at the whole text.
+
 ## 0.5.1
 
 ### Fixed
