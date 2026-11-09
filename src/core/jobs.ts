@@ -179,6 +179,11 @@ const REACHES = [
 const COMPUTED_LOAD =
   /(?:require|import)\((?!['"])|\brequire(?!\(|\.resolve\b|[\w$])|\bimport\.meta\.glob\b/;
 const COMPUTED = 'loads a module whose name is computed';
+
+/** Whether the code of a file (see withoutLiterals) loads a module whose name is computed. */
+function loadsComputed(source: string): boolean {
+  return COMPUTED_LOAD.test(withoutLiterals(source).replace(/\s/g, ''));
+}
 // A string in quotes that surely is one: it opens where a value starts, closes on its line, and
 // a value may end right after it. Its text is not code: `"retry: {count}"` in a file of
 // messages uses nothing. A quote that may be something else (in a regular expression, in a
@@ -314,13 +319,12 @@ const RUNNER_PACKAGES = ['vitest', '@jest/globals'];
  *   package).
  */
 export function reachesOutside(file: LoadedFile, trusted: string[]): string | null {
-  const dense = withoutLiterals(file.source).replace(/\s/g, '');
   const code = withoutStrings(file.source).replace(/\s/g, '');
   const mark = REACHES.find((text) => code.includes(text));
   if (mark !== undefined) {
     return `uses ${mark.replace(/[.?[(:]+$/, '')}`;
   }
-  if (COMPUTED_LOAD.test(dense)) {
+  if (loadsComputed(file.source)) {
     return COMPUTED;
   }
   for (const { specifier, builtin } of file.imports) {
@@ -426,7 +430,7 @@ export function jobsPlan(input: {
     const reaches = loaded.flatMap((file) => {
       const reach = reachesOutside(file, input.trusted);
       const said = reach === null ? [] : [`${file.path} ${reach}`];
-      if (!COMPUTED_LOAD.test(file.source.replace(/\s/g, ''))) {
+      if (!loadsComputed(file.source)) {
         return said;
       }
       computed = true;

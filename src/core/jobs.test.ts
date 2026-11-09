@@ -732,6 +732,9 @@ describe('jobsPlan', () => {
           'maybe loaded by src/age.spec.ts, in which src/load.ts loads a module whose name is computed',
       },
     ]);
+    // The word in a string, a template or a comment loads nothing.
+    expect(cause("const url = 'postgres://db?sslmode=require';")).toEqual([]);
+    expect(cause('const t = `sslmode=require`; // require')).toEqual([]);
     // Said also when the file uses something else first.
     expect(cause('Date.now(); const x = require (\n name);')).toEqual([
       {
